@@ -7,14 +7,10 @@
 #   1. Go to GitLab → CI/CD → Pipelines
 #   2. Click "Run pipeline"
 #   3. Set VERSION variable (e.g., "0.1.0")
-#   4. Click "Run pipeline"
 #
 # Option 2: Create a git tag
 #   git tag -a v0.1.0 -m "Release 0.1.0"
 #   git push origin v0.1.0
-#   → Pipeline runs automatically
-#
-# Build time: ~30-45 minutes
 
 stages:
   - prepare
@@ -23,30 +19,18 @@ stages:
   - release
 
 variables:
-  # Default version - override in manual trigger
   VERSION: "0.1.0-dev"
   IMAGE_NAME: "cubeos-${VERSION}-pi5"
-  
-  # Ubuntu base image
   UBUNTU_IMAGE_URL: "https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.1-preinstalled-server-arm64+raspi.img.xz"
 
-# =============================================================================
-# WORKFLOW RULES - Controls when pipeline runs
-# =============================================================================
 workflow:
   rules:
-    # Run on tags (v1.0.0, v0.2.0-beta, etc.)
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+/
       variables:
         VERSION: $CI_COMMIT_TAG
-    # Run on manual trigger from web UI
     - if: $CI_PIPELINE_SOURCE == "web"
-    # Don't run on regular pushes
     - when: never
 
-# =============================================================================
-# PREPARE STAGE - Setup QEMU for ARM64 emulation
-# =============================================================================
 setup-qemu:
   stage: prepare
   image: docker:24-cli
@@ -55,16 +39,8 @@ setup-qemu:
   services:
     - docker:24-dind
   script:
-    - echo "Registering QEMU for ARM64 emulation..."
     - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-    - echo "Verifying QEMU registration..."
-    - ls /proc/sys/fs/binfmt_misc/ | grep -E 'qemu' || echo "Note - binfmt check may not work in container"
-  rules:
-    - when: on_success
 
-# =============================================================================
-# BUILD STAGE - Build the SD card image
-# =============================================================================
 build-image:
   stage: build
   image: mkaczanowski/packer-builder-arm:latest
@@ -73,44 +49,23 @@ build-image:
   needs:
     - setup-qemu
   before_script:
-    - echo "Building CubeOS ${VERSION}..."
-    - packer version
-    
-    # Sync latest coreapps and scripts from GitLab
     - mkdir -p files/coreapps files/scripts
-    - |
-      echo "Fetching latest coreapps..."
-      git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/coreapps.git /tmp/coreapps || true
-      cp -r /tmp/coreapps/*/ files/coreapps/ 2>/dev/null || true
-      cp /tmp/coreapps/*.sh files/coreapps/ 2>/dev/null || true
-    - |
-      echo "Fetching latest scripts..."
-      git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/scripts.git /tmp/scripts || true
-      cp /tmp/scripts/*.sh files/scripts/ 2>/dev/null || true
-      
+    - git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/coreapps.git /tmp/coreapps || true
+    - cp -r /tmp/coreapps/*/ files/coreapps/ 2>/dev/null || true
+    - cp /tmp/coreapps/*.sh files/coreapps/ 2>/dev/null || true
+    - git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/scripts.git /tmp/scripts || true
+    - cp /tmp/scripts/*.sh files/scripts/ 2>/dev/null || true
   script:
     - packer init cubeos.pkr.hcl
-    - |
-      packer build \
-        -var "cubeos_version=${VERSION}" \
-        -var "ubuntu_image_url=${UBUNTU_IMAGE_URL}" \
-        cubeos.pkr.hcl
-    
-    # Rename output image
+    - packer build -var "cubeos_version=${VERSION}" -var "ubuntu_image_url=${UBUNTU_IMAGE_URL}" cubeos.pkr.hcl
     - mv output-cubeos/image "${IMAGE_NAME}.img"
     - ls -lh "${IMAGE_NAME}.img"
-    
   artifacts:
     paths:
       - "*.img"
-    expire_in: 2 hours  # Keep uncompressed briefly
+    expire_in: 2 hours
   timeout: 2 hours
-  rules:
-    - when: on_success
 
-# =============================================================================
-# COMPRESS STAGE - Shrink and compress the image
-# =============================================================================
 shrink-image:
   stage: compress
   image: debian:bookworm
@@ -120,34 +75,20 @@ shrink-image:
     - build-image
   before_script:
     - apt-get update && apt-get install -y wget parted e2fsprogs xz-utils
-    # Install PiShrink
     - wget -q https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh -O /usr/local/bin/pishrink
     - chmod +x /usr/local/bin/pishrink
   script:
-    - echo "Shrinking image to remove empty space..."
-    - /usr/local/bin/pishrink -s "${IMAGE_NAME}.img" || echo "PiShrink warning (continuing anyway)"
-    - ls -lh "${IMAGE_NAME}.img"
-    
-    - echo "Compressing with XZ (this takes a while)..."
+    - /usr/local/bin/pishrink -s "${IMAGE_NAME}.img" || true
     - xz -T0 -6 -v "${IMAGE_NAME}.img"
-    - ls -lh "${IMAGE_NAME}.img.xz"
-    
-    # Calculate checksums
     - sha256sum "${IMAGE_NAME}.img.xz" > "${IMAGE_NAME}.img.xz.sha256"
-    - cat "${IMAGE_NAME}.img.xz.sha256"
-    
+    - ls -lh "${IMAGE_NAME}.img.xz"
   artifacts:
     paths:
       - "*.img.xz"
       - "*.sha256"
     expire_in: 1 week
   timeout: 1 hour
-  rules:
-    - when: on_success
 
-# =============================================================================
-# RELEASE STAGE - Upload to GitHub Releases
-# =============================================================================
 release-github:
   stage: release
   image: alpine:latest
@@ -156,60 +97,14 @@ release-github:
   needs:
     - shrink-image
   before_script:
-    - apk add --no-cache curl jq github-cli
+    - apk add --no-cache curl github-cli
   script:
-    - echo "Uploading CubeOS ${VERSION} to GitHub Releases..."
-    
-    # Authenticate with GitHub
     - echo "${GHCR_TOKEN}" | gh auth login --with-token
-    
-    # Create release (or update if exists)
-    - |
-      gh release create "${VERSION}" \
-        --repo cubeos-app/releases \
-        --title "CubeOS ${VERSION}" \
-        --notes "## CubeOS ${VERSION}
+    - echo "Creating release ${VERSION}..."
+    - gh release create "${VERSION}" --repo cubeos-app/releases --title "CubeOS ${VERSION}" --notes "CubeOS ${VERSION} for Raspberry Pi 5" "${IMAGE_NAME}.img.xz" "${IMAGE_NAME}.img.xz.sha256" || true
+    - gh release upload "${VERSION}" --repo cubeos-app/releases --clobber "${IMAGE_NAME}.img.xz" "${IMAGE_NAME}.img.xz.sha256" || true
+    - echo "Done - https://github.com/cubeos-app/releases/releases/tag/${VERSION}"
 
-      **For Raspberry Pi 5** (ARM64)
-
-      ### Installation
-      1. Download \`${IMAGE_NAME}.img.xz\`
-      2. Flash with Raspberry Pi Imager (Use custom image)
-      3. Boot your Pi 5
-      4. Access dashboard at http://cubeos.local or http://<pi-ip>
-
-      ### Included
-      - Ubuntu 24.04 LTS base
-      - Docker CE pre-installed
-      - 14 core services ready to deploy
-      - CubeOS Dashboard & API
-
-      ### Checksums
-      \`\`\`
-      $(cat ${IMAGE_NAME}.img.xz.sha256)
-      \`\`\`
-      " \
-        "${IMAGE_NAME}.img.xz" \
-        "${IMAGE_NAME}.img.xz.sha256" \
-      || echo "Release may already exist, trying to upload assets..."
-    
-    # If release exists, just upload the assets
-    - |
-      gh release upload "${VERSION}" \
-        --repo cubeos-app/releases \
-        --clobber \
-        "${IMAGE_NAME}.img.xz" \
-        "${IMAGE_NAME}.img.xz.sha256" \
-      || true
-    
-    - echo "✅ Release uploaded: https://github.com/cubeos-app/releases/releases/tag/${VERSION}"
-    
-  rules:
-    - when: on_success
-
-# =============================================================================
-# OPTIONAL: Update RPi Imager manifest
-# =============================================================================
 update-manifest:
   stage: release
   image: alpine:latest
@@ -217,44 +112,15 @@ update-manifest:
     - multiarch
   needs:
     - shrink-image
-  before_script:
-    - apk add --no-cache curl jq
   script:
-    - echo "Generating RPi Imager manifest..."
-    
-    # Get file size
+    - apk add --no-cache coreutils
     - SIZE=$(stat -c%s "${IMAGE_NAME}.img.xz")
     - SHA256=$(cat "${IMAGE_NAME}.img.xz.sha256" | cut -d' ' -f1)
     - DATE=$(date +%Y-%m-%d)
-    
-    # Generate manifest JSON
-    - |
-      cat > os_list.json << EOF
-      {
-        "os_list": [
-          {
-            "name": "CubeOS ${VERSION}",
-            "description": "CubeOS - Self-hosting OS for Raspberry Pi 5",
-            "icon": "https://raw.githubusercontent.com/cubeos-app/releases/main/assets/cubeos-icon.png",
-            "url": "https://github.com/cubeos-app/releases/releases/download/${VERSION}/${IMAGE_NAME}.img.xz",
-            "extract_size": 17179869184,
-            "extract_sha256": "${SHA256}",
-            "image_download_size": ${SIZE},
-            "release_date": "${DATE}",
-            "init_format": "cloudinit",
-            "devices": ["pi5-64bit", "pi4-64bit"]
-          }
-        ]
-      }
-      EOF
-    
+    - echo "{\"os_list\":[{\"name\":\"CubeOS ${VERSION}\",\"description\":\"CubeOS for Raspberry Pi 5\",\"url\":\"https://github.com/cubeos-app/releases/releases/download/${VERSION}/${IMAGE_NAME}.img.xz\",\"extract_sha256\":\"${SHA256}\",\"image_download_size\":${SIZE},\"release_date\":\"${DATE}\",\"init_format\":\"cloudinit\",\"devices\":[\"pi5-64bit\",\"pi4-64bit\"]}]}" > os_list.json
     - cat os_list.json
-    - echo "Manifest generated. Upload to GitHub repo for RPi Imager integration."
-    
   artifacts:
     paths:
       - os_list.json
     expire_in: 1 week
-  rules:
-    - when: on_success
-  allow_failure: true  # Don't fail pipeline if this fails
+  allow_failure: true
