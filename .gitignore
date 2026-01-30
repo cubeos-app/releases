@@ -1,0 +1,20 @@
+# Build outputs
+*.img
+*.img.xz
+*.img.gz
+*.sha256
+output-*/
+
+# Packer cache
+packer_cache/
+.packer.d/
+
+# Temporary files
+/tmp/
+files/coreapps/
+files/scripts/
+!files/README.md
+
+# OS files
+.DS_Store
+Thumbs.db
