@@ -191,20 +191,44 @@ build-image:
     - sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
     - md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
 
+    # =====================================================================
+    # Phase 3: Upload to Package Registry (not as artifact — too large)
+    # =====================================================================
+    - echo "[5/5] Uploading to Package Registry..."
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz \
+           --connect-timeout 30 \
+           --max-time 1800 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+    - echo "  Image uploaded."
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+    - echo "  SHA256 uploaded."
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz.md5 \
+           --connect-timeout 30 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.md5"
+    - echo "  MD5 uploaded."
+
     # Summary
     - echo ""
     - echo "============================================================"
-    - echo "  CubeOS Release Artifact"
+    - echo "  CubeOS Release Image — Upload Complete"
     - echo "============================================================"
-    - echo "  Version  ${CUBEOS_VERSION}"
-    - echo "  File     ${IMAGE_NAME}.img.xz"
-    - echo "  Size     $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
-    - echo "  SHA256   $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
-    - echo "  Base     cubeos-base/${BASE_VERSION}"
+    - echo "  Version   ${CUBEOS_VERSION}"
+    - echo "  File      ${IMAGE_NAME}.img.xz"
+    - echo "  Size      $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+    - echo "  SHA256    $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
+    - echo "  Base      cubeos-base/${BASE_VERSION}"
+    - echo "  Registry  ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages"
     - echo "============================================================"
   artifacts:
     paths:
-      - "${IMAGE_NAME}.img.xz"
       - "${IMAGE_NAME}.img.xz.sha256"
       - "${IMAGE_NAME}.img.xz.md5"
     expire_in: 30 days
