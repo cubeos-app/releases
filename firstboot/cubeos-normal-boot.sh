@@ -16,6 +16,7 @@ exec 1> >(tee -a "$LOG_FILE") 2>&1
 GATEWAY_IP="10.42.24.1"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
+SWAP_FILE="/var/swap.cubeos"
 
 echo "============================================================"
 echo "  CubeOS Normal Boot"
@@ -47,9 +48,14 @@ wait_for_service() {
 }
 
 # ---------------------------------------------------------------------------
-# Watchdog
+# Swap + Watchdog
 # ---------------------------------------------------------------------------
-echo "[BOOT] Enabling watchdog..."
+echo "[BOOT] Enabling swap and watchdog..."
+
+if [ -f "$SWAP_FILE" ] && ! swapon --show | grep -q "$SWAP_FILE"; then
+    swapon "$SWAP_FILE" 2>/dev/null || true
+fi
+
 if [ -e /dev/watchdog ]; then
     systemctl start watchdog 2>/dev/null || true
 fi
@@ -82,7 +88,7 @@ echo "[BOOT] Ensuring compose services are running..."
 for svc_dir in pihole npm cubeos-hal; do
     COMPOSE_FILE="${COREAPPS_DIR}/${svc_dir}/appconfig/docker-compose.yml"
     if [ -f "$COMPOSE_FILE" ]; then
-        docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || \
+        docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || \
             echo "[BOOT]   WARNING: Failed to start ${svc_dir}"
     fi
 done
@@ -105,7 +111,6 @@ systemctl start hostapd 2>/dev/null || \
 # ---------------------------------------------------------------------------
 echo "[BOOT] Verifying Swarm stacks..."
 
-# Maps: stack_name → coreapps directory name
 declare -A SWARM_STACKS=(
     ["cubeos-api"]="cubeos-api"
     ["cubeos-dashboard"]="cubeos-dashboard"
@@ -133,7 +138,6 @@ wait_for_service "API" "curl -sf http://127.0.0.1:6010/health" 60 || true
 # ---------------------------------------------------------------------------
 echo "[BOOT] Applying network mode..."
 
-# Source defaults to get saved network mode
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 NETWORK_MODE="${CUBEOS_NETWORK_MODE:-OFFLINE}"
 

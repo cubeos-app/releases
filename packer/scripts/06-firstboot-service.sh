@@ -4,6 +4,11 @@
 # =============================================================================
 # Creates cubeos-init.service which detects first-boot vs normal-boot
 # and runs the appropriate script.
+#
+# TIMEOUT NOTES:
+#   - cubeos-docker-preload: infinity (npm 1.1GB can take 8+ min on 2GB Pi)
+#   - cubeos-init (first boot): infinity (deploys 5 services sequentially)
+#   - cubeos-init (normal boot): 300s (just verifies, no heavy loading)
 # =============================================================================
 set -euo pipefail
 
@@ -12,13 +17,16 @@ echo "=== [06] First-Boot Service Installation ==="
 # ---------------------------------------------------------------------------
 # cubeos-init.service — main boot orchestrator
 # ---------------------------------------------------------------------------
+# TimeoutStartSec=infinity because first-boot on a 2GB Pi with SD card
+# can take 10-15 minutes total. Killing mid-deploy leaves the system in a
+# worse state than just letting it finish.
+# ---------------------------------------------------------------------------
 cat > /etc/systemd/system/cubeos-init.service << 'SYSTEMD'
 [Unit]
 Description=CubeOS System Initialization
 Documentation=https://github.com/cubeos-app
 After=docker.service cubeos-docker-preload.service
 Wants=docker.service
-Before=hostapd.service
 
 [Service]
 Type=oneshot
@@ -33,7 +41,7 @@ ExecStart=/bin/bash -c '\
     fi'
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=600
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target
@@ -76,7 +84,10 @@ cat > /usr/local/lib/cubeos/watchdog-health.sh << 'HEALTH'
 # =============================================================================
 # CubeOS Watchdog Health Check
 # Runs every 60s. Restarts critical services if they're down.
+# Uses --pull never on all Docker commands (offline-first).
 # =============================================================================
+
+CACHE_DIR="/var/cache/cubeos-images"
 
 # Maps: container_name → coreapps directory name
 declare -A COMPOSE_SERVICES=(
@@ -102,12 +113,11 @@ fi
 for svc in "${!COMPOSE_SERVICES[@]}"; do
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${svc}$"; then
         echo "[WATCHDOG] ${svc} is not running. Checking..."
-        # Don't auto-restart if we're in first-boot
         if [ -f /cubeos/data/.setup_complete ]; then
             COMPOSE_FILE="/cubeos/coreapps/${COMPOSE_SERVICES[$svc]}/appconfig/docker-compose.yml"
             if [ -f "$COMPOSE_FILE" ]; then
                 echo "[WATCHDOG] Restarting ${svc}..."
-                docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || true
+                docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || true
             fi
         fi
     fi
@@ -127,10 +137,26 @@ for stack in "${!SWARM_SERVICES[@]}"; do
     fi
 done
 
+# Check hostapd
+if ! systemctl is-active --quiet hostapd; then
+    echo "[WATCHDOG] hostapd is down! Restarting..."
+    rfkill unblock wifi 2>/dev/null || true
+    systemctl start hostapd 2>/dev/null || true
+fi
+
 # Check disk space (warn if < 500MB free)
 FREE_KB=$(df /cubeos/data 2>/dev/null | tail -1 | awk '{print $4}')
 if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 512000 ]; then
     echo "[WATCHDOG] WARNING: Low disk space! ${FREE_KB}KB free on /cubeos/data"
+fi
+
+# Check swap is active
+if ! swapon --show | grep -q .; then
+    SWAP_FILE="/var/swap.cubeos"
+    if [ -f "$SWAP_FILE" ]; then
+        echo "[WATCHDOG] Swap not active. Enabling..."
+        swapon "$SWAP_FILE" 2>/dev/null || true
+    fi
 fi
 HEALTH
 
@@ -142,4 +168,4 @@ chmod +x /usr/local/lib/cubeos/watchdog-health.sh
 systemctl enable cubeos-init.service 2>/dev/null || true
 systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 
-echo "[06] First-boot service installed and enabled."
+echo "[06] First-boot service installed (timeout=infinity for first-boot resilience)."
