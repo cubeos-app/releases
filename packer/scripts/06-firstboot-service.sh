@@ -9,10 +9,43 @@
 #   - cubeos-docker-preload: infinity (npm 1.1GB can take 8+ min on 2GB Pi)
 #   - cubeos-init (first boot): infinity (deploys 5 services sequentially)
 #   - cubeos-init (normal boot): 300s (just verifies, no heavy loading)
+#
+# v2: Watchdog health script is now a standalone file (firstboot/watchdog-health.sh)
+#     instead of an inline heredoc, so fixes only need one edit.
+#     Also installs cubeos-deploy-stacks.sh for manual recovery.
 # =============================================================================
 set -euo pipefail
 
 echo "=== [06] First-Boot Service Installation ==="
+
+# ---------------------------------------------------------------------------
+# Install new scripts that 04-cubeos.sh doesn't handle yet
+# Source: Packer copies firstboot/ → /tmp/cubeos-firstboot/
+# ---------------------------------------------------------------------------
+FIRSTBOOT_SRC="/tmp/cubeos-firstboot"
+
+echo "[06] Installing additional scripts..."
+
+# Manual stack recovery helper (new in v2)
+if [ -f "${FIRSTBOOT_SRC}/cubeos-deploy-stacks.sh" ]; then
+    cp "${FIRSTBOOT_SRC}/cubeos-deploy-stacks.sh" /usr/local/bin/cubeos-deploy-stacks.sh
+    chmod +x /usr/local/bin/cubeos-deploy-stacks.sh
+    echo "[06]   Installed cubeos-deploy-stacks.sh → /usr/local/bin/"
+else
+    echo "[06]   WARNING: cubeos-deploy-stacks.sh not found in ${FIRSTBOOT_SRC}"
+fi
+
+# Watchdog health check script (was inline heredoc in v1, now standalone file)
+mkdir -p /usr/local/lib/cubeos
+
+if [ -f "${FIRSTBOOT_SRC}/watchdog-health.sh" ]; then
+    cp "${FIRSTBOOT_SRC}/watchdog-health.sh" /usr/local/lib/cubeos/watchdog-health.sh
+    chmod +x /usr/local/lib/cubeos/watchdog-health.sh
+    echo "[06]   Installed watchdog-health.sh → /usr/local/lib/cubeos/"
+else
+    echo "[06]   ERROR: watchdog-health.sh not found in ${FIRSTBOOT_SRC}!"
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # cubeos-init.service — main boot orchestrator
@@ -75,97 +108,11 @@ WantedBy=timers.target
 WATCHDOG_TMR
 
 # ---------------------------------------------------------------------------
-# Watchdog health check script
-# ---------------------------------------------------------------------------
-mkdir -p /usr/local/lib/cubeos
-
-cat > /usr/local/lib/cubeos/watchdog-health.sh << 'HEALTH'
-#!/bin/bash
-# =============================================================================
-# CubeOS Watchdog Health Check
-# Runs every 60s. Restarts critical services if they're down.
-# Uses --pull never on all Docker commands (offline-first).
-# =============================================================================
-
-CACHE_DIR="/var/cache/cubeos-images"
-
-# Maps: container_name → coreapps directory name
-declare -A COMPOSE_SERVICES=(
-    ["cubeos-pihole"]="pihole"
-    ["cubeos-npm"]="npm"
-    ["cubeos-hal"]="cubeos-hal"
-)
-
-# Maps: stack_name → coreapps directory name
-declare -A SWARM_SERVICES=(
-    ["cubeos-api"]="cubeos-api"
-    ["cubeos-dashboard"]="cubeos-dashboard"
-)
-
-# Check Docker daemon
-if ! docker info &>/dev/null; then
-    echo "[WATCHDOG] Docker daemon is down! Restarting..."
-    systemctl restart docker
-    sleep 10
-fi
-
-# Check compose services (Pi-hole, NPM, HAL)
-for svc in "${!COMPOSE_SERVICES[@]}"; do
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${svc}$"; then
-        echo "[WATCHDOG] ${svc} is not running. Checking..."
-        if [ -f /cubeos/data/.setup_complete ]; then
-            COMPOSE_FILE="/cubeos/coreapps/${COMPOSE_SERVICES[$svc]}/appconfig/docker-compose.yml"
-            if [ -f "$COMPOSE_FILE" ]; then
-                echo "[WATCHDOG] Restarting ${svc}..."
-                docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || true
-            fi
-        fi
-    fi
-done
-
-# Check Swarm stacks
-for stack in "${!SWARM_SERVICES[@]}"; do
-    if ! docker stack ls 2>/dev/null | grep -q "^${stack} "; then
-        echo "[WATCHDOG] Stack ${stack} missing."
-        if [ -f /cubeos/data/.setup_complete ]; then
-            COMPOSE_FILE="/cubeos/coreapps/${SWARM_SERVICES[$stack]}/appconfig/docker-compose.yml"
-            if [ -f "$COMPOSE_FILE" ]; then
-                echo "[WATCHDOG] Re-deploying stack ${stack}..."
-                docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true
-            fi
-        fi
-    fi
-done
-
-# Check hostapd
-if ! systemctl is-active --quiet hostapd; then
-    echo "[WATCHDOG] hostapd is down! Restarting..."
-    rfkill unblock wifi 2>/dev/null || true
-    systemctl start hostapd 2>/dev/null || true
-fi
-
-# Check disk space (warn if < 500MB free)
-FREE_KB=$(df /cubeos/data 2>/dev/null | tail -1 | awk '{print $4}')
-if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 512000 ]; then
-    echo "[WATCHDOG] WARNING: Low disk space! ${FREE_KB}KB free on /cubeos/data"
-fi
-
-# Check swap is active
-if ! swapon --show | grep -q .; then
-    SWAP_FILE="/var/swap.cubeos"
-    if [ -f "$SWAP_FILE" ]; then
-        echo "[WATCHDOG] Swap not active. Enabling..."
-        swapon "$SWAP_FILE" 2>/dev/null || true
-    fi
-fi
-HEALTH
-
-chmod +x /usr/local/lib/cubeos/watchdog-health.sh
-
-# ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------
 systemctl enable cubeos-init.service 2>/dev/null || true
 systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 
 echo "[06] First-boot service installed (timeout=infinity for first-boot resilience)."
+echo "[06] Watchdog: /usr/local/lib/cubeos/watchdog-health.sh"
+echo "[06] Recovery: /usr/local/bin/cubeos-deploy-stacks.sh"
