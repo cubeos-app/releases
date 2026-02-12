@@ -101,15 +101,12 @@ build-image:
     entrypoint: [""]
   needs:
     - download-docker-images
-  script:
-    - echo "=== Building CubeOS ${CUBEOS_VERSION} image ==="
-    - echo "Base image  ${BASE_IMAGE_URL}"
-    - echo "Output      ${IMAGE_NAME}.img"
-
-    # Ensure scripts are executable
-    - chmod +x packer/scripts/*.sh firstboot/*.sh
-
-    # Verify QEMU is available (fail fast with clear error)
+  before_script:
+    # Mount host kernel's binfmt_misc inside this privileged container.
+    # The host has QEMU registered (via multiarch/qemu-user-static with F flag),
+    # but containers get a fresh /proc where binfmt_misc isn't auto-mounted.
+    # This mount exposes the host kernel's registrations (binfmt_misc is non-namespaced).
+    - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
     - |
       if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
         echo "ERROR: QEMU aarch64 binfmt not registered on host!"
@@ -118,6 +115,13 @@ build-image:
         exit 1
       fi
       echo "QEMU aarch64 binfmt: OK"
+  script:
+    - echo "=== Building CubeOS ${CUBEOS_VERSION} image ==="
+    - echo "Base image  ${BASE_IMAGE_URL}"
+    - echo "Output      ${IMAGE_NAME}.img"
+
+    # Ensure scripts are executable
+    - chmod +x packer/scripts/*.sh firstboot/*.sh
 
     # Build the image
     - packer build -var "version=${CUBEOS_VERSION}" -var "base_image_url=${BASE_IMAGE_URL}" -var "base_image_checksum=${BASE_IMAGE_CHECKSUM_URL}" packer/cubeos.pkr.hcl
