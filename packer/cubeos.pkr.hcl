@@ -60,7 +60,7 @@ source "arm" "cubeos" {
     name         = "boot"
     type         = "c"
     start_sector = "2048"
-    filesystem   = "vfat"
+    filesystem   = "fat"
     size         = "512M"
     mountpoint   = "/boot/firmware"
   }
