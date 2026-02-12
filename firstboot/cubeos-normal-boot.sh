@@ -105,12 +105,19 @@ systemctl start hostapd 2>/dev/null || \
 # ---------------------------------------------------------------------------
 echo "[BOOT] Verifying Swarm stacks..."
 
-for stack in cubeos-api dashboard; do
+# Maps: stack_name → coreapps directory name
+declare -A SWARM_STACKS=(
+    ["cubeos-api"]="cubeos-api"
+    ["cubeos-dashboard"]="cubeos-dashboard"
+)
+
+for stack in "${!SWARM_STACKS[@]}"; do
+    DIR="${SWARM_STACKS[$stack]}"
     if docker stack ls 2>/dev/null | grep -q "^${stack} "; then
         echo "[BOOT]   Stack ${stack}: present (Swarm will reconcile)"
     else
         echo "[BOOT]   Stack ${stack}: MISSING — redeploying..."
-        COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
+        COMPOSE_FILE="${COREAPPS_DIR}/${DIR}/appconfig/docker-compose.yml"
         [ -f "$COMPOSE_FILE" ] && \
             docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true
     fi

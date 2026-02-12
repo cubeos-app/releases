@@ -88,7 +88,7 @@ declare -A COMPOSE_SERVICES=(
 # Maps: stack_name → coreapps directory name
 declare -A SWARM_SERVICES=(
     ["cubeos-api"]="cubeos-api"
-    ["dashboard"]="cubeos-dashboard"
+    ["cubeos-dashboard"]="cubeos-dashboard"
 )
 
 # Check Docker daemon

@@ -219,11 +219,11 @@ docker stack deploy \
 wait_for_service "API" "curl -sf http://127.0.0.1:6010/health" 90 || true
 
 # ─── CubeOS Dashboard ───────────────────────────────────────
-echo "[BOOT]   Deploying dashboard stack..."
+echo "[BOOT]   Deploying cubeos-dashboard stack..."
 docker stack deploy \
     -c "${COREAPPS_DIR}/cubeos-dashboard/appconfig/docker-compose.yml" \
     --resolve-image never \
-    dashboard 2>&1 || echo "[BOOT]   WARNING: Dashboard stack deploy failed"
+    cubeos-dashboard 2>&1 || echo "[BOOT]   WARNING: Dashboard stack deploy failed"
 
 wait_for_service "Dashboard" "curl -sf http://127.0.0.1:6011/" 60 || true
 
