@@ -84,7 +84,6 @@ echo "[04] Writing coreapps compose files..."
 
 # ─── Pi-hole (Docker Compose — host network required for DHCP) ──────────
 cat > /cubeos/coreapps/pihole/appconfig/docker-compose.yml << 'PIHOLE'
-version: "3.8"
 services:
   pihole:
     container_name: cubeos-pihole
@@ -124,7 +123,6 @@ PIHOLE_ENV
 
 # ─── NPM (Docker Compose — host network for ports 80/443) ──────────────
 cat > /cubeos/coreapps/npm/appconfig/docker-compose.yml << 'NPM'
-version: "3.8"
 services:
   npm:
     container_name: cubeos-npm
@@ -147,7 +145,6 @@ NPM
 
 # ─── CubeOS API (Swarm stack) ──────────────────────────────────────────
 cat > /cubeos/coreapps/cubeos-api/appconfig/docker-compose.yml << 'API'
-version: "3.8"
 services:
   cubeos-api:
     image: ghcr.io/cubeos-app/api:latest
@@ -167,6 +164,8 @@ services:
       - /cubeos/config:/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /cubeos/coreapps:/cubeos/coreapps:ro
+    secrets:
+      - jwt_secret
     deploy:
       mode: replicated
       replicas: 1
@@ -182,11 +181,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+secrets:
+  jwt_secret:
+    external: true
 API
 
 # ─── CubeOS HAL (Docker Compose — needs host network for hardware) ─────
 cat > /cubeos/coreapps/cubeos-hal/appconfig/docker-compose.yml << 'HAL'
-version: "3.8"
 services:
   cubeos-hal:
     container_name: cubeos-hal
@@ -222,7 +224,6 @@ HAL
 
 # ─── CubeOS Dashboard (Swarm stack) ────────────────────────────────────
 cat > /cubeos/coreapps/cubeos-dashboard/appconfig/docker-compose.yml << 'DASH'
-version: "3.8"
 services:
   cubeos-dashboard:
     image: ghcr.io/cubeos-app/dashboard:latest

@@ -24,7 +24,7 @@ echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.d
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
 
 apt-get update -qq
-apt-get install -y -qq \
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install -y -qq \
     docker-ce \
     docker-ce-cli \
     containerd.io \
@@ -47,7 +47,6 @@ cat > /etc/docker/daemon.json << 'DOCKERD'
         "max-file": "3"
     },
     "storage-driver": "overlay2",
-    "live-restore": true,
     "default-address-pools": [
         {
             "base": "172.20.0.0/16",

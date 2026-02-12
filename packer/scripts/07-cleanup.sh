@@ -18,7 +18,7 @@ rm -rf /tmp/cubeos-configs /tmp/cubeos-firstboot
 # APT cleanup
 # ---------------------------------------------------------------------------
 echo "[07] Cleaning APT cache..."
-apt-get autoremove -y -qq
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y -qq
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/archives/*.deb

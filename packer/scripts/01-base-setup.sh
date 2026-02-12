@@ -61,8 +61,15 @@ echo "[01] Packages installed."
 # CubeOS user
 # ---------------------------------------------------------------------------
 echo "[01] Creating cubeos user..."
+
+# Ensure Pi-specific groups exist (they should on Pi OS, but be safe in chroot)
+for grp in gpio spi i2c; do
+    groupadd -f "$grp" 2>/dev/null || true
+done
+
 if ! id cubeos &>/dev/null; then
-    useradd -m -s /bin/bash -G sudo,docker,adm,dialout,video,plugdev,netdev,gpio,spi,i2c cubeos
+    # NOTE: 'docker' group is added later by 03-docker.sh after Docker installation
+    useradd -m -s /bin/bash -G sudo,adm,dialout,video,plugdev,netdev,gpio,spi,i2c cubeos
 fi
 
 # Lock password login — SSH key only after wizard sets it up

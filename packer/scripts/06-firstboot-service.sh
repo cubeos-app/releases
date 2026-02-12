@@ -78,8 +78,18 @@ cat > /usr/local/lib/cubeos/watchdog-health.sh << 'HEALTH'
 # Runs every 60s. Restarts critical services if they're down.
 # =============================================================================
 
-CRITICAL_SERVICES=("cubeos-pihole" "cubeos-npm" "cubeos-hal")
-SWARM_STACKS=("cubeos-api" "dashboard")
+# Maps: container_name → coreapps directory name
+declare -A COMPOSE_SERVICES=(
+    ["cubeos-pihole"]="pihole"
+    ["cubeos-npm"]="npm"
+    ["cubeos-hal"]="cubeos-hal"
+)
+
+# Maps: stack_name → coreapps directory name
+declare -A SWARM_SERVICES=(
+    ["cubeos-api"]="cubeos-api"
+    ["dashboard"]="cubeos-dashboard"
+)
 
 # Check Docker daemon
 if ! docker info &>/dev/null; then
@@ -89,13 +99,12 @@ if ! docker info &>/dev/null; then
 fi
 
 # Check compose services (Pi-hole, NPM, HAL)
-for svc in "${CRITICAL_SERVICES[@]}"; do
+for svc in "${!COMPOSE_SERVICES[@]}"; do
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${svc}$"; then
         echo "[WATCHDOG] ${svc} is not running. Checking..."
         # Don't auto-restart if we're in first-boot
         if [ -f /cubeos/data/.setup_complete ]; then
-            COMPOSE_DIR=$(echo "$svc" | sed 's/cubeos-//')
-            COMPOSE_FILE="/cubeos/coreapps/${COMPOSE_DIR}/appconfig/docker-compose.yml"
+            COMPOSE_FILE="/cubeos/coreapps/${COMPOSE_SERVICES[$svc]}/appconfig/docker-compose.yml"
             if [ -f "$COMPOSE_FILE" ]; then
                 echo "[WATCHDOG] Restarting ${svc}..."
                 docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || true
@@ -105,11 +114,11 @@ for svc in "${CRITICAL_SERVICES[@]}"; do
 done
 
 # Check Swarm stacks
-for stack in "${SWARM_STACKS[@]}"; do
+for stack in "${!SWARM_SERVICES[@]}"; do
     if ! docker stack ls 2>/dev/null | grep -q "^${stack} "; then
         echo "[WATCHDOG] Stack ${stack} missing."
         if [ -f /cubeos/data/.setup_complete ]; then
-            COMPOSE_FILE="/cubeos/coreapps/${stack}/appconfig/docker-compose.yml"
+            COMPOSE_FILE="/cubeos/coreapps/${SWARM_SERVICES[$stack]}/appconfig/docker-compose.yml"
             if [ -f "$COMPOSE_FILE" ]; then
                 echo "[WATCHDOG] Re-deploying stack ${stack}..."
                 docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true
