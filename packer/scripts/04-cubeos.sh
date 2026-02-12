@@ -150,7 +150,7 @@ cat > /cubeos/coreapps/cubeos-api/appconfig/docker-compose.yml << 'API'
 version: "3.8"
 services:
   cubeos-api:
-    image: ghcr.io/cubeos-app/cubeos-api:latest
+    image: ghcr.io/cubeos-app/api:latest
     ports:
       - "6010:6010"
     environment:
@@ -190,7 +190,7 @@ version: "3.8"
 services:
   cubeos-hal:
     container_name: cubeos-hal
-    image: ghcr.io/cubeos-app/cubeos-hal:latest
+    image: ghcr.io/cubeos-app/hal:latest
     network_mode: host
     privileged: true
     restart: unless-stopped
@@ -225,7 +225,7 @@ cat > /cubeos/coreapps/cubeos-dashboard/appconfig/docker-compose.yml << 'DASH'
 version: "3.8"
 services:
   cubeos-dashboard:
-    image: ghcr.io/cubeos-app/cubeos-dashboard:latest
+    image: ghcr.io/cubeos-app/dashboard:latest
     ports:
       - "6011:80"
     environment:

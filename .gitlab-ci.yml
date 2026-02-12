@@ -8,11 +8,14 @@
 #   2. build    — Packer builds the image under QEMU ARM64 emulation
 #   3. compress — PiShrink + zerofree + xz compression + checksums
 #
+# Required CI variables (set at group/project level):
+#   - GHCR_USER  — GitHub username for GHCR (same as api/hal/dashboard pipelines)
+#   - GHCR_TOKEN — GitHub PAT with read:packages scope
+#
 # Runner requirements:
 #   - Self-hosted runner with privileged Docker executor
 #   - volumes: ["/var/run/docker.sock:/var/run/docker.sock", "/dev:/dev"]
 #   - qemu-user-static registered on host (binfmt_misc)
-#   - DOCKER_AUTH_CONFIG env with GHCR credentials in runner config.toml
 # =============================================================================
 
 stages:
@@ -31,6 +34,11 @@ variables:
 # =============================================================================
 # Skopeo pulls ARM64 manifests natively on x86 — no QEMU emulation needed.
 # Images are saved as docker-archive tarballs, passed to Stage 2 as artifacts.
+#
+# GHCR image names (must match what api/hal/dashboard pipelines push):
+#   ghcr.io/cubeos-app/api        (NOT cubeos-api)
+#   ghcr.io/cubeos-app/hal        (NOT cubeos-hal)
+#   ghcr.io/cubeos-app/dashboard  (NOT cubeos-dashboard)
 # =============================================================================
 download-docker-images:
   stage: download
@@ -38,11 +46,14 @@ download-docker-images:
     name: quay.io/skopeo/stable:latest
     entrypoint: [""]
   before_script:
-    # Bridge GHCR auth from runner's DOCKER_AUTH_CONFIG to skopeo's auth file.
-    # The runner injects DOCKER_AUTH_CONFIG as an env var (set in config.toml),
-    # but skopeo reads credentials from ~/.docker/config.json or --authfile.
-    - mkdir -p ~/.docker
-    - echo "${DOCKER_AUTH_CONFIG}" > ~/.docker/config.json
+    # Verify GHCR credentials are available (fail fast)
+    - |
+      if [ -z "${GHCR_USER}" ] || [ -z "${GHCR_TOKEN}" ]; then
+        echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
+        echo "Set them at group level: GitLab → cubeos group → Settings → CI/CD → Variables"
+        exit 1
+      fi
+      echo "GHCR auth: ${GHCR_USER}"
   script:
     - mkdir -p docker-images
     - echo "=== Downloading ARM64 Docker images ==="
@@ -54,15 +65,15 @@ download-docker-images:
     - echo "[2/5] Nginx Proxy Manager..."
     - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/jc21/nginx-proxy-manager:latest docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
 
-    # Private images (GHCR — auth from ~/.docker/config.json)
+    # Private images (GHCR — auth via --src-creds using GitLab CI variables)
     - echo "[3/5] CubeOS API..."
-    - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/cubeos-api:latest docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/cubeos-api:latest
+    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/api:latest docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
 
     - echo "[4/5] CubeOS HAL..."
-    - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/cubeos-hal:latest docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/cubeos-hal:latest
+    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/hal:latest docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
 
     - echo "[5/5] CubeOS Dashboard..."
-    - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/cubeos-dashboard:latest docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/cubeos-dashboard:latest
+    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/dashboard:latest docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
     # Summary
     - echo ""
@@ -82,11 +93,6 @@ download-docker-images:
 #
 # QEMU binfmt must be registered on the HOST (done once, persists across
 # reboots). The runner's privileged mode gives access to /dev/loop*.
-#
-# NOTE: We do NOT run `docker run multiarch/qemu-user-static` here because:
-#   1. The packer image may not have a Docker client
-#   2. It's already registered on the host via persistent binfmt_misc
-#   3. DinD adds unnecessary complexity and failure modes
 # =============================================================================
 build-image:
   stage: build
@@ -113,7 +119,7 @@ build-image:
       fi
       echo "QEMU aarch64 binfmt: OK"
 
-    # Build the image (single-line to avoid YAML multi-line pitfalls)
+    # Build the image
     - packer build -var "version=${CUBEOS_VERSION}" -var "base_image_url=${BASE_IMAGE_URL}" -var "base_image_checksum=${BASE_IMAGE_CHECKSUM_URL}" packer/cubeos.pkr.hcl
 
     # Verify output
@@ -127,10 +133,6 @@ build-image:
 
 # =============================================================================
 # Stage 3: Shrink, zero, compress, checksum
-# =============================================================================
-# PiShrink shrinks the root partition to fit content + small margin, then
-# configures the image to auto-expand on first boot. Zerofree fills unused
-# blocks with zeros for dramatically better xz compression (~25% ratio).
 # =============================================================================
 compress-image:
   stage: compress

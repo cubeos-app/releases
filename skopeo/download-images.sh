@@ -25,9 +25,9 @@ echo ""
 IMAGES=(
     "docker://docker.io/pihole/pihole:latest|pihole.tar"
     "docker://docker.io/jc21/nginx-proxy-manager:latest|npm.tar"
-    "docker://ghcr.io/cubeos-app/cubeos-api:latest|cubeos-api.tar"
-    "docker://ghcr.io/cubeos-app/cubeos-hal:latest|cubeos-hal.tar"
-    "docker://ghcr.io/cubeos-app/cubeos-dashboard:latest|cubeos-dashboard.tar"
+    "docker://ghcr.io/cubeos-app/api:latest|cubeos-api.tar"
+    "docker://ghcr.io/cubeos-app/hal:latest|cubeos-hal.tar"
+    "docker://ghcr.io/cubeos-app/dashboard:latest|cubeos-dashboard.tar"
 )
 
 # ---------------------------------------------------------------------------
