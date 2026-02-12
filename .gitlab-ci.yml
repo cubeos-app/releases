@@ -44,10 +44,10 @@ build-image:
     - if: '$CI_PIPELINE_SOURCE == "push"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_COMMIT_TAG =~ /^v/'
-  before_script:
-    # -----------------------------------------------------------------
-    # Validate required CI variables
-    # -----------------------------------------------------------------
+  script:
+    # =====================================================================
+    # Phase 0: Setup — validate, install tools, download inputs
+    # =====================================================================
     - |
       if [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
         echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
@@ -55,10 +55,6 @@ build-image:
         exit 1
       fi
       echo "GHCR auth: ${GHCR_USER}"
-
-    # -----------------------------------------------------------------
-    # QEMU binfmt setup
-    # -----------------------------------------------------------------
     - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
     - |
       if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
@@ -67,47 +63,29 @@ build-image:
         exit 1
       fi
       echo "QEMU aarch64 binfmt: OK"
-
-    # -----------------------------------------------------------------
-    # Install tools (skopeo + compression utils)
-    # -----------------------------------------------------------------
     - echo "Installing tools..."
     - apt-get update -q 2>&1 | tail -3
     - apt-get install -y -q skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq 2>&1 | tail -5
     - echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
-
-    # -----------------------------------------------------------------
-    # Download ARM64 Docker images via skopeo
-    # -----------------------------------------------------------------
     - mkdir -p docker-images
     - echo ""
     - echo "============================================================"
     - echo "  Downloading ARM64 Docker images"
     - echo "============================================================"
-
     - echo "[1/5] Pi-hole..."
     - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/pihole/pihole:latest docker-archive:docker-images/pihole.tar:pihole/pihole:latest
-
     - echo "[2/5] Nginx Proxy Manager..."
     - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/jc21/nginx-proxy-manager:latest docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
-
     - echo "[3/5] CubeOS API..."
     - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/api:latest docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
-
     - echo "[4/5] CubeOS HAL..."
     - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/hal:latest docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
-
     - echo "[5/5] CubeOS Dashboard..."
     - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/dashboard:latest docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
-
     - echo ""
     - ls -lh docker-images/
     - du -sh docker-images/
     - echo "Docker images: OK"
-
-    # -----------------------------------------------------------------
-    # Download golden base image from Package Registry
-    # -----------------------------------------------------------------
     - echo ""
     - echo "Downloading golden base image from Package Registry..."
     - |
@@ -121,7 +99,6 @@ build-image:
     - ls -lh cubeos-base.img.xz
     - echo "Base image: OK"
 
-  script:
     # =====================================================================
     # Phase 1: Packer build (config only — packages already in base)
     # =====================================================================
