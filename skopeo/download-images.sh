@@ -19,15 +19,29 @@ echo "============================================================"
 echo ""
 
 # ---------------------------------------------------------------------------
+# GHCR authentication (required for private CubeOS images)
+# ---------------------------------------------------------------------------
+GHCR_CREDS=""
+if [ -n "${GHCR_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+    GHCR_CREDS="--src-creds ${GHCR_USER}:${GHCR_TOKEN}"
+    echo "GHCR auth: ${GHCR_USER}"
+else
+    echo "WARNING: GHCR_USER/GHCR_TOKEN not set."
+    echo "Private GHCR images (api, hal, dashboard) will fail."
+    echo "Set: export GHCR_USER=... GHCR_TOKEN=..."
+    echo ""
+fi
+
+# ---------------------------------------------------------------------------
 # Image list — the 5 essential CubeOS services
 # ---------------------------------------------------------------------------
-# Format: "registry/image:tag|output_filename"
+# Format: "registry/image:tag|output_filename|needs_ghcr_auth"
 IMAGES=(
-    "docker://docker.io/pihole/pihole:latest|pihole.tar"
-    "docker://docker.io/jc21/nginx-proxy-manager:latest|npm.tar"
-    "docker://ghcr.io/cubeos-app/api:latest|cubeos-api.tar"
-    "docker://ghcr.io/cubeos-app/hal:latest|cubeos-hal.tar"
-    "docker://ghcr.io/cubeos-app/dashboard:latest|cubeos-dashboard.tar"
+    "docker://docker.io/pihole/pihole:latest|pihole.tar|false"
+    "docker://docker.io/jc21/nginx-proxy-manager:latest|npm.tar|false"
+    "docker://ghcr.io/cubeos-app/api:latest|cubeos-api.tar|true"
+    "docker://ghcr.io/cubeos-app/hal:latest|cubeos-hal.tar|true"
+    "docker://ghcr.io/cubeos-app/dashboard:latest|cubeos-dashboard.tar|true"
 )
 
 # ---------------------------------------------------------------------------
@@ -51,16 +65,25 @@ FAILED=0
 TOTAL=${#IMAGES[@]}
 
 for entry in "${IMAGES[@]}"; do
-    SOURCE="${entry%%|*}"
-    FILENAME="${entry##*|}"
+    SOURCE="$(echo "$entry" | cut -d'|' -f1)"
+    FILENAME="$(echo "$entry" | cut -d'|' -f2)"
+    NEEDS_AUTH="$(echo "$entry" | cut -d'|' -f3)"
     IMAGE_NAME=$(echo "$SOURCE" | sed 's|docker://||' | sed 's|docker.io/||')
 
     echo "[${DOWNLOADED}/${TOTAL}] Downloading ${IMAGE_NAME}..."
     echo "         → ${OUTPUT_DIR}/${FILENAME}"
 
+    # Build skopeo args
+    EXTRA_ARGS=""
+    if [ "$NEEDS_AUTH" = "true" ] && [ -n "$GHCR_CREDS" ]; then
+        EXTRA_ARGS="$GHCR_CREDS"
+    fi
+
     if skopeo copy \
         --override-arch arm64 \
         --override-os linux \
+        --retry-times 3 \
+        $EXTRA_ARGS \
         "$SOURCE" \
         "docker-archive:${OUTPUT_DIR}/${FILENAME}:${IMAGE_NAME}" 2>&1; then
         

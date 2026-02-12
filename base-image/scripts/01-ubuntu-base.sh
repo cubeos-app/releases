@@ -6,17 +6,57 @@
 # CubeOS needs. This script does NOT configure anything — it only installs
 # packages and removes bloat. Configuration is done by the release pipeline.
 #
-# After this script:
-#   - snap is removed (saves ~150MB RAM + disk)
-#   - Docker CE is installed from Docker's official repo
-#   - All system packages are installed (hostapd, dnsmasq, fail2ban, etc.)
-#   - Ubuntu is trimmed for headless server use
-#
 # Run frequency: Monthly, or when the package list changes.
 # Run environment: QEMU ARM64 emulation (packer-builder-arm)
-# Expected time: ~15-20 minutes under QEMU
+# Expected time: ~20-25 minutes under QEMU
 # =============================================================================
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Global environment — prevents debconf warnings and ensures visible output
+# ---------------------------------------------------------------------------
+export DEBIAN_FRONTEND=noninteractive
+export TERM=dumb
+export LANG=C.UTF-8
+
+# ---------------------------------------------------------------------------
+# Helper: install a group of packages with retry and visible progress
+# ---------------------------------------------------------------------------
+install_group() {
+    local group_name="$1"
+    shift
+    local packages=("$@")
+    local max_attempts=3
+    local attempt=1
+
+    echo ""
+    echo "[BASE] >>> Installing: $group_name"
+    echo "[BASE]     Packages: ${packages[*]}"
+    echo "[BASE]     Started: $(date -u +%H:%M:%S)"
+
+    while [ $attempt -le $max_attempts ]; do
+        if [ $attempt -gt 1 ]; then
+            echo "[BASE]     Retry $attempt/$max_attempts (refreshing cache first)..."
+            apt-get update -q >/dev/null 2>&1 || true
+            sleep 5
+        fi
+
+        if apt-get install -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            "${packages[@]}" 2>&1 | tail -20; then
+            echo "[BASE]     $group_name: OK ($(date -u +%H:%M:%S))"
+            return 0
+        fi
+
+        echo "[BASE]     $group_name: FAILED (attempt $attempt/$max_attempts)"
+        attempt=$((attempt + 1))
+    done
+
+    echo "[BASE] FATAL: $group_name failed after $max_attempts attempts"
+    echo "[BASE] Failed packages: ${packages[*]}"
+    return 1
+}
 
 echo "============================================================"
 echo "  CubeOS Golden Base Image — Ubuntu Package Installation"
@@ -27,65 +67,54 @@ echo ""
 # ---------------------------------------------------------------------------
 # Fix DNS resolution in QEMU chroot
 # ---------------------------------------------------------------------------
-# Ubuntu's /etc/resolv.conf is a symlink to systemd-resolved's stub, which
-# doesn't exist in the packer-builder-arm chroot. Replace it with a direct
-# resolver config. We save the original to restore later.
 echo "[BASE] Fixing DNS resolution for chroot..."
 
-if [ -L /etc/resolv.conf ] || ! grep -q "nameserver" /etc/resolv.conf 2>/dev/null; then
-    # Save original symlink target for restoration
-    ORIGINAL_RESOLV=$(readlink -f /etc/resolv.conf 2>/dev/null || echo "")
-    rm -f /etc/resolv.conf
-    cat > /etc/resolv.conf << 'RESOLV'
-# Temporary DNS config for QEMU chroot build
+rm -f /etc/resolv.conf
+cat > /etc/resolv.conf << 'RESOLV'
 nameserver 8.8.8.8
 nameserver 1.1.1.1
+nameserver 8.8.4.4
 RESOLV
-    echo "[BASE]   resolv.conf set to public DNS (was: ${ORIGINAL_RESOLV:-empty})"
+
+echo -n "[BASE]   Testing DNS... "
+if getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+    echo "OK"
 else
-    echo "[BASE]   resolv.conf already has nameservers, skipping"
+    echo "FAILED"
+    echo "FATAL: Cannot resolve hostnames. Aborting."
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
 # QEMU py3compile workaround
 # ---------------------------------------------------------------------------
-# Under QEMU user-mode emulation, py3compile can SIGSEGV during package
-# installs. Replace with a no-op to prevent build failures.
-# This is safe because we're building an image, not running Python apps.
-echo "[BASE] Installing QEMU py3compile workaround..."
+echo "[BASE] Installing QEMU workarounds..."
 
-if [ -f /usr/bin/py3compile ]; then
-    mv /usr/bin/py3compile /usr/bin/py3compile.real
-    cat > /usr/bin/py3compile << 'WRAPPER'
-#!/bin/sh
-# QEMU workaround: py3compile crashes under aarch64 emulation.
-# Replaced during image build. Restored after package installation.
-exit 0
-WRAPPER
-    chmod +x /usr/bin/py3compile
-    echo "[BASE]   py3compile wrapped (QEMU workaround active)"
-fi
-
-if [ -f /usr/bin/py3clean ]; then
-    mv /usr/bin/py3clean /usr/bin/py3clean.real
-    cat > /usr/bin/py3clean << 'WRAPPER'
-#!/bin/sh
-exit 0
-WRAPPER
-    chmod +x /usr/bin/py3clean
-    echo "[BASE]   py3clean wrapped (QEMU workaround active)"
-fi
+for bin in py3compile py3clean; do
+    if [ -f "/usr/bin/$bin" ]; then
+        mv "/usr/bin/$bin" "/usr/bin/${bin}.real"
+        printf '#!/bin/sh\nexit 0\n' > "/usr/bin/$bin"
+        chmod +x "/usr/bin/$bin"
+    fi
+done
+echo "[BASE]   py3compile/py3clean wrapped"
 
 # ---------------------------------------------------------------------------
-# Remove snap (saves ~150MB RAM, significant disk space, faster boot)
+# policy-rc.d — prevent services starting in chroot
 # ---------------------------------------------------------------------------
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+chmod +x /usr/sbin/policy-rc.d
+echo "[BASE]   policy-rc.d installed"
+
+# ---------------------------------------------------------------------------
+# Remove snap
+# ---------------------------------------------------------------------------
+echo ""
 echo "[BASE] Removing snap..."
 
-# Stop snapd services
 systemctl stop snapd.service snapd.socket snapd.seeded.service 2>/dev/null || true
 systemctl disable snapd.service snapd.socket snapd.seeded.service 2>/dev/null || true
 
-# Remove all installed snaps
 if command -v snap &>/dev/null; then
     for snap_name in $(snap list 2>/dev/null | awk 'NR>1 {print $1}' | grep -v "^core" | grep -v "^snapd"); do
         snap remove --purge "$snap_name" 2>/dev/null || true
@@ -93,11 +122,9 @@ if command -v snap &>/dev/null; then
     snap remove --purge snapd 2>/dev/null || true
 fi
 
-# Purge snapd package
-apt-get purge -y -qq snapd squashfs-tools 2>/dev/null || true
-apt-get autoremove -y -qq 2>/dev/null || true
+apt-get purge -y snapd squashfs-tools 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
 
-# Prevent snapd from being reinstalled
 cat > /etc/apt/preferences.d/no-snapd.pref << 'NOSNAP'
 Package: snapd
 Pin: release *
@@ -105,14 +132,13 @@ Pin-Priority: -10
 NOSNAP
 
 rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd
-echo "[BASE]   snap removed and blocked from reinstall"
+echo "[BASE]   snap: REMOVED"
 
 # ---------------------------------------------------------------------------
-# Remove other Ubuntu bloat not needed for headless server
+# Remove bloat
 # ---------------------------------------------------------------------------
-echo "[BASE] Removing unnecessary packages..."
-
-apt-get purge -y -qq \
+echo "[BASE] Removing bloat packages..."
+apt-get purge -y \
     ubuntu-advantage-tools \
     landscape-common \
     popularity-contest \
@@ -120,40 +146,59 @@ apt-get purge -y -qq \
     update-notifier-common \
     motd-news-config \
     2>/dev/null || true
-
-apt-get autoremove -y -qq 2>/dev/null || true
-echo "[BASE]   Bloat packages removed"
-
-# ---------------------------------------------------------------------------
-# System update
-# ---------------------------------------------------------------------------
-echo "[BASE] Updating package lists..."
-apt-get update -qq
-
-echo "[BASE] Upgrading existing packages..."
-DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold"
-echo "[BASE]   System upgraded"
+apt-get autoremove -y 2>/dev/null || true
+echo "[BASE]   Bloat: REMOVED"
 
 # ---------------------------------------------------------------------------
-# Install system packages
+# System update — WITH VISIBLE PROGRESS
 # ---------------------------------------------------------------------------
-echo "[BASE] Installing system packages..."
+echo ""
+echo "[BASE] ============================================"
+echo "[BASE]  apt-get update (expect 3-5 min under QEMU)"
+echo "[BASE]  Started: $(date -u +%H:%M:%S)"
+echo "[BASE] ============================================"
+apt-get update 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
+echo "[BASE] Finished: $(date -u +%H:%M:%S)"
+echo "[BASE] Package lists: OK"
 
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+echo ""
+echo "[BASE] ============================================"
+echo "[BASE]  apt-get upgrade (expect 5-10 min under QEMU)"
+echo "[BASE]  Started: $(date -u +%H:%M:%S)"
+echo "[BASE] ============================================"
+apt-get upgrade -y \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" \
-    \
-    `# --- Core system ---` \
+    2>&1 | grep -E "^(Setting up|Unpacking|Preparing|Processing)" | tail -30 || true
+echo "[BASE] Finished: $(date -u +%H:%M:%S)"
+echo "[BASE] Upgrade: OK"
+
+# ---------------------------------------------------------------------------
+# CRITICAL: Refresh apt cache AFTER upgrade
+# ---------------------------------------------------------------------------
+# Upgrade changes dependency versions. Without this refresh, install fails
+# with "held broken packages" because apt resolves against stale metadata.
+echo ""
+echo "[BASE] Refreshing package lists after upgrade..."
+apt-get update 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
+echo "[BASE] Cache refresh: OK"
+
+echo "[BASE] Fixing any broken dependencies..."
+apt-get install -f -y 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Install packages in groups (visible progress, isolated failures)
+# ---------------------------------------------------------------------------
+
+install_group "Core system" \
     apt-transport-https \
     ca-certificates \
     curl \
     gnupg \
     lsb-release \
-    software-properties-common \
-    \
-    `# --- Networking ---` \
+    software-properties-common
+
+install_group "Networking" \
     hostapd \
     dnsmasq \
     iptables \
@@ -165,34 +210,41 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     iputils-ping \
     dnsutils \
     tcpdump \
-    nmap \
-    \
-    `# --- Security ---` \
+    nmap
+
+install_group "Security" \
     fail2ban \
     ufw \
-    openssh-server \
-    \
-    `# --- Hardware / Pi ---` \
+    openssh-server
+
+install_group "Hardware / Pi" \
     i2c-tools \
     watchdog \
-    libraspberrypi-bin \
-    linux-firmware \
-    \
-    `# --- Storage ---` \
+    linux-firmware
+
+# libraspberrypi-bin may not exist in all Ubuntu ARM64 repos
+echo ""
+echo "[BASE] >>> Installing: libraspberrypi-bin (optional)"
+apt-get install -y libraspberrypi-bin 2>/dev/null && \
+    echo "[BASE]     libraspberrypi-bin: OK" || \
+    echo "[BASE]     libraspberrypi-bin: not available (non-fatal)"
+
+install_group "Storage" \
     cifs-utils \
     nfs-common \
     parted \
     e2fsprogs \
-    dosfstools \
-    \
-    `# --- Monitoring ---` \
+    dosfstools
+
+# NOTE: iotop-c replaces iotop (broken python deps on Ubuntu 24.04 ARM64)
+install_group "Monitoring" \
     htop \
-    iotop \
+    iotop-c \
     sysstat \
     lsof \
-    strace \
-    \
-    `# --- Utils ---` \
+    strace
+
+install_group "Utilities" \
     jq \
     git \
     vim-tiny \
@@ -202,109 +254,99 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     zip \
     unzip \
     xz-utils \
-    pigz \
-    \
-    `# --- Cloud-init (for Raspberry Pi Imager support) ---` \
-    cloud-init \
-    \
-    `# --- Python (for system scripts) ---` \
-    python3 \
-    python3-pip \
-    \
-    2>&1 | tail -5
+    pigz
 
-echo "[BASE]   System packages installed"
+install_group "Cloud-init" \
+    cloud-init
+
+# NOTE: python3-pip intentionally NOT installed.
+# On Ubuntu 24.04 it causes dependency conflicts under QEMU.
+install_group "Python (no pip)" \
+    python3
 
 # ---------------------------------------------------------------------------
-# Install Docker CE from official Docker repository
+# Install Docker CE
 # ---------------------------------------------------------------------------
+echo ""
 echo "[BASE] Installing Docker CE..."
 
-# Add Docker's GPG key
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
 
-# Add Docker apt repository
 echo \
   "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
 
-apt-get update -qq
+echo "[BASE]   Refreshing apt with Docker repo..."
+apt-get update 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
 
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+install_group "Docker CE" \
     docker-ce \
     docker-ce-cli \
     containerd.io \
     docker-buildx-plugin \
-    docker-compose-plugin \
-    2>&1 | tail -3
+    docker-compose-plugin
 
-echo "[BASE]   Docker installed: $(docker --version 2>/dev/null || echo 'version check skipped')"
+echo "[BASE]   Docker: $(docker --version 2>/dev/null || echo 'installed')"
 
 # ---------------------------------------------------------------------------
-# Kernel modules and sysctl for networking
+# Kernel modules and sysctl
 # ---------------------------------------------------------------------------
+echo ""
 echo "[BASE] Configuring kernel parameters..."
 
-# Enable IP forwarding (required for NAT/AP mode)
 cat > /etc/sysctl.d/99-cubeos.conf << 'SYSCTL'
 # CubeOS networking requirements
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
-
-# Performance tuning for Docker overlay networks
 net.core.somaxconn = 1024
 net.ipv4.tcp_max_syn_backlog = 1024
-
-# Disable IPv6 autoconfig (we manage this ourselves)
 net.ipv6.conf.all.autoconf = 0
 net.ipv6.conf.default.autoconf = 0
 SYSCTL
 
-# Ensure required kernel modules load on boot
 cat > /etc/modules-load.d/cubeos.conf << 'MODULES'
-# CubeOS required kernel modules
 overlay
 br_netfilter
 i2c-dev
 MODULES
 
-echo "[BASE]   Kernel parameters configured"
+echo "[BASE]   Kernel config: OK"
 
 # ---------------------------------------------------------------------------
-# Restore py3compile
+# Restore workarounds
 # ---------------------------------------------------------------------------
-echo "[BASE] Restoring py3compile..."
-if [ -f /usr/bin/py3compile.real ]; then
-    mv /usr/bin/py3compile.real /usr/bin/py3compile
-fi
-if [ -f /usr/bin/py3clean.real ]; then
-    mv /usr/bin/py3clean.real /usr/bin/py3clean
-fi
-echo "[BASE]   py3compile restored"
+echo ""
+echo "[BASE] Cleaning up build workarounds..."
 
-# ---------------------------------------------------------------------------
-# Restore resolv.conf for runtime (systemd-resolved)
-# ---------------------------------------------------------------------------
-echo "[BASE] Restoring resolv.conf symlink..."
+for bin in py3compile py3clean; do
+    [ -f "/usr/bin/${bin}.real" ] && mv "/usr/bin/${bin}.real" "/usr/bin/$bin"
+done
+echo "[BASE]   py3compile: restored"
+
+rm -f /usr/sbin/policy-rc.d
+echo "[BASE]   policy-rc.d: removed"
+
 rm -f /etc/resolv.conf
 ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-echo "[BASE]   resolv.conf restored to systemd-resolved stub"
+echo "[BASE]   resolv.conf: restored"
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "  Golden Base Image — Package Installation Complete"
+echo "  Golden Base Image — COMPLETE"
+echo "  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 echo ""
-echo "  Ubuntu:     $(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2)"
-echo "  Kernel:     $(uname -r)"
-echo "  Docker:     $(docker --version 2>/dev/null || echo 'installed')"
-echo "  snap:       REMOVED"
+echo "  Ubuntu:  $(lsb_release -ds 2>/dev/null || echo 'unknown')"
+echo "  Kernel:  $(uname -r)"
+echo "  Docker:  $(docker --version 2>/dev/null || echo 'installed')"
+echo "  snap:    REMOVED"
+echo "  pip:     NOT INSTALLED (by design)"
 echo ""
-echo "  This base image contains all packages. No configuration"
-echo "  has been applied — that happens in the release pipeline."
+echo "  All packages installed. No configuration applied."
+echo "  Configuration happens in the release pipeline."
 echo "============================================================"

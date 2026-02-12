@@ -110,17 +110,15 @@ ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
 echo "[02]   systemd-resolved stub listener disabled"
 
 # ---------------------------------------------------------------------------
-# sysctl — enable IP forwarding persistently (required for NAT)
+# sysctl — IP forwarding is already enabled in golden base image
 # ---------------------------------------------------------------------------
-echo "[02] Enabling IP forwarding..."
-
-cat > /etc/sysctl.d/99-cubeos-forwarding.conf << 'SYSCTL'
-# CubeOS: Enable IP forwarding for NAT (ONLINE_ETH / ONLINE_WIFI modes)
-# Also required by Docker for container networking.
-net.ipv4.ip_forward=1
-SYSCTL
-
-echo "[02]   IP forwarding enabled"
+# /etc/sysctl.d/99-cubeos.conf (from 01-ubuntu-base.sh) sets:
+#   net.ipv4.ip_forward = 1
+#   net.ipv6.conf.all.forwarding = 1
+#   net.core.somaxconn = 1024
+#   net.ipv4.tcp_max_syn_backlog = 1024
+# No additional sysctl config needed here.
+echo "[02]   IP forwarding: already configured in base image"
 
 # ---------------------------------------------------------------------------
 # hostapd — template config (SSID/key filled on first boot from MAC)

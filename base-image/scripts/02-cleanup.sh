@@ -8,13 +8,16 @@
 # =============================================================================
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+export TERM=dumb
+
 echo "=== [BASE-CLEANUP] Cleaning base image ==="
 
 # ---------------------------------------------------------------------------
 # APT cleanup
 # ---------------------------------------------------------------------------
 echo "[BASE-CLEANUP] Cleaning APT cache..."
-apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y -qq
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y 2>&1 | tail -5
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/archives/*.deb

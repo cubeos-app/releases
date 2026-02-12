@@ -113,8 +113,8 @@ build-image:
       echo "QEMU aarch64 binfmt: OK"
 
     # Install tools for compression
-    - apt-get update -qq
-    - apt-get install -y -qq xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl 2>&1 | tail -1
+    - apt-get update -q
+    - apt-get install -y -q xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl 2>&1 | tail -5
 
     # Download golden base image from Package Registry
     - echo "Downloading golden base image from Package Registry..."
@@ -139,7 +139,7 @@ build-image:
     - |
       packer build \
         -var "version=${CUBEOS_VERSION}" \
-        -var "base_image_url=file:///build/cubeos-base.img.xz" \
+        -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
         -var "base_image_checksum_type=none" \
         packer/cubeos.pkr.hcl
     - ls -lh ${IMAGE_NAME}.img
