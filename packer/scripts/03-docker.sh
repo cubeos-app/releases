@@ -23,6 +23,14 @@ chmod a+r /etc/apt/keyrings/docker.asc
 echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
 
+# Workaround: py3compile segfaults under QEMU ARM64 emulation
+for cmd in py3compile py3clean; do
+    if [ -f /usr/bin/$cmd ] && [ ! -f /usr/bin/${cmd}.real ]; then
+        cp /usr/bin/$cmd /usr/bin/${cmd}.real
+        printf '#!/bin/sh\nexit 0\n' > /usr/bin/$cmd
+    fi
+done
+
 apt-get update -qq
 apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install -y -qq \
     docker-ce \
@@ -30,6 +38,12 @@ apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold
     containerd.io \
     docker-buildx-plugin \
     docker-compose-plugin
+
+# Restore py3compile/py3clean
+for cmd in py3compile py3clean; do
+    [ -f /usr/bin/${cmd}.real ] && mv /usr/bin/${cmd}.real /usr/bin/$cmd
+done
+dpkg --configure -a 2>/dev/null || true
 
 echo "[03] Docker packages installed."
 

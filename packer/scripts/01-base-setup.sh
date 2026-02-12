@@ -15,6 +15,16 @@ echo "=== [01] Base System Setup ==="
 # Packages
 # ---------------------------------------------------------------------------
 echo "[01] Installing system packages..."
+
+# Workaround: py3compile segfaults under QEMU ARM64 emulation (SIGSEGV)
+# Temporarily replace with no-op during package installation
+for cmd in py3compile py3clean; do
+    if [ -f /usr/bin/$cmd ]; then
+        cp /usr/bin/$cmd /usr/bin/${cmd}.real
+        printf '#!/bin/sh\nexit 0\n' > /usr/bin/$cmd
+    fi
+done
+
 apt-get update -qq
 apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y -qq
 
@@ -54,6 +64,12 @@ apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold
     usbutils \
     i2c-tools \
     python3-minimal
+
+# Restore py3compile/py3clean and finalize any unconfigured packages
+for cmd in py3compile py3clean; do
+    [ -f /usr/bin/${cmd}.real ] && mv /usr/bin/${cmd}.real /usr/bin/$cmd
+done
+dpkg --configure -a 2>/dev/null || true
 
 echo "[01] Packages installed."
 
