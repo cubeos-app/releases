@@ -5,8 +5,8 @@
 #
 # Stages:
 #   1. download — Fetch ARM64 Docker images via skopeo (native x86 speed)
-#   2. build    — Packer builds the image under QEMU ARM64 emulation
-#   3. compress — PiShrink + zerofree + xz compression + checksums
+#   2. build    — Packer builds the image under QEMU ARM64 emulation,
+#                 then shrinks + compresses in the same privileged container
 #
 # Required CI variables (set at group/project level):
 #   - GHCR_USER  — GitHub username for GHCR (same as api/hal/dashboard pipelines)
@@ -21,7 +21,6 @@
 stages:
   - download
   - build
-  - compress
 
 variables:
   CUBEOS_VERSION: "0.1.0-alpha"
@@ -86,13 +85,18 @@ download-docker-images:
     expire_in: 4 hours
 
 # =============================================================================
-# Stage 2: Build image with Packer under QEMU emulation
+# Stage 2: Build image with Packer, then shrink + compress
 # =============================================================================
-# packer-builder-arm loop-mounts the base Pi OS image, chroots with QEMU
-# user-mode emulation, and runs our provisioning scripts inside the chroot.
+# Both Packer and the compress step need privileged access to loop devices,
+# so they run in the same container. This also avoids uploading the raw 8GB
+# image as a GitLab artifact between stages (which exceeds the upload limit).
 #
-# QEMU binfmt must be registered on the HOST (done once, persists across
-# reboots). The runner's privileged mode gives access to /dev/loop*.
+# Steps:
+#   1. Packer builds the 8GB raw image under QEMU ARM64 emulation
+#   2. PiShrink shrinks the partition and adds auto-expand on first boot
+#   3. Zerofree zeros unused blocks for better compression
+#   4. xz compresses the image (~8GB raw → ~1.5-2GB compressed)
+#   5. SHA256 + MD5 checksums
 # =============================================================================
 build-image:
   stage: build
@@ -103,9 +107,6 @@ build-image:
     - download-docker-images
   before_script:
     # Mount host kernel's binfmt_misc inside this privileged container.
-    # The host has QEMU registered (via multiarch/qemu-user-static with F flag),
-    # but containers get a fresh /proc where binfmt_misc isn't auto-mounted.
-    # This mount exposes the host kernel's registrations (binfmt_misc is non-namespaced).
     - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
     - |
       if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
@@ -115,7 +116,17 @@ build-image:
         exit 1
       fi
       echo "QEMU aarch64 binfmt: OK"
+
+    # Install compression tools needed for post-build processing.
+    # The packer-builder-arm image is Ubuntu-based but doesn't include these.
+    - echo "Installing compression tools..."
+    - apt-get update -qq
+    - apt-get install -y -qq xz-utils zerofree e2fsprogs parted wget kpartx util-linux 2>&1 | tail -1
+    - echo "Compression tools installed."
   script:
+    # =====================================================================
+    # Phase 1: Packer build
+    # =====================================================================
     - echo "=== Building CubeOS ${CUBEOS_VERSION} image ==="
     - echo "Base image  ${BASE_IMAGE_URL}"
     - echo "Output      ${IMAGE_NAME}.img"
@@ -128,27 +139,13 @@ build-image:
 
     # Verify output
     - ls -lh ${IMAGE_NAME}.img
-    - echo "=== Image built successfully ==="
-  artifacts:
-    paths:
-      - "${IMAGE_NAME}.img"
-    expire_in: 4 hours
-  timeout: 45m
+    - echo "=== Packer build complete ==="
+    - echo ""
 
-# =============================================================================
-# Stage 3: Shrink, zero, compress, checksum
-# =============================================================================
-compress-image:
-  stage: compress
-  image: ubuntu:24.04
-  needs:
-    - build-image
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq xz-utils e2fsprogs zerofree parted wget kpartx util-linux
-  script:
+    # =====================================================================
+    # Phase 2: Shrink + Compress
+    # =====================================================================
     - echo "=== Compressing ${IMAGE_NAME}.img ==="
-    - ls -lh ${IMAGE_NAME}.img
 
     # ── Step 1: PiShrink — shrink partition, add auto-expand on first boot ──
     - echo "[1/4] Running PiShrink..."
@@ -193,6 +190,7 @@ compress-image:
 
     # ── Step 3: XZ compress ─────────────────────────────────────────────────
     - echo "[3/4] Compressing with xz -6 (multi-threaded)..."
+    - ls -lh ${IMAGE_NAME}.img
     - xz -6 -T0 -v ${IMAGE_NAME}.img
 
     # ── Step 4: Checksums ───────────────────────────────────────────────────
@@ -215,7 +213,7 @@ compress-image:
       - "${IMAGE_NAME}.img.xz.sha256"
       - "${IMAGE_NAME}.img.xz.md5"
     expire_in: 30 days
-  timeout: 30m
+  timeout: 60m
 
 # =============================================================================
 # Optional: Create GitLab Release (triggered by tag push only)
@@ -224,7 +222,7 @@ create-release:
   stage: .post
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   needs:
-    - compress-image
+    - build-image
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
