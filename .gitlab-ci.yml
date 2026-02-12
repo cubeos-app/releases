@@ -35,7 +35,9 @@ variables:
 # =============================================================================
 download-docker-images:
   stage: download
-  image: quay.io/skopeo/stable:latest
+  image:
+    name: quay.io/skopeo/stable:latest
+    entrypoint: [""]
 
   script:
     - mkdir -p docker-images
