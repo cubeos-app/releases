@@ -73,9 +73,22 @@ systemctl enable ssh-keygen.service 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Machine ID — regenerated on first boot for uniqueness
 # ---------------------------------------------------------------------------
+# Writing "uninitialized" is the systemd-recommended approach for images.
+# systemd-machine-id-setup regenerates a proper ID on first boot.
+# Using truncate -s 0 can cause issues with some systemd services.
+# ---------------------------------------------------------------------------
 echo "[07] Clearing machine-id (regenerated on first boot)..."
-truncate -s 0 /etc/machine-id
+echo "uninitialized" > /etc/machine-id
 rm -f /var/lib/dbus/machine-id
+
+# ---------------------------------------------------------------------------
+# Cloud-init — must treat next boot as first boot
+# ---------------------------------------------------------------------------
+# Without this, cloud-init skips growpart (partition expansion), SSH key
+# injection from Pi Imager, and other first-boot modules.
+# ---------------------------------------------------------------------------
+echo "[07] Cleaning cloud-init state..."
+cloud-init clean --logs --seed --machine-id 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Zero free space (dramatically improves xz compression ratio)

@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Alpha Image Builder
+# CubeOS Release Image Builder
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
@@ -7,10 +7,13 @@
 # so this build only writes configuration, compose files, and firstboot scripts.
 # No apt-get, no package downloads — build time is ~3-5 minutes.
 #
-# Base image is built separately by base-image/cubeos-base.pkr.hcl and stored
-# in GitLab's Generic Package Registry.
+# Base image is built separately on nllei01gpu01 (/srv/cubeos-base-builder)
+# and stored in GitLab's Generic Package Registry.
 #
-# Usage (Docker, recommended):
+# Usage (via CI — recommended):
+#   Push to main branch or tag → pipeline auto-triggers
+#
+# Usage (Docker, direct — requires base image at /build/cubeos-base.img.xz):
 #   docker run --rm --privileged -v /dev:/dev -v ${PWD}:/build \
 #     mkaczanowski/packer-builder-arm:latest build /build/packer/cubeos.pkr.hcl
 # =============================================================================
@@ -26,7 +29,7 @@ variable "image_size" {
 }
 
 # Golden base image — Ubuntu 24.04.3 with all packages pre-installed.
-# Override in CI with: -var "base_image_url=..."
+# Override in CI with: -var "base_image_url=file:///build/cubeos-base.img.xz"
 # Accepts local file:// or remote https:// URLs.
 variable "base_image_url" {
   type    = string
@@ -48,7 +51,7 @@ source "arm" "cubeos" {
   file_checksum         = var.base_image_checksum
   file_checksum_type    = var.base_image_checksum_type
   file_target_extension = "xz"
-  file_unarchive_cmd    = ["xz", "--decompress", "$ARCHIVE_PATH"]
+  file_unarchive_cmd    = ["xz", "-T0", "--decompress", "$ARCHIVE_PATH"]
 
   image_build_method = "resize"
   image_path         = "cubeos-${var.version}-arm64.img"

@@ -7,6 +7,14 @@
 #
 # Ubuntu 24.04 uses Netplan + systemd-networkd (NOT dhcpcd like Pi OS).
 # This matches the CubeOS production environment.
+#
+# CRITICAL DESIGN DECISIONS:
+#   - wlan0 is under 'ethernets' (NOT 'wifis') because hostapd manages it
+#     as an AP interface. If placed under 'wifis', Netplan spawns
+#     wpa_supplicant which fights hostapd for control of the interface.
+#   - systemd-resolved stub listener is disabled to prevent port 53
+#     conflict with Pi-hole's dnsmasq.
+#   - IP forwarding is enabled persistently via sysctl for NAT.
 # =============================================================================
 set -euo pipefail
 
@@ -38,6 +46,11 @@ echo "[02]   Conflicting services disabled"
 # ---------------------------------------------------------------------------
 # Netplan — static IP for wlan0 (AP), DHCP for eth0 (upstream)
 # ---------------------------------------------------------------------------
+# IMPORTANT: wlan0 MUST be under 'ethernets', NOT 'wifis'.
+# When under 'wifis', Netplan spawns wpa_supplicant to manage the interface,
+# which fights with hostapd for control. Under 'ethernets', Netplan only
+# assigns the IP address and leaves the radio management to hostapd.
+# ---------------------------------------------------------------------------
 echo "[02] Configuring Netplan..."
 
 # Remove any existing Ubuntu default netplan configs
@@ -49,6 +62,8 @@ cat > /etc/netplan/01-cubeos.yaml << 'NETPLAN'
 # CubeOS Network Configuration (Netplan / systemd-networkd)
 # =============================================================================
 # wlan0: Static IP for Access Point mode (managed by hostapd)
+#        MUST be under 'ethernets' — NOT 'wifis' — to prevent Netplan
+#        from spawning wpa_supplicant which conflicts with hostapd.
 # eth0:  DHCP client for upstream internet (ONLINE_ETH mode)
 # wlan1: Reserved for USB WiFi dongle client (ONLINE_WIFI mode)
 
@@ -61,18 +76,51 @@ network:
       dhcp4: true
       optional: true
 
-  wifis:
+    # wlan0 is intentionally here, not under 'wifis:'
+    # hostapd handles all radio/association; we just need the IP.
     wlan0:
       addresses:
         - 10.42.24.1/24
       # No gateway — this is the AP interface, not a client
       # No DNS — Pi-hole handles DNS on this subnet
-      # No DHCP — static only
       optional: true
 NETPLAN
 
 chmod 600 /etc/netplan/01-cubeos.yaml
 echo "[02]   Netplan configured (wlan0=10.42.24.1, eth0=DHCP)"
+
+# ---------------------------------------------------------------------------
+# systemd-resolved — disable stub listener to free port 53 for Pi-hole
+# ---------------------------------------------------------------------------
+# By default, systemd-resolved listens on 127.0.0.53:53 which blocks
+# Pi-hole's dnsmasq from binding to port 53 on all interfaces.
+# ---------------------------------------------------------------------------
+echo "[02] Disabling systemd-resolved stub listener..."
+mkdir -p /etc/systemd/resolved.conf.d
+
+cat > /etc/systemd/resolved.conf.d/no-stub.conf << 'RESOLVED'
+# CubeOS: Disable stub listener to let Pi-hole handle DNS on port 53
+[Resolve]
+DNSStubListener=no
+RESOLVED
+
+# Point /etc/resolv.conf to the real resolved output (not the stub)
+ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
+
+echo "[02]   systemd-resolved stub listener disabled"
+
+# ---------------------------------------------------------------------------
+# sysctl — enable IP forwarding persistently (required for NAT)
+# ---------------------------------------------------------------------------
+echo "[02] Enabling IP forwarding..."
+
+cat > /etc/sysctl.d/99-cubeos-forwarding.conf << 'SYSCTL'
+# CubeOS: Enable IP forwarding for NAT (ONLINE_ETH / ONLINE_WIFI modes)
+# Also required by Docker for container networking.
+net.ipv4.ip_forward=1
+SYSCTL
+
+echo "[02]   IP forwarding enabled"
 
 # ---------------------------------------------------------------------------
 # hostapd — template config (SSID/key filled on first boot from MAC)
@@ -155,7 +203,8 @@ SUBNET="10.42.24.0/24"
 
 echo "[NAT] Enabling NAT: ${AP_IFACE} -> ${UPSTREAM}"
 
-# Enable IP forwarding (should already be set via sysctl)
+# IP forwarding is already enabled via sysctl.d/99-cubeos-forwarding.conf
+# but ensure it's active right now
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
 # Flush existing NAT rules
@@ -192,18 +241,29 @@ chmod +x /usr/local/lib/cubeos/nat-enable.sh
 chmod +x /usr/local/lib/cubeos/nat-disable.sh
 
 # ---------------------------------------------------------------------------
-# Unblock WiFi radio
+# Unblock WiFi radio — systemd oneshot (replaces deprecated rc.local)
 # ---------------------------------------------------------------------------
-echo "[02] Ensuring WiFi radio is unblocked..."
-rfkill unblock wifi 2>/dev/null || true
+echo "[02] Installing WiFi rfkill unblock service..."
 
-# Ensure rfkill unblock persists on boot
-cat > /etc/rc.local << 'RCLOCAL'
-#!/bin/bash
+cat > /etc/systemd/system/cubeos-rfkill-unblock.service << 'RFKILL'
+[Unit]
+Description=CubeOS WiFi Radio Unblock
+Before=hostapd.service
+After=sys-subsystem-net-devices-wlan0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rfkill unblock wifi
+
+[Install]
+WantedBy=multi-user.target
+RFKILL
+
+systemctl enable cubeos-rfkill-unblock.service 2>/dev/null || true
+
+# Also unblock now during image build (in case hostapd tests are run)
 rfkill unblock wifi 2>/dev/null || true
-exit 0
-RCLOCAL
-chmod +x /etc/rc.local
 
 # ---------------------------------------------------------------------------
 # Cloud-init — configure for Raspberry Pi Imager support

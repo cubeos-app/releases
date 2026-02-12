@@ -162,7 +162,8 @@ echo "${GATEWAY_IP} api.cubeos.cube" >> "$PIHOLE_HOSTS"
 echo "${GATEWAY_IP} npm.cubeos.cube" >> "$PIHOLE_HOSTS"
 
 # Reload Pi-hole DNS if it's running
-docker exec cubeos-pihole pihole restartdns 2>/dev/null || true
+# Pi-hole v6: use 'reloaddns' (not 'restartdns' which is deprecated)
+docker exec cubeos-pihole pihole reloaddns 2>/dev/null || true
 
 # ─── NPM (Docker Compose, host network) ─────────────────────
 echo "[BOOT]   Deploying NPM..."
