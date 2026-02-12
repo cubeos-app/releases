@@ -68,40 +68,40 @@ build-base-image:
     - apt-get update -qq
     - apt-get install -y -qq xz-utils curl 2>&1 | tail -1
   script:
-    - echo "=== Building Golden Base Image ==="
-    - chmod +x base-image/scripts/*.sh
-
-    # Build base image with Packer
-    - packer build base-image/cubeos-base.pkr.hcl
-    - ls -lh ${BASE_IMAGE_NAME}.img
-
-    # Compress
-    - echo "Compressing base image..."
-    - xz -6 -T0 -v ${BASE_IMAGE_NAME}.img
-    - ls -lh ${BASE_IMAGE_NAME}.img.xz
-
-    # Calculate checksum
-    - sha256sum ${BASE_IMAGE_NAME}.img.xz > ${BASE_IMAGE_NAME}.img.xz.sha256
-    - echo "SHA256: $(cat ${BASE_IMAGE_NAME}.img.xz.sha256)"
-
-    # Upload to GitLab Generic Package Registry
-    - echo "Uploading to Package Registry..."
     - |
+      echo "=== Building Golden Base Image ==="
+      chmod +x base-image/scripts/*.sh
+
+      # Build base image with Packer
+      packer build base-image/cubeos-base.pkr.hcl
+      ls -lh ${BASE_IMAGE_NAME}.img
+
+      # Compress
+      echo "Compressing base image..."
+      xz -6 -T0 -v ${BASE_IMAGE_NAME}.img
+      ls -lh ${BASE_IMAGE_NAME}.img.xz
+
+      # Calculate checksum
+      sha256sum ${BASE_IMAGE_NAME}.img.xz > ${BASE_IMAGE_NAME}.img.xz.sha256
+      echo "SHA256: $(cat ${BASE_IMAGE_NAME}.img.xz.sha256)"
+
+      # Upload to GitLab Generic Package Registry
+      echo "Uploading to Package Registry..."
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${BASE_IMAGE_NAME}.img.xz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
-    - |
+
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${BASE_IMAGE_NAME}.img.xz.sha256 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz.sha256"
 
-    - echo ""
-    - echo "============================================================"
-    - echo "  Golden Base Image uploaded to Package Registry"
-    - echo "  Package: cubeos-base/${BASE_VERSION}"
-    - echo "  File:    ${BASE_IMAGE_NAME}.img.xz"
-    - echo "  Size:    $(du -h ${BASE_IMAGE_NAME}.img.xz | cut -f1)"
-    - echo "============================================================"
+      echo ""
+      echo "============================================================"
+      echo "  Golden Base Image uploaded to Package Registry"
+      echo "  Package: cubeos-base/${BASE_VERSION}"
+      echo "  File:    ${BASE_IMAGE_NAME}.img.xz"
+      echo "  Size:    $(du -h ${BASE_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "============================================================"
   timeout: 45m
 
 # =============================================================================
