@@ -3,20 +3,13 @@
 # =============================================================================
 # Builds a flashable ARM64 image from the pre-built golden base image.
 #
-# ARCHITECTURE:
-#   Golden base image is built EXTERNALLY on nllei01gpu01 using the
-#   cubeos-base-builder tooling and uploaded to GitLab Package Registry.
-#   This pipeline downloads ARM64 Docker images via skopeo, applies
-#   configuration via Packer, then shrinks/compresses/uploads.
-#
 # SINGLE JOB: Everything runs in one container to avoid transferring
-#   1.5GB+ of Docker image tarballs as CI artifacts between stages.
+# 1.5GB+ of Docker image tarballs as CI artifacts between stages.
 #
 # PREREQUISITES:
-#   1. Golden base image in Package Registry (built by /srv/cubeos-base-builder
-#      on nllei01gpu01 — see base-image/README.md)
+#   1. Golden base image in Package Registry (cubeos-base/1.0.0)
 #   2. CI variables: GHCR_USER, GHCR_TOKEN (for private GHCR images)
-#   3. CI variable: GITHUB_TOKEN (for GitHub mirror release, optional)
+#   3. CI variable: GITHUB_TOKEN (optional, for GitHub mirror release)
 #
 # TIME: ~15-20 minutes total
 # =============================================================================
@@ -33,7 +26,7 @@ variables:
   GITHUB_REPO: "cubeos-app/releases"
 
 # =============================================================================
-# Build Release Image (single job — download, build, compress, upload)
+# Build Release Image
 # =============================================================================
 build-image:
   stage: build
@@ -45,50 +38,81 @@ build-image:
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
-    # =====================================================================
-    # Phase 0: Setup — validate, install tools, download inputs
-    # =====================================================================
     - |
+      set -e
+      echo "============================================================"
+      echo "  CubeOS Release Pipeline — Phase 0: Setup"
+      echo "============================================================"
+
+      # Validate CI variables
       if [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
         echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
         echo "Set them in: Settings > CI/CD > Variables"
         exit 1
       fi
       echo "GHCR auth: ${GHCR_USER}"
-    - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
-    - |
+
+      # QEMU binfmt
+      mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
       if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
         echo "ERROR: QEMU aarch64 binfmt not registered on host!"
-        echo "Fix: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes"
         exit 1
       fi
       echo "QEMU aarch64 binfmt: OK"
-    - echo "Installing tools..."
-    - apt-get update -q 2>&1 | tail -3
-    - apt-get install -y -q skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq 2>&1 | tail -5
-    - echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
-    - mkdir -p docker-images
-    - echo ""
-    - echo "============================================================"
-    - echo "  Downloading ARM64 Docker images"
-    - echo "============================================================"
-    - echo "[1/5] Pi-hole..."
-    - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/pihole/pihole:latest docker-archive:docker-images/pihole.tar:pihole/pihole:latest
-    - echo "[2/5] Nginx Proxy Manager..."
-    - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/jc21/nginx-proxy-manager:latest docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
-    - echo "[3/5] CubeOS API..."
-    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/api:latest docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
-    - echo "[4/5] CubeOS HAL..."
-    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/hal:latest docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
-    - echo "[5/5] CubeOS Dashboard..."
-    - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/dashboard:latest docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
-    - echo ""
-    - ls -lh docker-images/
-    - du -sh docker-images/
-    - echo "Docker images: OK"
-    - echo ""
-    - echo "Downloading golden base image from Package Registry..."
+
+      # Install tools
+      echo "Installing tools..."
+      apt-get update -q 2>&1 | tail -3
+      apt-get install -y -q skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq 2>&1 | tail -5
+      echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
     - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0b: Download ARM64 Docker images"
+      echo "============================================================"
+
+      mkdir -p docker-images
+
+      echo "[1/5] Pi-hole..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/pihole/pihole:latest \
+        docker-archive:docker-images/pihole.tar:pihole/pihole:latest
+
+      echo "[2/5] Nginx Proxy Manager..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/jc21/nginx-proxy-manager:latest \
+        docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
+
+      echo "[3/5] CubeOS API..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/api:latest \
+        docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
+
+      echo "[4/5] CubeOS HAL..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/hal:latest \
+        docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
+
+      echo "[5/5] CubeOS Dashboard..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/dashboard:latest \
+        docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
+
+      echo ""
+      ls -lh docker-images/
+      du -sh docker-images/
+      echo "Docker images: OK"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0c: Download golden base image"
+      echo "============================================================"
+
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            -o cubeos-base.img.xz \
            --connect-timeout 30 \
@@ -96,55 +120,43 @@ build-image:
            --retry 3 \
            --retry-delay 10 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
-    - ls -lh cubeos-base.img.xz
-    - echo "Base image: OK"
-
-    # =====================================================================
-    # Phase 1: Packer build (config only — packages already in base)
-    # =====================================================================
-    - echo ""
-    - echo "============================================================"
-    - echo "  Building CubeOS ${CUBEOS_VERSION} from golden base"
-    - echo "  Started: $(date -u +%H:%M:%S)"
-    - echo "============================================================"
-    - chmod +x packer/scripts/*.sh firstboot/*.sh
-
+      ls -lh cubeos-base.img.xz
+      echo "Base image: OK"
     - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1: Packer build"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      chmod +x packer/scripts/*.sh firstboot/*.sh
+
       packer build \
         -var "version=${CUBEOS_VERSION}" \
         -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
         -var "base_image_checksum_type=none" \
         packer/cubeos.pkr.hcl
-    - ls -lh ${IMAGE_NAME}.img
-    - echo "Packer build: OK ($(date -u +%H:%M:%S))"
-    - echo ""
 
-    # =====================================================================
-    # Phase 2: Shrink + Compress
-    # =====================================================================
-    - echo "============================================================"
-    - echo "  Compressing ${IMAGE_NAME}.img"
-    - echo "============================================================"
-
-    # PiShrink (skip auto-expand — cloud-init growpart handles it)
-    - echo "[1/5] Running PiShrink..."
-    - wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping"
+      ls -lh ${IMAGE_NAME}.img
+      echo "Packer build: OK ($(date -u +%H:%M:%S))"
     - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 2: Shrink + Compress"
+      echo "============================================================"
+
+      # PiShrink
+      echo "[1/5] Running PiShrink..."
+      wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping"
       if [ -f pishrink.sh ]; then
         chmod +x pishrink.sh
         bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN PiShrink failed (non-fatal)"
       fi
 
-    # Zerofree (improves xz compression ratio significantly)
-    - echo "[2/5] Running zerofree..."
-    - |
-      LOOPDEV=""
-      cleanup_loop() {
-        if [ -n "$LOOPDEV" ]; then
-          losetup -d "$LOOPDEV" 2>/dev/null || true
-        fi
-      }
-      trap cleanup_loop EXIT
+      # Zerofree
+      echo "[2/5] Running zerofree..."
       LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
       echo "Loop device: $LOOPDEV"
       sleep 2
@@ -154,54 +166,53 @@ build-image:
         zerofree -v "$ROOT_PART" || echo "WARN zerofree failed (non-fatal)"
       fi
       losetup -d "$LOOPDEV"
-      LOOPDEV=""
 
-    # XZ compress
-    - echo "[3/5] Compressing with xz -6 (multi-threaded)..."
-    - ls -lh ${IMAGE_NAME}.img
-    - xz -6 -T0 -v ${IMAGE_NAME}.img
+      # XZ compress
+      echo "[3/5] Compressing with xz -6 (multi-threaded)..."
+      ls -lh ${IMAGE_NAME}.img
+      xz -6 -T0 -v ${IMAGE_NAME}.img
 
-    # Checksums
-    - echo "[4/5] Calculating checksums..."
-    - sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
-    - md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
-
-    # =====================================================================
-    # Phase 3: Upload to GitLab Package Registry
-    # =====================================================================
-    - echo "[5/5] Uploading to GitLab Package Registry..."
+      # Checksums
+      echo "[4/5] Calculating checksums..."
+      sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
+      md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
     - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 3: Upload to GitLab Package Registry"
+      echo "============================================================"
+
+      echo "[5/5] Uploading..."
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${IMAGE_NAME}.img.xz \
            --connect-timeout 30 \
            --max-time 1800 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
-    - echo "  Image uploaded."
-    - |
+      echo "  Image uploaded."
+
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${IMAGE_NAME}.img.xz.sha256 \
            --connect-timeout 30 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
-    - echo "  SHA256 uploaded."
-    - |
+      echo "  SHA256 uploaded."
+
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${IMAGE_NAME}.img.xz.md5 \
            --connect-timeout 30 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.md5"
-    - echo "  MD5 uploaded."
+      echo "  MD5 uploaded."
 
-    # Summary
-    - echo ""
-    - echo "============================================================"
-    - echo "  CubeOS Release Image — Build Complete"
-    - echo "============================================================"
-    - echo "  Version   ${CUBEOS_VERSION}"
-    - echo "  File      ${IMAGE_NAME}.img.xz"
-    - echo "  Size      $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
-    - echo "  SHA256    $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
-    - echo "  Base      cubeos-base/${BASE_VERSION}"
-    - echo "  Registry  ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages"
-    - echo "============================================================"
+      echo ""
+      echo "============================================================"
+      echo "  CubeOS Release Image — Build Complete"
+      echo "============================================================"
+      echo "  Version   ${CUBEOS_VERSION}"
+      echo "  File      ${IMAGE_NAME}.img.xz"
+      echo "  Size      $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+      echo "  SHA256    $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
+      echo "  Base      cubeos-base/${BASE_VERSION}"
+      echo "============================================================"
   artifacts:
     paths:
       - "${IMAGE_NAME}.img.xz.sha256"
@@ -210,7 +221,7 @@ build-image:
   timeout: 60m
 
 # =============================================================================
-# Create GitLab Release (triggered by tag push only)
+# Create GitLab Release (tag push only)
 # =============================================================================
 create-gitlab-release:
   stage: release
@@ -249,11 +260,7 @@ create-gitlab-release:
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
 
 # =============================================================================
-# Create GitHub Release (mirror — triggered by tag push only)
-# =============================================================================
-# Requires CI variable: GITHUB_TOKEN (personal access token with repo scope)
-# The image is NOT re-uploaded to GitHub (1.4GB+). The release body links
-# directly to the GitLab Package Registry download URL.
+# Create GitHub Release (mirror — tag push only)
 # =============================================================================
 create-github-release:
   stage: release
@@ -263,47 +270,36 @@ create-github-release:
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
-    - apk add --no-cache curl jq
     - |
+      apk add --no-cache curl jq
+
       if [ -z "${GITHUB_TOKEN:-}" ]; then
         echo "WARN: GITHUB_TOKEN not set — skipping GitHub release."
-        echo "Set it in: Settings > CI/CD > Variables"
         exit 0
       fi
 
-    - CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
-    - DOWNLOAD_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
-    - CHECKSUM_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+      CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
+      DOWNLOAD_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+      CHECKSUM_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
 
-    - echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
-    - |
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
       Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
 
       ### Download
-
       | File | Link |
       |------|------|
       | Image | [${IMAGE_NAME}.img.xz](${DOWNLOAD_URL}) |
       | SHA256 | [${IMAGE_NAME}.img.xz.sha256](${CHECKSUM_URL}) |
 
-      \`\`\`
-      SHA256: ${CHECKSUM}
-      \`\`\`
+      SHA256: \`${CHECKSUM}\`
 
       ### Quick Start
       1. Flash the .img.xz to SD card using Raspberry Pi Imager
-      2. Boot the Pi
-      3. Connect to WiFi AP (check console output for SSID and password)
-      4. Open http://cubeos.cube in your browser
-      5. Complete the setup wizard
+      2. Boot the Pi — connect to WiFi AP shown on console
+      3. Open http://cubeos.cube and complete setup wizard"
 
-      ### Default Credentials
-      - Dashboard: admin / cubeos
-      - SSH: key-only (configure in wizard)"
-
-    - |
+      echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
       RESPONSE=$(curl -s -w "\n%{http_code}" \
         -X POST \
         -H "Authorization: token ${GITHUB_TOKEN}" \
@@ -315,14 +311,15 @@ create-github-release:
           --arg body "${RELEASE_BODY}" \
           '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}'
         )")
+
       HTTP_CODE=$(echo "$RESPONSE" | tail -1)
       RESP_BODY=$(echo "$RESPONSE" | sed '$d')
-      echo "GitHub API response: HTTP ${HTTP_CODE}"
+      echo "GitHub API: HTTP ${HTTP_CODE}"
+
       if [ "$HTTP_CODE" = "201" ]; then
-        RELEASE_URL=$(echo "$RESP_BODY" | jq -r '.html_url')
-        echo "  GitHub release created: ${RELEASE_URL}"
+        echo "  Release created: $(echo "$RESP_BODY" | jq -r '.html_url')"
       elif [ "$HTTP_CODE" = "422" ]; then
-        echo "  Release already exists for ${CI_COMMIT_TAG} (HTTP 422) — skipping."
+        echo "  Release already exists — skipping."
       else
         echo "  ERROR: Unexpected response."
         echo "$RESP_BODY" | jq . 2>/dev/null || echo "$RESP_BODY"
