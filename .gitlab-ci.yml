@@ -1,126 +1,220 @@
-# CubeOS Release Pipeline
-# Builds SD card images for Raspberry Pi 5
+# =============================================================================
+# CubeOS Release Image Pipeline
+# =============================================================================
+# Builds a flashable ARM64 SD card image for Raspberry Pi 4/5.
 #
-# HOW TO USE:
-# -----------
-# Option 1: Manual trigger
-#   1. Go to GitLab → CI/CD → Pipelines
-#   2. Click "Run pipeline"
-#   3. Set VERSION variable (e.g., "0.1.0")
+# Stages:
+#   1. download — Fetch ARM64 Docker images via skopeo (native x86 speed)
+#   2. build    — Packer builds the image under QEMU ARM64 emulation
+#   3. compress — PiShrink + zerofree + xz compression + checksums
 #
-# Option 2: Create a git tag
-#   git tag -a v0.1.0 -m "Release 0.1.0"
-#   git push origin v0.1.0
+# Triggers:
+#   - Manual trigger from GitLab UI (default)
+#   - Push to tag matching v*
+#
+# Runner requirements:
+#   - Self-hosted runner with privileged Docker executor
+#   - Tag: "privileged" or "image-builder"
+#   - qemu-user-static registered on host (binfmt_misc)
+# =============================================================================
 
 stages:
-  - prepare
+  - download
   - build
   - compress
-  - release
 
 variables:
-  VERSION: "0.1.0-dev"
-  IMAGE_NAME: "cubeos-${VERSION}-pi5"
-  UBUNTU_IMAGE_URL: "https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.1-preinstalled-server-arm64+raspi.img.xz"
+  CUBEOS_VERSION: "0.1.0-alpha"
+  IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
+  # Pi OS Lite Bookworm ARM64 base image
+  BASE_IMAGE_URL: "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz"
+  BASE_IMAGE_CHECKSUM_URL: "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz.sha256"
 
-workflow:
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+/
-      variables:
-        VERSION: $CI_COMMIT_TAG
-    - if: $CI_PIPELINE_SOURCE == "web"
-    - when: never
-
-setup-qemu:
-  stage: prepare
-  image: docker:24-cli
+# =============================================================================
+# Stage 1: Download ARM64 Docker images at native x86 speed
+# =============================================================================
+download-docker-images:
+  stage: download
+  image: quay.io/skopeo/stable:latest
   tags:
-    - multiarch
-  services:
-    - docker:24-dind
+    - privileged
   script:
-    - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+    - mkdir -p docker-images
 
-build-image:
-  stage: build
-  image: mkaczanowski/packer-builder-arm:latest
-  tags:
-    - multiarch
-  needs:
-    - setup-qemu
-  before_script:
-    - mkdir -p files/coreapps files/scripts
-    - git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/coreapps.git /tmp/coreapps || true
-    - cp -r /tmp/coreapps/*/ files/coreapps/ 2>/dev/null || true
-    - cp /tmp/coreapps/*.sh files/coreapps/ 2>/dev/null || true
-    - git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/scripts.git /tmp/scripts || true
-    - cp /tmp/scripts/*.sh files/scripts/ 2>/dev/null || true
-  script:
-    - packer init cubeos.pkr.hcl
-    - packer build -var "cubeos_version=${VERSION}" -var "ubuntu_image_url=${UBUNTU_IMAGE_URL}" cubeos.pkr.hcl
-    - mv output-cubeos/image "${IMAGE_NAME}.img"
-    - ls -lh "${IMAGE_NAME}.img"
+    # CubeOS core images (ARM64)
+    - echo "Downloading Pi-hole..."
+    - skopeo copy --override-arch arm64 --override-os linux
+        docker://docker.io/pihole/pihole:latest
+        docker-archive:docker-images/pihole.tar:pihole/pihole:latest
+
+    - echo "Downloading NPM..."
+    - skopeo copy --override-arch arm64 --override-os linux
+        docker://docker.io/jc21/nginx-proxy-manager:latest
+        docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
+
+    - echo "Downloading CubeOS API..."
+    - skopeo copy --override-arch arm64 --override-os linux
+        docker://ghcr.io/cubeos-app/cubeos-api:latest
+        docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/cubeos-api:latest
+
+    - echo "Downloading CubeOS HAL..."
+    - skopeo copy --override-arch arm64 --override-os linux
+        docker://ghcr.io/cubeos-app/cubeos-hal:latest
+        docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/cubeos-hal:latest
+
+    - echo "Downloading CubeOS Dashboard..."
+    - skopeo copy --override-arch arm64 --override-os linux
+        docker://ghcr.io/cubeos-app/cubeos-dashboard:latest
+        docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/cubeos-dashboard:latest
+
+    - echo "Download summary:"
+    - ls -lh docker-images/
+    - du -sh docker-images/
+
   artifacts:
     paths:
-      - "*.img"
-    expire_in: 2 hours
-  timeout: 2 hours
+      - docker-images/
+    expire_in: 4 hours
 
-shrink-image:
-  stage: compress
-  image: debian:bookworm
+# =============================================================================
+# Stage 2: Build image with Packer under QEMU emulation
+# =============================================================================
+build-image:
+  stage: build
+  image:
+    name: mkaczanowski/packer-builder-arm:latest
+    entrypoint: [""]
   tags:
-    - multiarch
+    - privileged
+  needs:
+    - download-docker-images
+  before_script:
+    # Register QEMU binfmt handlers (in case not registered on host)
+    - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes 2>/dev/null || true
+  script:
+    - echo "Building CubeOS ${CUBEOS_VERSION} image..."
+    - echo "Base image - ${BASE_IMAGE_URL}"
+
+    # Make provisioning scripts executable
+    - chmod +x packer/scripts/*.sh
+    - chmod +x firstboot/*.sh
+
+    # Build the image
+    - packer build
+        -var "version=${CUBEOS_VERSION}"
+        -var "base_image_url=${BASE_IMAGE_URL}"
+        -var "base_image_checksum=${BASE_IMAGE_CHECKSUM_URL}"
+        packer/cubeos.pkr.hcl
+
+    - echo "Image built:"
+    - ls -lh ${IMAGE_NAME}.img
+
+  artifacts:
+    paths:
+      - "${IMAGE_NAME}.img"
+    expire_in: 4 hours
+
+# =============================================================================
+# Stage 3: Shrink, zero, compress, checksum
+# =============================================================================
+compress-image:
+  stage: compress
+  image: ubuntu:24.04
+  tags:
+    - privileged
   needs:
     - build-image
   before_script:
-    - apt-get update && apt-get install -y wget parted e2fsprogs xz-utils
-    - wget -q https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh -O /usr/local/bin/pishrink
-    - chmod +x /usr/local/bin/pishrink
+    - apt-get update -qq
+    - apt-get install -y -qq xz-utils e2fsprogs zerofree parted wget kpartx
+    # Install PiShrink
+    - wget -q https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
+    - chmod +x pishrink.sh
   script:
-    - /usr/local/bin/pishrink -s "${IMAGE_NAME}.img" || true
-    - xz -T0 -6 -v "${IMAGE_NAME}.img"
-    - sha256sum "${IMAGE_NAME}.img.xz" > "${IMAGE_NAME}.img.xz.sha256"
-    - ls -lh "${IMAGE_NAME}.img.xz"
+    - echo "Compressing ${IMAGE_NAME}.img..."
+
+    # Step 1: PiShrink — shrink partition to minimum, enable auto-expand on boot
+    - echo "Running PiShrink..."
+    - ./pishrink.sh -s ${IMAGE_NAME}.img || true
+
+    # Step 2: Zerofree — zero unused blocks for better compression
+    - echo "Running zerofree..."
+    - |
+      LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+      # Find the root partition (partition 2)
+      ROOT_PART="${LOOPDEV}p2"
+      if [ -b "$ROOT_PART" ]; then
+        e2fsck -fy "$ROOT_PART" || true
+        zerofree "$ROOT_PART" || true
+      fi
+      losetup -d "$LOOPDEV"
+
+    # Step 3: XZ compress
+    - echo "Compressing with xz (this takes 5-10 minutes)..."
+    - xz -6 -T0 -v ${IMAGE_NAME}.img
+
+    # Step 4: Checksums
+    - echo "Calculating checksums..."
+    - sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
+    - md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
+
+    # Summary
+    - echo ""
+    - echo "============================================================"
+    - echo "  CubeOS Release Artifact"
+    - echo "============================================================"
+    - echo "  File    - ${IMAGE_NAME}.img.xz"
+    - echo "  Size    - $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+    - echo "  SHA256  - $(cat ${IMAGE_NAME}.img.xz.sha256 | cut -d' ' -f1)"
+    - echo "============================================================"
+
   artifacts:
     paths:
-      - "*.img.xz"
-      - "*.sha256"
-    expire_in: 1 week
-  timeout: 1 hour
+      - "${IMAGE_NAME}.img.xz"
+      - "${IMAGE_NAME}.img.xz.sha256"
+      - "${IMAGE_NAME}.img.xz.md5"
+    expire_in: 30 days
 
-release-github:
-  stage: release
-  image: alpine:latest
+# =============================================================================
+# Optional: Create GitLab Release (on tag push only)
+# =============================================================================
+create-release:
+  stage: .post
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
   tags:
-    - multiarch
+    - privileged
   needs:
-    - shrink-image
-  before_script:
-    - apk add --no-cache curl github-cli
+    - compress-image
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
-    - echo "${GHCR_TOKEN}" | gh auth login --with-token
-    - echo "Creating release ${VERSION}..."
-    - gh release create "${VERSION}" --repo cubeos-app/releases --title "CubeOS ${VERSION}" --notes "CubeOS ${VERSION} for Raspberry Pi 5" "${IMAGE_NAME}.img.xz" "${IMAGE_NAME}.img.xz.sha256" || true
-    - gh release upload "${VERSION}" --repo cubeos-app/releases --clobber "${IMAGE_NAME}.img.xz" "${IMAGE_NAME}.img.xz.sha256" || true
-    - echo "Done - https://github.com/cubeos-app/releases/releases/tag/${VERSION}"
+    - echo "Creating release for ${CI_COMMIT_TAG}..."
+  release:
+    tag_name: "${CI_COMMIT_TAG}"
+    name: "CubeOS ${CI_COMMIT_TAG}"
+    description: |
+      ## CubeOS ${CI_COMMIT_TAG}
 
-update-manifest:
-  stage: release
-  image: alpine:latest
-  tags:
-    - multiarch
-  needs:
-    - shrink-image
-  script:
-    - apk add --no-cache coreutils
-    - SIZE=$(stat -c%s "${IMAGE_NAME}.img.xz")
-    - SHA256=$(cat "${IMAGE_NAME}.img.xz.sha256" | cut -d' ' -f1)
-    - DATE=$(date +%Y-%m-%d)
-    - echo "{\"os_list\":[{\"name\":\"CubeOS ${VERSION}\",\"description\":\"CubeOS for Raspberry Pi 5\",\"url\":\"https://github.com/cubeos-app/releases/releases/download/${VERSION}/${IMAGE_NAME}.img.xz\",\"extract_sha256\":\"${SHA256}\",\"image_download_size\":${SIZE},\"release_date\":\"${DATE}\",\"init_format\":\"cloudinit\",\"devices\":[\"pi5-64bit\",\"pi4-64bit\"]}]}" > os_list.json
-    - cat os_list.json
-  artifacts:
-    paths:
-      - os_list.json
-    expire_in: 1 week
-  allow_failure: true
+      Flashable ARM64 image for Raspberry Pi 4/5.
+
+      ### Quick Start
+      1. Flash `${IMAGE_NAME}.img.xz` to SD card using Raspberry Pi Imager
+      2. Boot the Pi
+      3. Connect to WiFi AP: `CubeOS-XXXXXX` (check console for password)
+      4. Open http://cubeos.cube in your browser
+      5. Complete the setup wizard
+
+      ### Default Credentials
+      - Dashboard: admin / cubeos
+      - SSH: key-only (configure in wizard)
+
+      ### Checksums
+      ```
+      SHA256: $(cat ${IMAGE_NAME}.img.xz.sha256 | cut -d' ' -f1)
+      ```
+    assets:
+      links:
+        - name: "${IMAGE_NAME}.img.xz"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+        - name: "SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"

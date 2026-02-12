@@ -1,19 +1,14 @@
-# Build outputs
+# Build artifacts
 *.img
 *.img.xz
-*.img.gz
-*.sha256
-output-*/
+*.img.xz.sha256
+*.img.xz.md5
+
+# Docker image tarballs (downloaded at build time)
+docker-images/
 
 # Packer cache
 packer_cache/
-.packer.d/
-
-# Temporary files
-/tmp/
-files/coreapps/
-files/scripts/
-!files/README.md
 
 # OS files
 .DS_Store
