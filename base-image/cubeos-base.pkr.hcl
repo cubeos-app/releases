@@ -33,7 +33,7 @@ variable "base_image_url" {
 
 variable "base_image_checksum" {
   type    = string
-  default = "sha256:9bb1799cee8965e6df0234c1c879dd35be1d87afe39b84951f278b6bd0433e56"
+  default = "9bb1799cee8965e6df0234c1c879dd35be1d87afe39b84951f278b6bd0433e56"
 }
 
 source "arm" "cubeos-base" {
