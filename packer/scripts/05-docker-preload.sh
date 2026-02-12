@@ -29,36 +29,20 @@ echo "[05] Found Docker image tarballs:"
 ls -lh "$CACHE_DIR"/*.tar 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Create swap file matching device RAM
+# Configure swap (file created at RUNTIME, not build-time)
 # ---------------------------------------------------------------------------
-echo "[05] Creating swap file (matching device RAM)..."
-
+# The swap file cannot be created during Packer build because /proc/meminfo
+# shows the build host's RAM (e.g. 32GB), not the target Pi's RAM (2-8GB).
+# Creating a 4GB swap inside an 8GB image fills the disk.
+#
+# Instead: the runtime preload script creates the swap file on first boot
+# using the actual device RAM. We just add the fstab entry here.
+# ---------------------------------------------------------------------------
 SWAP_FILE="/var/swap.cubeos"
-# Detect RAM in MB, round to nearest 1024 boundary for clean swap size
-RAM_MB=$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo)
-# Note: during Packer/QEMU build, /proc/meminfo shows host RAM.
-# The runtime preload script re-checks and resizes if needed.
-# Default to 2048 if detection fails.
-SWAP_MB=${RAM_MB:-2048}
-# Clamp: minimum 1024MB, maximum 4096MB
-[ "$SWAP_MB" -lt 1024 ] 2>/dev/null && SWAP_MB=1024
-[ "$SWAP_MB" -gt 4096 ] 2>/dev/null && SWAP_MB=4096
 
-if [ ! -f "$SWAP_FILE" ]; then
-    echo "[05]   Detected RAM: ${RAM_MB}MB → creating ${SWAP_MB}MB swap..."
-    dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_MB" status=progress 2>/dev/null || \
-        dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_MB"
-    chmod 600 "$SWAP_FILE"
-    mkswap "$SWAP_FILE"
-    echo "[05]   Created ${SWAP_MB}MB swap file at $SWAP_FILE"
-else
-    echo "[05]   Swap file already exists ($(du -h $SWAP_FILE | cut -f1))"
-fi
-
-# Add to fstab if not already there
 if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
-    echo "$SWAP_FILE none swap sw 0 0" >> /etc/fstab
-    echo "[05]   Added swap to /etc/fstab"
+    echo "$SWAP_FILE none swap sw,nofail 0 0" >> /etc/fstab
+    echo "[05] Added swap to /etc/fstab (file created at first boot)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -99,7 +83,7 @@ DESIRED_MB=${RAM_MB:-2048}
 [ "$DESIRED_MB" -gt 4096 ] 2>/dev/null && DESIRED_MB=4096
 echo "Device RAM: ${RAM_MB}MB — desired swap: ${DESIRED_MB}MB"
 
-# Check if existing swap matches; recreate if wrong size (build-time used host RAM)
+# Create or resize swap file to match device RAM
 if [ -f "$SWAP_FILE" ]; then
     CURRENT_MB=$(( $(stat -c%s "$SWAP_FILE" 2>/dev/null || echo 0) / 1048576 ))
     if [ "$CURRENT_MB" -ne "$DESIRED_MB" ]; then
@@ -110,6 +94,12 @@ if [ -f "$SWAP_FILE" ]; then
         mkswap "$SWAP_FILE" >/dev/null
         echo "  Swap resized to ${DESIRED_MB}MB."
     fi
+else
+    echo "Creating ${DESIRED_MB}MB swap file (matching ${RAM_MB}MB RAM)..."
+    dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$DESIRED_MB" 2>/dev/null
+    chmod 600 "$SWAP_FILE"
+    mkswap "$SWAP_FILE" >/dev/null
+    echo "  Swap file created (${DESIRED_MB}MB)."
 fi
 
 if [ -f "$SWAP_FILE" ] && ! swapon --show | grep -q "$SWAP_FILE"; then
@@ -230,4 +220,4 @@ SYSTEMD
 systemctl enable cubeos-docker-preload.service 2>/dev/null || true
 
 echo "[05] Docker preload service installed (timeout=infinity, size-ordered loading)."
-echo "[05] Swap file created matching device RAM (min 1GB, max 4GB)."
+echo "[05] Swap configured in fstab (file created at first boot matching device RAM)."
