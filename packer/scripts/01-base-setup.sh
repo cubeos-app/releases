@@ -16,9 +16,9 @@ echo "=== [01] Base System Setup ==="
 # ---------------------------------------------------------------------------
 echo "[01] Installing system packages..."
 apt-get update -qq
-apt-get upgrade -y -qq
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y -qq
 
-apt-get install -y -qq --no-install-recommends \
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install -y -qq --no-install-recommends \
     jq \
     curl \
     wget \
