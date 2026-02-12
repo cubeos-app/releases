@@ -25,6 +25,28 @@ echo "============================================================"
 echo ""
 
 # ---------------------------------------------------------------------------
+# Fix DNS resolution in QEMU chroot
+# ---------------------------------------------------------------------------
+# Ubuntu's /etc/resolv.conf is a symlink to systemd-resolved's stub, which
+# doesn't exist in the packer-builder-arm chroot. Replace it with a direct
+# resolver config. We save the original to restore later.
+echo "[BASE] Fixing DNS resolution for chroot..."
+
+if [ -L /etc/resolv.conf ] || ! grep -q "nameserver" /etc/resolv.conf 2>/dev/null; then
+    # Save original symlink target for restoration
+    ORIGINAL_RESOLV=$(readlink -f /etc/resolv.conf 2>/dev/null || echo "")
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf << 'RESOLV'
+# Temporary DNS config for QEMU chroot build
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+RESOLV
+    echo "[BASE]   resolv.conf set to public DNS (was: ${ORIGINAL_RESOLV:-empty})"
+else
+    echo "[BASE]   resolv.conf already has nameservers, skipping"
+fi
+
+# ---------------------------------------------------------------------------
 # QEMU py3compile workaround
 # ---------------------------------------------------------------------------
 # Under QEMU user-mode emulation, py3compile can SIGSEGV during package
@@ -261,6 +283,14 @@ if [ -f /usr/bin/py3clean.real ]; then
     mv /usr/bin/py3clean.real /usr/bin/py3clean
 fi
 echo "[BASE]   py3compile restored"
+
+# ---------------------------------------------------------------------------
+# Restore resolv.conf for runtime (systemd-resolved)
+# ---------------------------------------------------------------------------
+echo "[BASE] Restoring resolv.conf symlink..."
+rm -f /etc/resolv.conf
+ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+echo "[BASE]   resolv.conf restored to systemd-resolved stub"
 
 # ---------------------------------------------------------------------------
 # Summary
