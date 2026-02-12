@@ -271,6 +271,7 @@ create-github-release:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
     - |
+      set -e
       apk add --no-cache curl jq
 
       if [ -z "${GHCR_TOKEN:-}" ]; then
@@ -279,25 +280,41 @@ create-github-release:
       fi
 
       CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
-      DOWNLOAD_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
-      CHECKSUM_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+      IMAGE_FILE="${IMAGE_NAME}.img.xz"
+      CHECKSUM_FILE="${IMAGE_NAME}.img.xz.sha256"
 
+      # --- Step 1: Download image from GitLab Package Registry ---
+      echo "============================================================"
+      echo "  Step 1: Download image from GitLab Package Registry"
+      echo "============================================================"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${IMAGE_FILE}" \
+           --connect-timeout 30 \
+           --max-time 3600 \
+           --retry 3 \
+           --retry-delay 10 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}"
+      ls -lh "${IMAGE_FILE}"
+
+      # --- Step 2: Create GitHub Release ---
+      echo "============================================================"
+      echo "  Step 2: Create GitHub Release"
+      echo "============================================================"
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
       Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
 
-      ### Download
-      | File | Link |
-      |------|------|
-      | Image | [${IMAGE_NAME}.img.xz](${DOWNLOAD_URL}) |
-      | SHA256 | [${IMAGE_NAME}.img.xz.sha256](${CHECKSUM_URL}) |
-
-      SHA256: \`${CHECKSUM}\`
+      **SHA256:** \`${CHECKSUM}\`
 
       ### Quick Start
-      1. Flash the .img.xz to SD card using Raspberry Pi Imager
-      2. Boot the Pi — connect to WiFi AP shown on console
-      3. Open http://cubeos.cube and complete setup wizard"
+      1. Download \`${IMAGE_FILE}\` from Assets below
+      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) → Use custom
+      3. Boot the Pi — connect to the CubeOS WiFi AP
+      4. Open http://cubeos.cube and complete setup wizard
+
+      ### Default Credentials
+      - **SSH:** cubeos / cubeos
+      - **Dashboard:** admin / admin"
 
       echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
       RESPONSE=$(curl -s -w "\n%{http_code}" \
@@ -309,7 +326,7 @@ create-github-release:
           --arg tag "${CI_COMMIT_TAG}" \
           --arg name "CubeOS ${CI_COMMIT_TAG}" \
           --arg body "${RELEASE_BODY}" \
-          '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}'
+          '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: true}'
         )")
 
       HTTP_CODE=$(echo "$RESPONSE" | tail -1)
@@ -317,12 +334,66 @@ create-github-release:
       echo "GitHub API: HTTP ${HTTP_CODE}"
 
       if [ "$HTTP_CODE" = "201" ]; then
-        echo "  Release created: $(echo "$RESP_BODY" | jq -r '.html_url')"
+        RELEASE_ID=$(echo "$RESP_BODY" | jq -r '.id')
+        UPLOAD_URL=$(echo "$RESP_BODY" | jq -r '.upload_url' | sed 's/{?name,label}//')
+        echo "  Release created (ID: ${RELEASE_ID})"
       elif [ "$HTTP_CODE" = "422" ]; then
-        echo "  Release already exists — skipping."
+        echo "  Release already exists — fetching existing release..."
+        EXISTING=$(curl -s \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CI_COMMIT_TAG}")
+        RELEASE_ID=$(echo "$EXISTING" | jq -r '.id')
+        UPLOAD_URL=$(echo "$EXISTING" | jq -r '.upload_url' | sed 's/{?name,label}//')
+        echo "  Found existing release (ID: ${RELEASE_ID})"
       else
         echo "  ERROR: Unexpected response."
         echo "$RESP_BODY" | jq . 2>/dev/null || echo "$RESP_BODY"
         exit 1
       fi
+
+      # --- Step 3: Upload image as release asset ---
+      echo "============================================================"
+      echo "  Step 3: Upload image to GitHub Release"
+      echo "============================================================"
+      echo "Uploading ${IMAGE_FILE} ($(du -h ${IMAGE_FILE} | cut -f1))..."
+      UPLOAD_RESP=$(curl -s -w "\n%{http_code}" \
+        --max-time 3600 \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: application/x-xz" \
+        "${UPLOAD_URL}?name=${IMAGE_FILE}" \
+        --data-binary "@${IMAGE_FILE}")
+
+      UPLOAD_CODE=$(echo "$UPLOAD_RESP" | tail -1)
+      UPLOAD_BODY=$(echo "$UPLOAD_RESP" | sed '$d')
+      if [ "$UPLOAD_CODE" = "201" ]; then
+        echo "  Image uploaded: $(echo "$UPLOAD_BODY" | jq -r '.browser_download_url')"
+      else
+        echo "  ERROR uploading image (HTTP ${UPLOAD_CODE})"
+        echo "$UPLOAD_BODY" | jq . 2>/dev/null || echo "$UPLOAD_BODY"
+        exit 1
+      fi
+
+      # --- Step 4: Upload checksum as release asset ---
+      echo "Uploading ${CHECKSUM_FILE}..."
+      CHKSUM_RESP=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: text/plain" \
+        "${UPLOAD_URL}?name=${CHECKSUM_FILE}" \
+        --data-binary "@${CHECKSUM_FILE}")
+
+      CHKSUM_CODE=$(echo "$CHKSUM_RESP" | tail -1)
+      if [ "$CHKSUM_CODE" = "201" ]; then
+        echo "  Checksum uploaded."
+      else
+        echo "  WARN: Checksum upload failed (HTTP ${CHKSUM_CODE}) — non-fatal."
+      fi
+
+      echo "============================================================"
+      echo "  GitHub Release complete!"
+      echo "  https://github.com/${GITHUB_REPO}/releases/tag/${CI_COMMIT_TAG}"
+      echo "============================================================"
   allow_failure: true
+  timeout: 60m
