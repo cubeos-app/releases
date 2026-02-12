@@ -1,12 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-normal-boot.sh — CubeOS Normal Boot (every boot after first)
+# cubeos-normal-boot.sh — CubeOS Normal Boot (v2 - hardened)
 # =============================================================================
 # On normal boots, Docker Swarm auto-reconciles all stacks. This script
-# just verifies critical services and applies the saved network mode.
-# Most of the work is done by Docker's own restart policies.
+# verifies critical services and applies the saved network mode.
 #
-# Timeline target: ~30-40 seconds to fully operational.
+# v2 CHANGES:
+#   - Explicit wlan0 IP verification (same fix as first boot)
+#   - DNS resolver fallback (prevents NPM crash loop)
+#   - Multi-attempt Swarm recovery
+#   - Secrets recreation after Swarm recovery
 # =============================================================================
 set -euo pipefail
 
@@ -19,8 +22,7 @@ COREAPPS_DIR="/cubeos/coreapps"
 SWAP_FILE="/var/swap.cubeos"
 
 echo "============================================================"
-echo "  CubeOS Normal Boot"
-echo "  $(date)"
+echo "  CubeOS Normal Boot — $(date)"
 echo "============================================================"
 
 BOOT_START=$(date +%s)
@@ -28,141 +30,142 @@ BOOT_START=$(date +%s)
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
-wait_for_service() {
-    local name="$1"
-    local check_cmd="$2"
-    local timeout="${3:-60}"
-    local elapsed=0
-
+wait_for() {
+    local name="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}" elapsed=0
     echo -n "[BOOT] Waiting for ${name}..."
     while [ $elapsed -lt $timeout ]; do
-        if eval "$check_cmd" &>/dev/null; then
-            echo " OK (${elapsed}s)"
-            return 0
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
+        if eval "$check_cmd" &>/dev/null; then echo " OK (${elapsed}s)"; return 0; fi
+        sleep "$interval"; elapsed=$((elapsed + interval)); echo -n "."
     done
-    echo " TIMEOUT"
-    return 1
+    echo " TIMEOUT (${timeout}s)"; return 1
 }
 
-# ---------------------------------------------------------------------------
+# =========================================================================
 # Swap + Watchdog
-# ---------------------------------------------------------------------------
+# =========================================================================
 echo "[BOOT] Enabling swap and watchdog..."
-
 if [ -f "$SWAP_FILE" ] && ! swapon --show | grep -q "$SWAP_FILE"; then
     swapon "$SWAP_FILE" 2>/dev/null || true
 fi
+[ -e /dev/watchdog ] && systemctl start watchdog 2>/dev/null || true
 
-if [ -e /dev/watchdog ]; then
-    systemctl start watchdog 2>/dev/null || true
-fi
+# =========================================================================
+# Ensure wlan0 has our IP (same fix as first boot — netplan can be slow)
+# =========================================================================
+echo "[BOOT] Ensuring wlan0 has ${GATEWAY_IP}..."
+ip link set wlan0 up 2>/dev/null || true
+ip addr add "${GATEWAY_IP}/24" dev wlan0 2>/dev/null || true
+netplan apply 2>/dev/null || true
 
-# ---------------------------------------------------------------------------
-# Wait for Docker
-# ---------------------------------------------------------------------------
-wait_for_service "Docker" "docker info" 60 || {
-    echo "[BOOT] FATAL: Docker not starting. Attempting restart..."
+# =========================================================================
+# Docker
+# =========================================================================
+wait_for "Docker" "docker info" 60 || {
+    echo "[BOOT] Docker not starting — restarting daemon..."
     systemctl restart docker
-    wait_for_service "Docker" "docker info" 30 || exit 1
+    wait_for "Docker" "docker info" 30 || exit 1
 }
 
-# ---------------------------------------------------------------------------
-# Verify Swarm is active
-# ---------------------------------------------------------------------------
+# =========================================================================
+# Swarm (verify or recover with multi-attempt)
+# =========================================================================
 if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
-    echo "[BOOT] WARNING: Swarm not active! Re-initializing..."
+    echo "[BOOT] Swarm not active! Recovering..."
+
     docker swarm init \
         --advertise-addr "$GATEWAY_IP" \
+        --listen-addr "0.0.0.0:2377" \
         --force-new-cluster \
-        --task-history-limit 1 2>&1 || true
+        --task-history-limit 1 2>&1 || \
+    docker swarm init \
+        --listen-addr "0.0.0.0:2377" \
+        --task-history-limit 1 2>&1 || \
+    echo "[BOOT] WARNING: Swarm recovery failed — stacks may not work"
+
+    # Recreate secrets after Swarm recovery
+    if docker info 2>/dev/null | grep -q "Swarm: active"; then
+        echo "[BOOT] Recreating Docker secrets after Swarm recovery..."
+        source "${CONFIG_DIR}/secrets.env" 2>/dev/null || true
+        if [ -n "${CUBEOS_JWT_SECRET:-}" ]; then
+            echo -n "$CUBEOS_JWT_SECRET" | docker secret create jwt_secret - 2>/dev/null || true
+            echo -n "$CUBEOS_API_SECRET" | docker secret create api_secret - 2>/dev/null || true
+        fi
+    fi
 fi
 
-# ---------------------------------------------------------------------------
-# Compose services: Pi-hole, NPM, HAL (not managed by Swarm)
-# ---------------------------------------------------------------------------
-echo "[BOOT] Ensuring compose services are running..."
-
+# =========================================================================
+# Compose services (Pi-hole, NPM, HAL)
+# =========================================================================
+echo "[BOOT] Starting compose services..."
 for svc_dir in pihole npm cubeos-hal; do
     COMPOSE_FILE="${COREAPPS_DIR}/${svc_dir}/appconfig/docker-compose.yml"
-    if [ -f "$COMPOSE_FILE" ]; then
-        docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || \
-            echo "[BOOT]   WARNING: Failed to start ${svc_dir}"
-    fi
+    [ -f "$COMPOSE_FILE" ] && \
+        docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || true
 done
 
-# Wait for DNS (critical for everything else)
-wait_for_service "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 60 || true
+# Wait for DNS (faster port-based check)
+wait_for "Pi-hole DNS" "dig @127.0.0.1 localhost +short +timeout=1 +tries=1" 60 1 || true
 
-# ---------------------------------------------------------------------------
-# Start WiFi AP
-# ---------------------------------------------------------------------------
+# =========================================================================
+# DNS resolver fallback (prevents NPM crash loop after reboot)
+# =========================================================================
+if ! grep -q "^nameserver" /etc/resolv.conf 2>/dev/null; then
+    echo "[BOOT] Fixing /etc/resolv.conf (no nameserver)"
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+fi
+
+# =========================================================================
+# WiFi AP
+# =========================================================================
 echo "[BOOT] Starting WiFi Access Point..."
 rfkill unblock wifi 2>/dev/null || true
-netplan apply 2>/dev/null || true
-sleep 1
-systemctl start hostapd 2>/dev/null || \
-    echo "[BOOT]   WARNING: hostapd failed"
+systemctl start hostapd 2>/dev/null || echo "[BOOT]   WARNING: hostapd failed"
 
-# ---------------------------------------------------------------------------
-# Swarm stacks auto-reconcile — just verify they exist
-# ---------------------------------------------------------------------------
-echo "[BOOT] Verifying Swarm stacks..."
+# =========================================================================
+# Swarm stacks (auto-reconcile — redeploy if missing)
+# =========================================================================
+if docker info 2>/dev/null | grep -q "Swarm: active"; then
+    echo "[BOOT] Verifying Swarm stacks..."
+    for stack in cubeos-api cubeos-dashboard; do
+        if docker stack ls 2>/dev/null | grep -q "^${stack} "; then
+            echo "[BOOT]   Stack ${stack}: present (Swarm will reconcile)"
+        else
+            echo "[BOOT]   Stack ${stack}: MISSING — redeploying..."
+            COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
+            [ -f "$COMPOSE_FILE" ] && \
+                docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true
+        fi
+    done
+fi
 
-declare -A SWARM_STACKS=(
-    ["cubeos-api"]="cubeos-api"
-    ["cubeos-dashboard"]="cubeos-dashboard"
-)
+wait_for "API" "curl -sf http://127.0.0.1:6010/health" 60 || true
 
-for stack in "${!SWARM_STACKS[@]}"; do
-    DIR="${SWARM_STACKS[$stack]}"
-    if docker stack ls 2>/dev/null | grep -q "^${stack} "; then
-        echo "[BOOT]   Stack ${stack}: present (Swarm will reconcile)"
-    else
-        echo "[BOOT]   Stack ${stack}: MISSING — redeploying..."
-        COMPOSE_FILE="${COREAPPS_DIR}/${DIR}/appconfig/docker-compose.yml"
-        [ -f "$COMPOSE_FILE" ] && \
-            docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true
-    fi
-done
-
-# ---------------------------------------------------------------------------
-# Wait for API to be healthy
-# ---------------------------------------------------------------------------
-wait_for_service "API" "curl -sf http://127.0.0.1:6010/health" 60 || true
-
-# ---------------------------------------------------------------------------
-# Apply saved network mode (NAT if ONLINE_ETH or ONLINE_WIFI)
-# ---------------------------------------------------------------------------
+# =========================================================================
+# Network mode
+# =========================================================================
 echo "[BOOT] Applying network mode..."
-
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
-NETWORK_MODE="${CUBEOS_NETWORK_MODE:-OFFLINE}"
 
-case "$NETWORK_MODE" in
+case "${CUBEOS_NETWORK_MODE:-OFFLINE}" in
     ONLINE_ETH)
-        echo "[BOOT]   Mode: ONLINE_ETH — enabling NAT via eth0"
-        /usr/local/lib/cubeos/nat-enable.sh eth0
+        echo "[BOOT]   Mode: ONLINE_ETH — NAT via eth0"
+        /usr/local/lib/cubeos/nat-enable.sh eth0 2>/dev/null || true
         ;;
     ONLINE_WIFI)
-        echo "[BOOT]   Mode: ONLINE_WIFI — enabling NAT via wlan1"
-        /usr/local/lib/cubeos/nat-enable.sh wlan1
+        echo "[BOOT]   Mode: ONLINE_WIFI — NAT via wlan1"
+        /usr/local/lib/cubeos/nat-enable.sh wlan1 2>/dev/null || true
         ;;
     OFFLINE|*)
-        echo "[BOOT]   Mode: OFFLINE — no NAT"
+        echo "[BOOT]   Mode: OFFLINE"
         ;;
 esac
 
-# ---------------------------------------------------------------------------
+# =========================================================================
 # Done
-# ---------------------------------------------------------------------------
+# =========================================================================
 BOOT_END=$(date +%s)
-BOOT_DURATION=$((BOOT_END - BOOT_START))
-
 echo ""
 echo "============================================================"
-echo "  CubeOS Boot Complete (${BOOT_DURATION}s)"
+echo "  CubeOS Boot Complete ($((BOOT_END - BOOT_START))s)"
 echo "  Dashboard: http://cubeos.cube"
 echo "============================================================"
