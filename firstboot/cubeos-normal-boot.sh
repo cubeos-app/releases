@@ -95,7 +95,7 @@ wait_for_service "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 60 || true
 # ---------------------------------------------------------------------------
 echo "[BOOT] Starting WiFi Access Point..."
 rfkill unblock wifi 2>/dev/null || true
-systemctl restart dhcpcd 2>/dev/null || true
+netplan apply 2>/dev/null || true
 sleep 1
 systemctl start hostapd 2>/dev/null || \
     echo "[BOOT]   WARNING: hostapd failed"

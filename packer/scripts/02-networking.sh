@@ -1,16 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# 02-networking.sh — Network stack configuration
+# 02-networking.sh — Network stack configuration (Ubuntu 24.04)
 # =============================================================================
-# Configures hostapd (template), static IP for wlan0, DHCP fallback for eth0,
-# iptables NAT rules template, and dnsmasq as a lightweight backup DHCP.
+# Configures Netplan (static wlan0, DHCP eth0), hostapd template,
+# iptables NAT rules, and cloud-init for Raspberry Pi Imager support.
 #
-# NOTE: Raspberry Pi OS Bookworm uses dhcpcd, NOT netplan.
-# We configure dhcpcd for static wlan0 IP + DHCP on eth0.
+# Ubuntu 24.04 uses Netplan + systemd-networkd (NOT dhcpcd like Pi OS).
+# This matches the CubeOS production environment.
 # =============================================================================
 set -euo pipefail
 
-echo "=== [02] Network Configuration ==="
+echo "=== [02] Network Configuration (Ubuntu) ==="
 
 # ---------------------------------------------------------------------------
 # Disable services that conflict with our stack
@@ -21,44 +21,58 @@ echo "[02] Disabling conflicting services..."
 systemctl unmask hostapd 2>/dev/null || true
 systemctl disable hostapd 2>/dev/null || true
 
-# dnsmasq — Pi-hole replaces this for DNS/DHCP, but we keep the package
-# for potential fallback. Disable the daemon.
+# dnsmasq — Pi-hole replaces this for DNS/DHCP
 systemctl disable dnsmasq 2>/dev/null || true
 systemctl mask dnsmasq 2>/dev/null || true
 
 # wpa_supplicant on wlan0 — conflicts with hostapd AP mode
-# We'll manage this selectively per-interface
 systemctl disable wpa_supplicant 2>/dev/null || true
 
-# ---------------------------------------------------------------------------
-# dhcpcd — static IP for wlan0, DHCP for eth0
-# ---------------------------------------------------------------------------
-echo "[02] Configuring dhcpcd..."
+# NetworkManager — use systemd-networkd instead (lighter, server-appropriate)
+systemctl disable NetworkManager 2>/dev/null || true
+systemctl mask NetworkManager 2>/dev/null || true
+systemctl enable systemd-networkd 2>/dev/null || true
 
-# Raspberry Pi OS Bookworm uses dhcpcd (not NetworkManager or netplan)
-cat > /etc/dhcpcd.conf << 'DHCPCD'
+echo "[02]   Conflicting services disabled"
+
+# ---------------------------------------------------------------------------
+# Netplan — static IP for wlan0 (AP), DHCP for eth0 (upstream)
+# ---------------------------------------------------------------------------
+echo "[02] Configuring Netplan..."
+
+# Remove any existing Ubuntu default netplan configs
+rm -f /etc/netplan/50-cloud-init.yaml
+rm -f /etc/netplan/99-default.yaml
+
+cat > /etc/netplan/01-cubeos.yaml << 'NETPLAN'
 # =============================================================================
-# CubeOS Network Configuration (dhcpcd)
+# CubeOS Network Configuration (Netplan / systemd-networkd)
 # =============================================================================
-# wlan0: Static IP for Access Point mode
+# wlan0: Static IP for Access Point mode (managed by hostapd)
 # eth0:  DHCP client for upstream internet (ONLINE_ETH mode)
+# wlan1: Reserved for USB WiFi dongle client (ONLINE_WIFI mode)
 
-# Reduce timeout for faster boot when no ethernet
-timeout 10
+network:
+  version: 2
+  renderer: networkd
 
-# Disable IPv6 router solicitation (we manage this ourselves)
-noipv6rs
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
 
-# ─── wlan0: Access Point (always static) ─────────────────────
-interface wlan0
-    static ip_address=10.42.24.1/24
-    nohook wpa_supplicant
+  wifis:
+    wlan0:
+      addresses:
+        - 10.42.24.1/24
+      # No gateway — this is the AP interface, not a client
+      # No DNS — Pi-hole handles DNS on this subnet
+      # No DHCP — static only
+      optional: true
+NETPLAN
 
-# ─── eth0: DHCP client (upstream internet) ───────────────────
-interface eth0
-    # DHCP by default — gets IP from upstream router
-    # Gateway and DNS come from DHCP
-DHCPCD
+chmod 600 /etc/netplan/01-cubeos.yaml
+echo "[02]   Netplan configured (wlan0=10.42.24.1, eth0=DHCP)"
 
 # ---------------------------------------------------------------------------
 # hostapd — template config (SSID/key filled on first boot from MAC)
@@ -85,8 +99,7 @@ driver=nl80211
 ssid=CubeOS-Setup
 
 # ─── Radio settings ─────────────────────────────────────────
-# hw_mode=a enables 5GHz on Pi 5 (wifi 5), falls back to 2.4 on Pi 4
-# We use hw_mode=g (2.4GHz) for maximum compatibility across all clients
+# hw_mode=g (2.4GHz) for maximum compatibility across all clients
 hw_mode=g
 channel=6
 ieee80211n=1
@@ -179,7 +192,7 @@ chmod +x /usr/local/lib/cubeos/nat-enable.sh
 chmod +x /usr/local/lib/cubeos/nat-disable.sh
 
 # ---------------------------------------------------------------------------
-# Unblock WiFi radio (some Pi configurations have it blocked by default)
+# Unblock WiFi radio
 # ---------------------------------------------------------------------------
 echo "[02] Ensuring WiFi radio is unblocked..."
 rfkill unblock wifi 2>/dev/null || true
@@ -193,7 +206,7 @@ RCLOCAL
 chmod +x /etc/rc.local
 
 # ---------------------------------------------------------------------------
-# Cloud-init — configure NoCloud datasource for Raspberry Pi Imager support
+# Cloud-init — configure for Raspberry Pi Imager support
 # ---------------------------------------------------------------------------
 echo "[02] Configuring cloud-init..."
 mkdir -p /etc/cloud/cloud.cfg.d
@@ -204,9 +217,9 @@ cat > /etc/cloud/cloud.cfg.d/99-cubeos.cfg << 'CLOUDINIT'
 datasource_list: [NoCloud]
 datasource:
   NoCloud:
-    fs_label: bootfs
+    fs_label: system-boot
 
-# Preserve our networking — don't let cloud-init override dhcpcd
+# Preserve our networking — don't let cloud-init override Netplan
 network:
   config: disabled
 

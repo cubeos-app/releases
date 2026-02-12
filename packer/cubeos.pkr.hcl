@@ -1,14 +1,18 @@
 # =============================================================================
 # CubeOS Alpha Image Builder
 # =============================================================================
-# Builds a flashable ARM64 image for Raspberry Pi 4/5 from Raspberry Pi OS Lite.
+# Builds a flashable ARM64 image for Raspberry Pi 4/5.
+#
+# Uses the "golden base image" (Ubuntu 24.04.3 with all packages pre-installed)
+# so this build only writes configuration, compose files, and firstboot scripts.
+# No apt-get, no package downloads — build time is ~3-5 minutes.
+#
+# Base image is built separately by base-image/cubeos-base.pkr.hcl and stored
+# in GitLab's Generic Package Registry.
 #
 # Usage (Docker, recommended):
 #   docker run --rm --privileged -v /dev:/dev -v ${PWD}:/build \
 #     mkaczanowski/packer-builder-arm:latest build /build/packer/cubeos.pkr.hcl
-#
-# Usage (native, requires root):
-#   sudo packer build packer/cubeos.pkr.hcl
 # =============================================================================
 
 variable "version" {
@@ -21,21 +25,28 @@ variable "image_size" {
   default = "8G"
 }
 
-# Raspberry Pi OS Lite Bookworm ARM64 (2024-10-22 release)
+# Golden base image — Ubuntu 24.04.3 with all packages pre-installed.
+# Override in CI with: -var "base_image_url=..."
+# Accepts local file:// or remote https:// URLs.
 variable "base_image_url" {
   type    = string
-  default = "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz"
+  default = "file:///build/cubeos-base.img.xz"
 }
 
 variable "base_image_checksum" {
   type    = string
-  default = "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz.sha256"
+  default = ""
+}
+
+variable "base_image_checksum_type" {
+  type    = string
+  default = "none"
 }
 
 source "arm" "cubeos" {
   file_urls             = [var.base_image_url]
-  file_checksum_url     = var.base_image_checksum
-  file_checksum_type    = "sha256"
+  file_checksum         = var.base_image_checksum
+  file_checksum_type    = var.base_image_checksum_type
   file_target_extension = "xz"
   file_unarchive_cmd    = ["xz", "--decompress", "$ARCHIVE_PATH"]
 
@@ -44,21 +55,21 @@ source "arm" "cubeos" {
   image_size         = var.image_size
   image_type         = "dos"
 
-  # Boot partition — FAT32 at /boot/firmware (Bookworm layout)
+  # Boot partition — FAT32 at /boot/firmware (Ubuntu: "system-boot")
   image_partitions {
     name         = "boot"
     type         = "c"
-    start_sector = "8192"
+    start_sector = "2048"
     filesystem   = "vfat"
     size         = "512M"
     mountpoint   = "/boot/firmware"
   }
 
-  # Root partition — ext4, fills remaining space
+  # Root partition — ext4 (Ubuntu: "writable")
   image_partitions {
     name         = "root"
     type         = "83"
-    start_sector = "1056768"
+    start_sector = "1050624"
     filesystem   = "ext4"
     size         = "0"
     mountpoint   = "/"
@@ -73,28 +84,14 @@ build {
   sources = ["source.arm.cubeos"]
 
   # ------------------------------------------------------------------
-  # Phase 1: Base system setup (packages, kernel, sysctl)
-  # ------------------------------------------------------------------
-  provisioner "shell" {
-    script = "packer/scripts/01-base-setup.sh"
-  }
-
-  # ------------------------------------------------------------------
-  # Phase 2: Networking (netplan, hostapd template, iptables)
+  # Phase 1: Networking (Netplan, hostapd template, iptables, cloud-init)
   # ------------------------------------------------------------------
   provisioner "shell" {
     script = "packer/scripts/02-networking.sh"
   }
 
   # ------------------------------------------------------------------
-  # Phase 3: Docker Engine installation
-  # ------------------------------------------------------------------
-  provisioner "shell" {
-    script = "packer/scripts/03-docker.sh"
-  }
-
-  # ------------------------------------------------------------------
-  # Phase 4: CubeOS directory structure, configs, coreapps
+  # Phase 2: CubeOS directory structure, configs, coreapps
   # ------------------------------------------------------------------
 
   # Copy config files into image
@@ -114,7 +111,7 @@ build {
   }
 
   # ------------------------------------------------------------------
-  # Phase 5: Copy pre-downloaded Docker image tarballs
+  # Phase 3: Copy pre-downloaded Docker image tarballs
   # ------------------------------------------------------------------
   provisioner "file" {
     source      = "docker-images/"
@@ -126,14 +123,14 @@ build {
   }
 
   # ------------------------------------------------------------------
-  # Phase 6: First-boot service installation
+  # Phase 4: First-boot service installation
   # ------------------------------------------------------------------
   provisioner "shell" {
     script = "packer/scripts/06-firstboot-service.sh"
   }
 
   # ------------------------------------------------------------------
-  # Phase 7: Cleanup and image prep
+  # Phase 5: Cleanup and image prep
   # ------------------------------------------------------------------
   provisioner "shell" {
     script = "packer/scripts/07-cleanup.sh"

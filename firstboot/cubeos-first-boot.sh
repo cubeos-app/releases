@@ -180,8 +180,8 @@ echo "[BOOT] Step 6/9: Starting WiFi Access Point..."
 # Ensure WiFi radio is unblocked
 rfkill unblock wifi 2>/dev/null || true
 
-# Restart dhcpcd to apply static IP on wlan0
-systemctl restart dhcpcd 2>/dev/null || true
+# Apply Netplan to ensure static IP on wlan0
+netplan apply 2>/dev/null || true
 sleep 2
 
 # Start hostapd

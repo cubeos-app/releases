@@ -1,55 +1,125 @@
 # =============================================================================
 # CubeOS Release Image Pipeline
 # =============================================================================
-# Builds a flashable ARM64 SD card image for Raspberry Pi 4/5.
+# Two-tier build system for fast, reproducible image creation:
 #
-# Stages:
-#   1. download — Fetch ARM64 Docker images via skopeo (native x86 speed)
-#   2. build    — Packer builds the image under QEMU ARM64 emulation,
-#                 then shrinks + compresses in the same privileged container
+# TIER 1 — Golden Base Image (run manually, ~20 min):
+#   Takes stock Ubuntu 24.04.3 Server → installs all packages → stores in
+#   GitLab Package Registry. Run monthly or when package list changes.
+#   Trigger: Manual, or push changes to base-image/ directory.
 #
-# Required CI variables (set at group/project level):
-#   - GHCR_USER  — GitHub username for GHCR (same as api/hal/dashboard pipelines)
+# TIER 2 — Release Image (run on push, ~5 min):
+#   Takes golden base image → adds CubeOS config, compose files, firstboot
+#   scripts, Docker image tarballs → compresses → release artifact.
+#   No apt-get, no package downloads.
+#
+# FIRST-TIME SETUP:
+#   1. Run "build-base-image" job manually (Pipeline → Run → base stage)
+#   2. After base image is in registry, release pipeline works automatically
+#
+# Required CI variables:
+#   - GHCR_USER  — GitHub username for GHCR
 #   - GHCR_TOKEN — GitHub PAT with read:packages scope
-#
-# Runner requirements:
-#   - Self-hosted runner with privileged Docker executor
-#   - volumes: ["/var/run/docker.sock:/var/run/docker.sock", "/dev:/dev"]
-#   - qemu-user-static registered on host (binfmt_misc)
 # =============================================================================
 
 stages:
+  - base
   - download
   - build
 
 variables:
   CUBEOS_VERSION: "0.1.0-alpha"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
-  BASE_IMAGE_URL: "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz"
-  BASE_IMAGE_CHECKSUM_URL: "https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz.sha256"
+  BASE_VERSION: "1.0.0"
+  BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
 
 # =============================================================================
-# Stage 1: Download ARM64 Docker images at native x86 speed
+# TIER 1: Golden Base Image
 # =============================================================================
-# Skopeo pulls ARM64 manifests natively on x86 — no QEMU emulation needed.
-# Images are saved as docker-archive tarballs, passed to Stage 2 as artifacts.
+# Builds Ubuntu 24.04.3 + all system packages into a reusable base image.
+# Stored in GitLab's Generic Package Registry for the release pipeline.
 #
-# GHCR image names (must match what api/hal/dashboard pipelines push):
-#   ghcr.io/cubeos-app/api        (NOT cubeos-api)
-#   ghcr.io/cubeos-app/hal        (NOT cubeos-hal)
-#   ghcr.io/cubeos-app/dashboard  (NOT cubeos-dashboard)
+# Trigger: Manual only (or uncomment rules for path-based auto-trigger)
+# Time: ~20 minutes (QEMU emulation for apt-get)
+# Output: cubeos-base-ubuntu24.04.3-arm64.img.xz in Package Registry
+# =============================================================================
+build-base-image:
+  stage: base
+  image:
+    name: mkaczanowski/packer-builder-arm:latest
+    entrypoint: [""]
+  rules:
+    # Always available as manual trigger
+    - when: manual
+      allow_failure: true
+    # Uncomment to auto-trigger on base-image/ changes:
+    # - changes:
+    #     - base-image/**/*
+  before_script:
+    - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
+    - |
+      if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        echo "ERROR: QEMU aarch64 binfmt not registered on host!"
+        echo "Fix: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes"
+        exit 1
+      fi
+      echo "QEMU aarch64 binfmt: OK"
+    # Install compression tools
+    - apt-get update -qq
+    - apt-get install -y -qq xz-utils curl 2>&1 | tail -1
+  script:
+    - echo "=== Building Golden Base Image ==="
+    - chmod +x base-image/scripts/*.sh
+
+    # Build base image with Packer
+    - packer build base-image/cubeos-base.pkr.hcl
+    - ls -lh ${BASE_IMAGE_NAME}.img
+
+    # Compress
+    - echo "Compressing base image..."
+    - xz -6 -T0 -v ${BASE_IMAGE_NAME}.img
+    - ls -lh ${BASE_IMAGE_NAME}.img.xz
+
+    # Calculate checksum
+    - sha256sum ${BASE_IMAGE_NAME}.img.xz > ${BASE_IMAGE_NAME}.img.xz.sha256
+    - echo "SHA256: $(cat ${BASE_IMAGE_NAME}.img.xz.sha256)"
+
+    # Upload to GitLab Generic Package Registry
+    - echo "Uploading to Package Registry..."
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${BASE_IMAGE_NAME}.img.xz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${BASE_IMAGE_NAME}.img.xz.sha256 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz.sha256"
+
+    - echo ""
+    - echo "============================================================"
+    - echo "  Golden Base Image uploaded to Package Registry"
+    - echo "  Package: cubeos-base/${BASE_VERSION}"
+    - echo "  File:    ${BASE_IMAGE_NAME}.img.xz"
+    - echo "  Size:    $(du -h ${BASE_IMAGE_NAME}.img.xz | cut -f1)"
+    - echo "============================================================"
+  timeout: 45m
+
+# =============================================================================
+# TIER 2: Release Image — Stage 1: Download Docker Images
 # =============================================================================
 download-docker-images:
   stage: download
   image:
     name: quay.io/skopeo/stable:latest
     entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_TAG =~ /^v/'
   before_script:
-    # Verify GHCR credentials are available (fail fast)
     - |
       if [ -z "${GHCR_USER}" ] || [ -z "${GHCR_TOKEN}" ]; then
         echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
-        echo "Set them at group level: GitLab → cubeos group → Settings → CI/CD → Variables"
         exit 1
       fi
       echo "GHCR auth: ${GHCR_USER}"
@@ -57,14 +127,12 @@ download-docker-images:
     - mkdir -p docker-images
     - echo "=== Downloading ARM64 Docker images ==="
 
-    # Public images (Docker Hub — no auth needed)
     - echo "[1/5] Pi-hole..."
     - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/pihole/pihole:latest docker-archive:docker-images/pihole.tar:pihole/pihole:latest
 
     - echo "[2/5] Nginx Proxy Manager..."
     - skopeo copy --override-arch arm64 --override-os linux --retry-times 3 docker://docker.io/jc21/nginx-proxy-manager:latest docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
 
-    # Private images (GHCR — auth via --src-creds using GitLab CI variables)
     - echo "[3/5] CubeOS API..."
     - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/api:latest docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
 
@@ -74,7 +142,6 @@ download-docker-images:
     - echo "[5/5] CubeOS Dashboard..."
     - skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" --override-arch arm64 --override-os linux --retry-times 3 docker://ghcr.io/cubeos-app/dashboard:latest docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
-    # Summary
     - echo ""
     - echo "=== Download complete ==="
     - ls -lh docker-images/
@@ -85,18 +152,11 @@ download-docker-images:
     expire_in: 4 hours
 
 # =============================================================================
-# Stage 2: Build image with Packer, then shrink + compress
+# TIER 2: Release Image — Stage 2: Build + Compress
 # =============================================================================
-# Both Packer and the compress step need privileged access to loop devices,
-# so they run in the same container. This also avoids uploading the raw 8GB
-# image as a GitLab artifact between stages (which exceeds the upload limit).
-#
-# Steps:
-#   1. Packer builds the 8GB raw image under QEMU ARM64 emulation
-#   2. PiShrink shrinks the partition and adds auto-expand on first boot
-#   3. Zerofree zeros unused blocks for better compression
-#   4. xz compresses the image (~8GB raw → ~1.5-2GB compressed)
-#   5. SHA256 + MD5 checksums
+# Downloads golden base from Package Registry, runs config-only provisioners,
+# bakes in Docker image tarballs, compresses final image.
+# Time: ~5 minutes (no apt-get, no package downloads)
 # =============================================================================
 build-image:
   stage: build
@@ -105,39 +165,45 @@ build-image:
     entrypoint: [""]
   needs:
     - download-docker-images
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_TAG =~ /^v/'
   before_script:
-    # Mount host kernel's binfmt_misc inside this privileged container.
     - mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
     - |
       if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
         echo "ERROR: QEMU aarch64 binfmt not registered on host!"
-        echo "Fix: ssh to runner host and run:"
-        echo "  docker run --rm --privileged multiarch/qemu-user-static --reset -p yes"
         exit 1
       fi
       echo "QEMU aarch64 binfmt: OK"
 
-    # Install compression tools needed for post-build processing.
-    # The packer-builder-arm image is Ubuntu-based but doesn't include these.
-    - echo "Installing compression tools..."
+    # Install tools for compression
     - apt-get update -qq
-    - apt-get install -y -qq xz-utils zerofree e2fsprogs parted wget kpartx util-linux 2>&1 | tail -1
-    - echo "Compression tools installed."
+    - apt-get install -y -qq xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl 2>&1 | tail -1
+
+    # Download golden base image from Package Registry
+    - echo "Downloading golden base image from Package Registry..."
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o cubeos-base.img.xz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
+    - ls -lh cubeos-base.img.xz
+    - echo "Base image downloaded."
   script:
     # =====================================================================
-    # Phase 1: Packer build
+    # Phase 1: Packer build (config only — packages already in base)
     # =====================================================================
-    - echo "=== Building CubeOS ${CUBEOS_VERSION} image ==="
-    - echo "Base image  ${BASE_IMAGE_URL}"
-    - echo "Output      ${IMAGE_NAME}.img"
-
-    # Ensure scripts are executable
+    - echo "=== Building CubeOS ${CUBEOS_VERSION} from golden base ==="
     - chmod +x packer/scripts/*.sh firstboot/*.sh
 
-    # Build the image
-    - packer build -var "version=${CUBEOS_VERSION}" -var "base_image_url=${BASE_IMAGE_URL}" -var "base_image_checksum=${BASE_IMAGE_CHECKSUM_URL}" packer/cubeos.pkr.hcl
-
-    # Verify output
+    # Packer uses local base image
+    - |
+      packer build \
+        -var "version=${CUBEOS_VERSION}" \
+        -var "base_image_url=file:///build/cubeos-base.img.xz" \
+        -var "base_image_checksum_type=none" \
+        packer/cubeos.pkr.hcl
     - ls -lh ${IMAGE_NAME}.img
     - echo "=== Packer build complete ==="
     - echo ""
@@ -147,58 +213,47 @@ build-image:
     # =====================================================================
     - echo "=== Compressing ${IMAGE_NAME}.img ==="
 
-    # ── Step 1: PiShrink — shrink partition, add auto-expand on first boot ──
+    # PiShrink
     - echo "[1/4] Running PiShrink..."
-    - wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping shrink"
+    - wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping"
     - |
       if [ -f pishrink.sh ]; then
         chmod +x pishrink.sh
-        bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN PiShrink failed (non-fatal), continuing with unshrunk image"
+        bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN PiShrink failed (non-fatal)"
       fi
 
-    # ── Step 2: Zerofree — zero unused blocks for better xz compression ─────
+    # Zerofree
     - echo "[2/4] Running zerofree..."
     - |
       LOOPDEV=""
       cleanup_loop() {
         if [ -n "$LOOPDEV" ]; then
-          echo "Cleaning up loop device $LOOPDEV"
           losetup -d "$LOOPDEV" 2>/dev/null || true
         fi
       }
       trap cleanup_loop EXIT
-
       LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
       echo "Loop device: $LOOPDEV"
-
-      # Wait for partition devices to appear
       sleep 2
-      ls -la ${LOOPDEV}p* 2>/dev/null || echo "No partition devices found"
-
       ROOT_PART="${LOOPDEV}p2"
       if [ -b "$ROOT_PART" ]; then
-        echo "Running e2fsck on $ROOT_PART..."
         e2fsck -fy "$ROOT_PART" || true
-        echo "Running zerofree on $ROOT_PART..."
         zerofree -v "$ROOT_PART" || echo "WARN zerofree failed (non-fatal)"
-      else
-        echo "WARN Root partition $ROOT_PART not found, skipping zerofree"
       fi
-
       losetup -d "$LOOPDEV"
       LOOPDEV=""
 
-    # ── Step 3: XZ compress ─────────────────────────────────────────────────
+    # XZ compress
     - echo "[3/4] Compressing with xz -6 (multi-threaded)..."
     - ls -lh ${IMAGE_NAME}.img
     - xz -6 -T0 -v ${IMAGE_NAME}.img
 
-    # ── Step 4: Checksums ───────────────────────────────────────────────────
+    # Checksums
     - echo "[4/4] Calculating checksums..."
     - sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
     - md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
 
-    # ── Summary ─────────────────────────────────────────────────────────────
+    # Summary
     - echo ""
     - echo "============================================================"
     - echo "  CubeOS Release Artifact"
@@ -235,7 +290,7 @@ create-release:
     description: |
       ## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 image for Raspberry Pi 4/5.
+      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
 
       ### Quick Start
       1. Flash the .img.xz to SD card using Raspberry Pi Imager
