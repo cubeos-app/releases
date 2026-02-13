@@ -1,21 +1,24 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-normal-boot.sh — CubeOS Normal Boot (v3 - Voyager)
+# cubeos-normal-boot.sh — CubeOS Normal Boot (v4 - Alpha.6)
 # =============================================================================
 # On normal boots, Docker Swarm auto-reconciles all stacks. This script
 # verifies critical services and applies the saved network mode.
 #
-# v3 — VOYAGER EDITION:
-#   - NO exec/tee — logging via function (no process substitution deadlock)
-#   - NO set -e — explicit error handling, script never dies silently
-#   - NO /var/swap.cubeos — ZRAM handles swap (golden base v1.1.0+)
-#   - Multi-attempt Swarm recovery with secrets recreation
-#   - DNS resolver fallback (prevents NPM crash loop)
+# v4 — ALPHA.6 FIXES:
+#   1. Network name: cubeos-network (was cubeos)
+#   2. Overlay subnet: 10.42.25.0/24 (was 172.20.0.0/24)
+#   3. HAL port: 6005 (was 6013)
+#   4. Deploys ALL stacks on recovery (registry, api, dashboard, dozzle, ollama, chromadb)
+#   5. Compose services include HAL on port 6005
+#   6. No Docker secrets — API uses env_file
 # =============================================================================
 set -uo pipefail
 
 LOG_FILE="/var/log/cubeos-boot.log"
 GATEWAY_IP="10.42.24.1"
+OVERLAY_SUBNET="10.42.25.0/24"
+NETWORK_NAME="cubeos-network"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
 BOOT_START=$(date +%s)
@@ -51,7 +54,7 @@ wait_for() {
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 
 log "============================================================"
-log "  CubeOS Normal Boot — v${CUBEOS_VERSION:-unknown}"
+log "  CubeOS Normal Boot — v${CUBEOS_VERSION:-unknown} (alpha.6)"
 log "  $(date)"
 log "============================================================"
 
@@ -62,11 +65,7 @@ if swapon --show 2>/dev/null | grep -q zram; then
 else
     systemctl start systemd-zram-setup@zram0.service 2>/dev/null || true
     sleep 2
-    if swapon --show 2>/dev/null | grep -q zram; then
-        log_ok "ZRAM swap started"
-    else
-        log_warn "ZRAM swap not available"
-    fi
+    swapon --show 2>/dev/null | grep -q zram && log_ok "ZRAM swap started" || log_warn "ZRAM swap not available"
 fi
 [ -e /dev/watchdog ] && systemctl start watchdog 2>/dev/null || true
 
@@ -90,26 +89,28 @@ wait_for "Docker" "docker info" 60 || {
 if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     log "[BOOT] Swarm not active! Recovering..."
 
-    docker swarm init \
+    SWARM_OUTPUT=$(docker swarm init \
         --advertise-addr "$GATEWAY_IP" \
         --listen-addr "0.0.0.0:2377" \
         --force-new-cluster \
-        --task-history-limit 1 2>&1 || \
-    docker swarm init \
-        --listen-addr "0.0.0.0:2377" \
-        --task-history-limit 1 2>&1 || \
-    log_warn "Swarm recovery failed — stacks may not work"
+        --task-history-limit 1 2>&1) && {
+        log_ok "Swarm recovered (force-new-cluster)"
+    } || {
+        log "[BOOT]   Attempt 1 failed: ${SWARM_OUTPUT}"
+        SWARM_OUTPUT=$(docker swarm init \
+            --listen-addr "0.0.0.0:2377" \
+            --task-history-limit 1 2>&1) && {
+            log_ok "Swarm recovered (auto-addr)"
+        } || {
+            log_warn "Swarm recovery failed: ${SWARM_OUTPUT}"
+        }
+    }
 
-    # Recreate secrets after Swarm recovery
+    # Recreate overlay network after Swarm recovery
     if docker info 2>/dev/null | grep -q "Swarm: active"; then
-        log "[BOOT] Recreating Docker secrets after Swarm recovery..."
-        source "${CONFIG_DIR}/secrets.env" 2>/dev/null || true
-        if [ -n "${CUBEOS_JWT_SECRET:-}" ]; then
-            echo -n "$CUBEOS_JWT_SECRET" | docker secret create jwt_secret - 2>/dev/null || true
-            echo -n "$CUBEOS_API_SECRET" | docker secret create api_secret - 2>/dev/null || true
-        fi
-        docker network create --driver overlay --attachable --subnet 172.20.0.0/24 cubeos 2>/dev/null || true
-        log_ok "Swarm recovered + secrets recreated"
+        docker network create --driver overlay --attachable \
+            --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
+        log_ok "Swarm recovered + overlay recreated"
     fi
 fi
 
@@ -123,7 +124,7 @@ for svc_dir in pihole npm cubeos-hal; do
     fi
 done
 
-wait_for "Pi-hole DNS" "dig @127.0.0.1 localhost +short +timeout=1 +tries=1" 60 1 || true
+wait_for "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 60 1 || true
 
 # ── DNS resolver fallback ─────────────────────────────────────────────
 if ! grep -q "^nameserver" /etc/resolv.conf 2>/dev/null; then
@@ -139,7 +140,11 @@ systemctl start hostapd 2>/dev/null || log_warn "hostapd failed"
 # ── Swarm stacks ──────────────────────────────────────────────────────
 if docker info 2>/dev/null | grep -q "Swarm: active"; then
     log "[BOOT] Verifying Swarm stacks..."
-    for stack in cubeos-api cubeos-dashboard; do
+
+    # ALL stacks that should be running (matching Pi 5 production)
+    STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
+
+    for stack in $STACKS; do
         if docker stack ls 2>/dev/null | grep -q "^${stack} "; then
             log_ok "Stack ${stack}: present (Swarm will reconcile)"
         else

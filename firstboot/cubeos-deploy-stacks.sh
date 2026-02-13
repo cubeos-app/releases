@@ -1,19 +1,28 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-deploy-stacks.sh — Deploy/redeploy Swarm stacks
+# cubeos-deploy-stacks.sh — Deploy/redeploy Swarm stacks (v4 - Alpha.6)
 # =============================================================================
 # Manual recovery helper for when first boot partially failed.
-# Ensures IP, Swarm, secrets, overlay network, then deploys stacks.
+# Ensures IP, Swarm, overlay network, then deploys ALL stacks.
+#
+# v4 — ALPHA.6 FIXES:
+#   1. Network name: cubeos-network (was cubeos)
+#   2. Overlay subnet: 10.42.25.0/24 (was 172.20.0.0/24)
+#   3. Deploys ALL stacks (was only api + dashboard)
+#   4. No Docker secrets — API uses env_file
+#   5. Swarm init captures stderr
 #
 # Usage: cubeos-deploy-stacks.sh
 # =============================================================================
 set -euo pipefail
 
 GATEWAY_IP="10.42.24.1"
+OVERLAY_SUBNET="10.42.25.0/24"
+NETWORK_NAME="cubeos-network"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
 
-echo "=== CubeOS Stack Recovery ==="
+echo "=== CubeOS Stack Recovery (alpha.6) ==="
 echo "$(date)"
 echo ""
 
@@ -37,48 +46,62 @@ fi
 # ── Ensure Swarm ─────────────────────────────────────────────────────
 if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     echo "[RECOVER] Initializing Swarm..."
-    docker swarm init \
+    SWARM_OUTPUT=$(docker swarm init \
         --advertise-addr "$GATEWAY_IP" \
         --listen-addr "0.0.0.0:2377" \
-        --task-history-limit 1 2>&1 || \
-    docker swarm init \
-        --listen-addr "0.0.0.0:2377" \
-        --task-history-limit 1 2>&1 || {
-        echo "FATAL: Cannot initialize Swarm."
-        exit 1
+        --task-history-limit 1 2>&1) || {
+        echo "[RECOVER] Attempt 1 failed: ${SWARM_OUTPUT}"
+        SWARM_OUTPUT=$(docker swarm init \
+            --listen-addr "0.0.0.0:2377" \
+            --task-history-limit 1 2>&1) || {
+            echo "FATAL: Cannot initialize Swarm: ${SWARM_OUTPUT}"
+            exit 1
+        }
     }
 fi
 echo "[RECOVER] Swarm active."
 
 # ── Ensure overlay network ───────────────────────────────────────────
-if ! docker network ls --format '{{.Name}}' | grep -q "^cubeos$"; then
-    echo "[RECOVER] Creating cubeos overlay network..."
-    docker network create --driver overlay --attachable --subnet 172.20.0.0/24 cubeos 2>/dev/null || true
+NETWORK_EXISTS=$(docker network ls --format '{{.Name}}' | grep -c "^${NETWORK_NAME}$" || true)
+if [ "$NETWORK_EXISTS" -eq 0 ]; then
+    echo "[RECOVER] Creating ${NETWORK_NAME} overlay network..."
+    docker network create --driver overlay --attachable \
+        --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
 fi
 
-# ── Ensure secrets ───────────────────────────────────────────────────
-if [ ! -f "${CONFIG_DIR}/secrets.env" ]; then
-    echo "FATAL: ${CONFIG_DIR}/secrets.env not found! Run cubeos-generate-secrets.sh first."
-    exit 1
+# Also remove old 'cubeos' network if it exists (alpha.5 leftover)
+if docker network ls --format '{{.Name}}' | grep -q "^cubeos$"; then
+    echo "[RECOVER] Removing old 'cubeos' network (alpha.5 leftover)..."
+    docker network rm cubeos 2>/dev/null || true
 fi
+echo "[RECOVER] ${NETWORK_NAME} overlay ready."
 
-source "${CONFIG_DIR}/secrets.env"
+# ── Ensure compose services ─────────────────────────────────────────
+echo "[RECOVER] Ensuring compose services..."
+for svc_dir in pihole npm cubeos-hal; do
+    COMPOSE_FILE="${COREAPPS_DIR}/${svc_dir}/appconfig/docker-compose.yml"
+    if [ -f "$COMPOSE_FILE" ]; then
+        DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null && \
+            echo "  [OK] ${svc_dir}" || echo "  [!!] ${svc_dir} failed"
+    else
+        echo "  [--] ${svc_dir}: no compose file"
+    fi
+done
 
-echo "[RECOVER] Creating Docker secrets..."
-echo -n "$CUBEOS_JWT_SECRET" | docker secret create jwt_secret - 2>/dev/null && \
-    echo "  Created jwt_secret" || echo "  jwt_secret already exists"
-echo -n "$CUBEOS_API_SECRET" | docker secret create api_secret - 2>/dev/null && \
-    echo "  Created api_secret" || echo "  api_secret already exists"
+# ── Deploy ALL Swarm stacks ──────────────────────────────────────────
+echo ""
+echo "[RECOVER] Deploying Swarm stacks..."
 
-# ── Deploy stacks ────────────────────────────────────────────────────
-for stack in cubeos-api cubeos-dashboard; do
+STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
+
+for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
     if [ -f "$COMPOSE_FILE" ]; then
         echo "[RECOVER] Deploying ${stack}..."
         docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>&1 || \
             echo "[RECOVER] WARNING: ${stack} deploy failed"
     else
-        echo "[RECOVER] WARNING: ${COMPOSE_FILE} not found!"
+        echo "[RECOVER] SKIP: ${COMPOSE_FILE} not found"
     fi
 done
 

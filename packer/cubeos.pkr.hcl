@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Release Image Builder
+# CubeOS Release Image Builder — v0.1.0-alpha.6
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
@@ -7,20 +7,19 @@
 # so this build only writes configuration, compose files, and firstboot scripts.
 # No apt-get, no package downloads — build time is ~3-5 minutes.
 #
-# Base image is built separately on nllei01gpu01 (/srv/cubeos-base-builder)
-# and stored in GitLab's Generic Package Registry.
-#
-# Usage (via CI — recommended):
-#   Push to main branch or tag → pipeline auto-triggers
-#
-# Usage (Docker, direct — requires base image at /build/cubeos-base.img.xz):
-#   docker run --rm --privileged -v /dev:/dev -v ${PWD}:/build \
-#     mkaczanowski/packer-builder-arm:latest build /build/packer/cubeos.pkr.hcl
+# ALPHA.6 CHANGES:
+#   - Coreapps compose files cloned from GitLab at CI time (no more heredocs)
+#   - daemon.json is Swarm-compatible (no live-restore)
+#   - Network name: cubeos-network (overlay subnet 10.42.25.0/24)
+#   - Swarm init captures stderr for debugging
+#   - HAL port: 6005 (was 6013)
+#   - Pi-hole v6 FTLCONF_* env vars
+#   - Watchdog runs from /cubeos/coreapps/scripts/
 # =============================================================================
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.4"
+  default = "0.1.0-alpha.6"
 }
 
 variable "image_size" {
@@ -28,9 +27,6 @@ variable "image_size" {
   default = "8G"
 }
 
-# Golden base image — Ubuntu 24.04.3 with all packages pre-installed.
-# Override in CI with: -var "base_image_url=file:///build/cubeos-base.img.xz"
-# Accepts local file:// or remote https:// URLs.
 variable "base_image_url" {
   type    = string
   default = "file:///build/cubeos-base.img.xz"
@@ -58,7 +54,6 @@ source "arm" "cubeos" {
   image_size         = var.image_size
   image_type         = "dos"
 
-  # Boot partition — FAT32 at /boot/firmware (Ubuntu: "system-boot")
   image_partitions {
     name         = "boot"
     type         = "c"
@@ -68,7 +63,6 @@ source "arm" "cubeos" {
     mountpoint   = "/boot/firmware"
   }
 
-  # Root partition — ext4 (Ubuntu: "writable")
   image_partitions {
     name         = "root"
     type         = "83"
@@ -86,38 +80,34 @@ source "arm" "cubeos" {
 build {
   sources = ["source.arm.cubeos"]
 
-  # ------------------------------------------------------------------
-  # Phase 1: Networking (Netplan, hostapd template, iptables, cloud-init)
-  # ------------------------------------------------------------------
+  # Phase 1: Networking
   provisioner "shell" {
     script = "packer/scripts/02-networking.sh"
   }
 
-  # ------------------------------------------------------------------
-  # Phase 2: CubeOS directory structure, configs, coreapps
-  # ------------------------------------------------------------------
-
-  # Copy config files into image
+  # Phase 2: CubeOS structure + coreapps
   provisioner "file" {
     source      = "configs/"
     destination = "/tmp/cubeos-configs/"
   }
 
-  # Copy first-boot scripts
   provisioner "file" {
     source      = "firstboot/"
     destination = "/tmp/cubeos-firstboot/"
   }
 
-  # Pass CUBEOS_VERSION from packer var → shell env → defaults.env
+  # ALPHA.6: Coreapps bundle from GitLab clone (replaces heredocs)
+  provisioner "file" {
+    source      = "coreapps-bundle/"
+    destination = "/tmp/cubeos-coreapps/"
+  }
+
   provisioner "shell" {
     script           = "packer/scripts/04-cubeos.sh"
     environment_vars = ["CUBEOS_VERSION=${var.version}"]
   }
 
-  # ------------------------------------------------------------------
-  # Phase 3: Copy pre-downloaded Docker image tarballs
-  # ------------------------------------------------------------------
+  # Phase 3: Docker image tarballs
   provisioner "file" {
     source      = "docker-images/"
     destination = "/var/cache/cubeos-images/"
@@ -127,16 +117,12 @@ build {
     script = "packer/scripts/05-docker-preload.sh"
   }
 
-  # ------------------------------------------------------------------
-  # Phase 4: First-boot service installation
-  # ------------------------------------------------------------------
+  # Phase 4: First-boot service
   provisioner "shell" {
     script = "packer/scripts/06-firstboot-service.sh"
   }
 
-  # ------------------------------------------------------------------
-  # Phase 5: Cleanup and image prep
-  # ------------------------------------------------------------------
+  # Phase 5: Cleanup
   provisioner "shell" {
     script = "packer/scripts/07-cleanup.sh"
   }

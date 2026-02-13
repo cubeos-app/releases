@@ -5,19 +5,17 @@
 # Creates cubeos-init.service which detects first-boot vs normal-boot
 # and runs the appropriate script.
 #
-# v3 — VOYAGER EDITION:
-#   - Watchdog timer starts INDEPENDENTLY (not After=cubeos-init.service)
-#     so it can heal services even if first-boot hangs
-#   - cubeos-init uses StandardOutput=journal (no tee needed)
-#   - Boot scripts handle their own logging to file
+# v4 — ALPHA.6:
+#   - Watchdog runs from /cubeos/coreapps/scripts/ (matching Pi 5)
+#   - Fallback to /usr/local/lib/cubeos/ for backward compat
+#   - Timer starts INDEPENDENTLY of cubeos-init (can heal during first-boot)
 # =============================================================================
 set -euo pipefail
 
-echo "=== [06] First-Boot Service Installation ==="
+echo "=== [06] First-Boot Service Installation (alpha.6) ==="
 
 # ---------------------------------------------------------------------------
-# Install new scripts that 04-cubeos.sh doesn't handle yet
-# Source: Packer copies firstboot/ → /tmp/cubeos-firstboot/
+# Install scripts that 04-cubeos.sh doesn't handle
 # ---------------------------------------------------------------------------
 FIRSTBOOT_SRC="/tmp/cubeos-firstboot"
 
@@ -32,13 +30,18 @@ else
     echo "[06]   WARNING: cubeos-deploy-stacks.sh not found in ${FIRSTBOOT_SRC}"
 fi
 
-# Watchdog health check script
+# Watchdog health check — install to BOTH locations:
+# 1. /cubeos/coreapps/scripts/ (Pi 5 production path, preferred)
+# 2. /usr/local/lib/cubeos/ (backward compat fallback)
+mkdir -p /cubeos/coreapps/scripts
 mkdir -p /usr/local/lib/cubeos
 
 if [ -f "${FIRSTBOOT_SRC}/watchdog-health.sh" ]; then
-    cp "${FIRSTBOOT_SRC}/watchdog-health.sh" /usr/local/lib/cubeos/watchdog-health.sh
-    chmod +x /usr/local/lib/cubeos/watchdog-health.sh
-    echo "[06]   Installed watchdog-health.sh → /usr/local/lib/cubeos/"
+    cp "${FIRSTBOOT_SRC}/watchdog-health.sh" /cubeos/coreapps/scripts/watchdog-health.sh
+    chmod +x /cubeos/coreapps/scripts/watchdog-health.sh
+    # Symlink for backward compat
+    ln -sf /cubeos/coreapps/scripts/watchdog-health.sh /usr/local/lib/cubeos/watchdog-health.sh
+    echo "[06]   Installed watchdog-health.sh → /cubeos/coreapps/scripts/"
 else
     echo "[06]   ERROR: watchdog-health.sh not found in ${FIRSTBOOT_SRC}!"
     exit 1
@@ -46,10 +49,6 @@ fi
 
 # ---------------------------------------------------------------------------
 # cubeos-init.service — main boot orchestrator
-# ---------------------------------------------------------------------------
-# TimeoutStartSec=infinity because first-boot on a 2GB Pi with SD card
-# can take 10-15 minutes total. The boot script has its own internal
-# dead man's switch (background watchdog) that handles hangs.
 # ---------------------------------------------------------------------------
 cat > /etc/systemd/system/cubeos-init.service << 'SYSTEMD'
 [Unit]
@@ -80,33 +79,26 @@ SYSTEMD
 # ---------------------------------------------------------------------------
 # cubeos-watchdog.service — periodic health checks
 # ---------------------------------------------------------------------------
-# CRITICAL: This timer starts INDEPENDENTLY of cubeos-init.service.
-# It must NOT have After=cubeos-init.service — otherwise it can't heal
-# services if cubeos-init is hung. The OnBootSec=90 gives Docker time
-# to start, then the watchdog begins checking every 60s regardless of
-# whether first-boot has finished.
+# Uses /cubeos/coreapps/scripts/ path (matching Pi 5 production).
+# Timer starts INDEPENDENTLY — must NOT have After=cubeos-init.service.
 # ---------------------------------------------------------------------------
 cat > /etc/systemd/system/cubeos-watchdog.service << 'WATCHDOG_SVC'
 [Unit]
 Description=CubeOS Watchdog Health Check
-# NO dependency on cubeos-init — must run even if init hangs
 Wants=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/cubeos/watchdog-health.sh
+ExecStart=/cubeos/coreapps/scripts/watchdog-health.sh
 TimeoutStartSec=120
 WATCHDOG_SVC
 
 cat > /etc/systemd/system/cubeos-watchdog.timer << 'WATCHDOG_TMR'
 [Unit]
 Description=CubeOS Watchdog Timer
-# NO dependency on cubeos-init — starts independently on boot
 
 [Timer]
-# Start 90s after boot (Docker needs ~20s, preload needs ~60s)
-OnBootSec=90
-# Then run every 60s
+OnBootSec=120
 OnUnitActiveSec=60
 AccuracySec=10
 
@@ -115,11 +107,7 @@ WantedBy=timers.target
 WATCHDOG_TMR
 
 # ---------------------------------------------------------------------------
-# cubeos-boot-watchdog.service — one-shot zombie process cleaner
-# ---------------------------------------------------------------------------
-# Safety net: If cubeos-init.service has been "activating" for more than
-# 20 minutes, something is catastrophically wrong. Kill it and let the
-# watchdog timer handle recovery.
+# cubeos-boot-watchdog — kills hung cubeos-init after 20 minutes
 # ---------------------------------------------------------------------------
 cat > /etc/systemd/system/cubeos-boot-watchdog.service << 'BOOT_WD_SVC'
 [Unit]
@@ -149,9 +137,7 @@ cat > /etc/systemd/system/cubeos-boot-watchdog.timer << 'BOOT_WD_TMR'
 Description=CubeOS Boot Timeout Watchdog Timer
 
 [Timer]
-# Run once, 20 minutes after boot
 OnBootSec=1200
-# One-shot, no repeat
 Persistent=false
 
 [Install]
@@ -166,6 +152,6 @@ systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 systemctl enable cubeos-boot-watchdog.timer 2>/dev/null || true
 
 echo "[06] First-boot service installed (timeout=infinity, dead man's switch built-in)."
-echo "[06] Watchdog: starts at T+90s independently of boot (every 60s)."
+echo "[06] Watchdog: /cubeos/coreapps/scripts/watchdog-health.sh (starts at T+120s, every 60s)."
 echo "[06] Boot watchdog: kills cubeos-init if stuck >20 minutes."
 echo "[06] Recovery: /usr/local/bin/cubeos-deploy-stacks.sh"

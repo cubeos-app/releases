@@ -2,14 +2,20 @@
 # =============================================================================
 # 04-cubeos.sh — CubeOS directory structure and configuration
 # =============================================================================
-# Creates /cubeos directory tree, installs config templates, copies coreapps
-# compose files, and installs first-boot scripts.
+# Creates /cubeos directory tree, installs config, copies coreapps compose
+# files FROM THE COREAPPS BUNDLE (cloned from GitLab at CI time), writes
+# Swarm-compatible daemon.json, and installs first-boot scripts.
 #
-# v3: Uses CUBEOS_VERSION env var from CI pipeline (no hardcoded versions)
+# v4 (alpha.6):
+#   - NO MORE HEREDOCS for compose files — uses coreapps-bundle from CI
+#   - Swarm-compatible daemon.json (no live-restore!)
+#   - defaults.env matches Pi 5 production format
+#   - Additional coreapps directories for all services
+#   - Symlink /cubeos/scripts -> /cubeos/coreapps/scripts
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup ==="
+echo "=== [04] CubeOS Setup (alpha.6) ==="
 
 # ---------------------------------------------------------------------------
 # Version — injected by CI pipeline, falls back to dev
@@ -22,269 +28,220 @@ echo "[04] Building CubeOS version: ${CUBEOS_VERSION}"
 # ---------------------------------------------------------------------------
 echo "[04] Creating CubeOS directory structure..."
 
-mkdir -p /cubeos/{config,data,mounts}
-mkdir -p /cubeos/coreapps/{pihole,npm,cubeos-api,cubeos-hal,cubeos-dashboard}/{appconfig,appdata}
+mkdir -p /cubeos/{config,data,mounts,apps,docs}
 mkdir -p /cubeos/data/registry
 mkdir -p /cubeos/config/vpn/{wireguard,openvpn}
-mkdir -p /cubeos/apps
+
+# Create coreapps directories for ALL services (matching Pi 5)
+COREAPPS=(
+    pihole npm cubeos-api cubeos-hal cubeos-dashboard
+    dozzle ollama chromadb registry
+    cubeos-docsindex cubeos-filebrowser
+    wireguard openvpn tor
+    diagnostics reset terminal backup watchdog
+)
+for svc in "${COREAPPS[@]}"; do
+    mkdir -p "/cubeos/coreapps/${svc}/"{appconfig,appdata}
+done
+mkdir -p /cubeos/coreapps/scripts
+mkdir -p /cubeos/data/watchdog
+mkdir -p /cubeos/alerts
 
 # Correct ownership
 chown -R root:root /cubeos
 chmod 755 /cubeos
 
+# Symlink for backward compatibility
+ln -sf /cubeos/coreapps/scripts /cubeos/scripts
+
+# ---------------------------------------------------------------------------
+# Docker daemon.json — SWARM COMPATIBLE (no live-restore!)
+# ---------------------------------------------------------------------------
+# CRITICAL: live-restore:true is INCOMPATIBLE with Docker Swarm since 1.12.
+# This was Bug #1 in alpha.5. Only set default-address-pools.
+# ---------------------------------------------------------------------------
+echo "[04] Writing Swarm-compatible daemon.json..."
+
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'DAEMON'
+{
+  "default-address-pools": [
+    {"base": "172.16.0.0/12", "size": 24}
+  ]
+}
+DAEMON
+
 # ---------------------------------------------------------------------------
 # Default configuration — /cubeos/config/defaults.env
-# ---------------------------------------------------------------------------
-# NOTE: CUBEOS_VERSION is injected from CI env var, NOT hardcoded.
-# The heredoc uses double-quotes so $CUBEOS_VERSION is expanded at build time.
 # ---------------------------------------------------------------------------
 echo "[04] Writing defaults.env (version=${CUBEOS_VERSION})..."
 
 cat > /cubeos/config/defaults.env << DEFAULTS
-# =============================================================================
 # CubeOS Default Configuration
-# Generated at image build time. Overridden by first-boot and wizard.
-# =============================================================================
+# This file is sourced by all coreapps
+# Generated at image build time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# --- Core ---
-CUBEOS_VERSION=${CUBEOS_VERSION}
-CUBEOS_DOMAIN=cubeos.cube
-CUBEOS_GATEWAY_IP=10.42.24.1
-CUBEOS_SUBNET=10.42.24.0/24
-CUBEOS_DHCP_START=10.42.24.10
-CUBEOS_DHCP_END=10.42.24.250
-
-# --- Timezone ---
+# ===================
+# System Settings
+# ===================
 TZ=UTC
+DOMAIN=cubeos.cube
 
-# --- Networking ---
-CUBEOS_NETWORK_MODE=OFFLINE
-CUBEOS_AP_INTERFACE=wlan0
-CUBEOS_UPSTREAM_INTERFACE=eth0
+# ===================
+# Network Configuration
+# ===================
+GATEWAY_IP=10.42.24.1
+SUBNET=10.42.24.0/24
+DHCP_RANGE_START=10.42.24.10
+DHCP_RANGE_END=10.42.24.250
 
-# --- Ports (strict allocation) ---
-PIHOLE_WEB_PORT=6001
-NPM_ADMIN_PORT=6000
+# ===================
+# Database (REQUIRED for API)
+# ===================
+DATABASE_PATH=/cubeos/data/cubeos.db
+
+# ===================
+# Infrastructure Ports (6000-6009)
+# ===================
+NPM_PORT=81
+PIHOLE_PORT=6001
+REGISTRY_PORT=5000
+
+# ===================
+# Platform Ports (6010-6019)
+# ===================
 API_PORT=6010
 DASHBOARD_PORT=6011
 DOZZLE_PORT=6012
+
+# ===================
+# Network Ports (6020-6029)
+# ===================
 WIREGUARD_PORT=6020
 OPENVPN_PORT=6021
 TOR_PORT=6022
+
+# ===================
+# AI/ML Ports (6030-6039)
+# ===================
 OLLAMA_PORT=6030
 CHROMADB_PORT=6031
-REGISTRY_PORT=5000
+DOCS_INDEXER_PORT=6032
 
-# --- Pi-hole ---
-PIHOLE_PASSWORD=cubeos
-PIHOLE_DNS=1.1.1.1;8.8.8.8
-PIHOLE_INTERFACE=wlan0
-PIHOLE_DHCP=true
+# ===================
+# AI Service Endpoints
+# ===================
+OLLAMA_HOST=10.42.24.1
+CHROMADB_HOST=10.42.24.1
 
-# --- NPM ---
-NPM_ADMIN_EMAIL=admin@cubeos.cube
+# ===================
+# User Apps (6100-6999)
+# ===================
+USER_PORT_START=6100
+USER_PORT_END=6999
 
-# --- Docker ---
-DOCKER_REGISTRY=ghcr.io/cubeos-app
+# ===================
+# Directory Paths
+# ===================
+CUBEOS_DATA_DIR=/cubeos/data
+CUBEOS_CONFIG_DIR=/cubeos/config
+CUBEOS_APPS_DIR=/cubeos/apps
+CUBEOS_COREAPPS_DIR=/cubeos/coreapps
+CUBEOS_MOUNTS_DIR=/cubeos/mounts
 DEFAULTS
 
-# Make defaults.env read-only
 chmod 444 /cubeos/config/defaults.env
 
 # ---------------------------------------------------------------------------
-# Hostname — ensure it's cubeos (belt and suspenders with cloud-init)
+# Hostname
 # ---------------------------------------------------------------------------
 echo "[04] Setting hostname to cubeos..."
 echo "cubeos" > /etc/hostname
 hostnamectl set-hostname cubeos 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Coreapps Docker Compose files
+# Coreapps — copy from CI-cloned bundle (NO MORE HEREDOCS!)
 # ---------------------------------------------------------------------------
-echo "[04] Writing coreapps compose files..."
+# The coreapps-bundle was cloned from the cubeos/coreapps GitLab repo at
+# CI pipeline time and injected via packer file provisioner to /tmp/cubeos-coreapps/.
+# This ensures compose files ALWAYS match what's running on Pi 5 production.
+# ---------------------------------------------------------------------------
+echo "[04] Installing coreapps from GitLab bundle..."
 
-# ─── Pi-hole (Docker Compose — host network required for DHCP) ──────────
-cat > /cubeos/coreapps/pihole/appconfig/docker-compose.yml << 'PIHOLE'
-services:
-  pihole:
-    container_name: cubeos-pihole
-    image: pihole/pihole:latest
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - TZ=${TZ:-UTC}
-      - WEBPASSWORD=${PIHOLE_PASSWORD:-cubeos}
-      - FTLCONF_LOCAL_IPV4=10.42.24.1
-      - WEB_PORT=6001
-      - DNSMASQ_LISTENING=all
-      - PIHOLE_DNS_=1.1.1.1;8.8.8.8
-      - DHCP_ACTIVE=true
-      - DHCP_START=10.42.24.10
-      - DHCP_END=10.42.24.250
-      - DHCP_ROUTER=10.42.24.1
-      - PIHOLE_DOMAIN=cubeos.cube
-    volumes:
-      - /cubeos/coreapps/pihole/appdata/etc-pihole:/etc/pihole
-      - /cubeos/coreapps/pihole/appdata/etc-dnsmasq.d:/etc/dnsmasq.d
-    cap_add:
-      - NET_ADMIN
-    healthcheck:
-      test: ["CMD", "dig", "+short", "+norecurse", "+retry=0", "@127.0.0.1", "pi.hole"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-PIHOLE
+BUNDLE_SRC="/tmp/cubeos-coreapps"
 
-# ─── Pi-hole .env ──────────────────────────────────────────────────────
-cat > /cubeos/coreapps/pihole/appconfig/.env << 'PIHOLE_ENV'
-TZ=UTC
-PIHOLE_PASSWORD=cubeos
-PIHOLE_ENV
+if [ -d "$BUNDLE_SRC" ]; then
+    COPIED=0
+    SKIPPED=0
 
-# ─── NPM (Docker Compose — host network for ports 80/443) ──────────────
-cat > /cubeos/coreapps/npm/appconfig/docker-compose.yml << 'NPM'
-services:
-  npm:
-    container_name: cubeos-npm
-    image: jc21/nginx-proxy-manager:latest
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - TZ=${TZ:-UTC}
-      - DB_SQLITE_FILE=/data/database.sqlite
-    volumes:
-      - /cubeos/coreapps/npm/appdata/data:/data
-      - /cubeos/coreapps/npm/appdata/letsencrypt:/etc/letsencrypt
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:81/api/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-NPM
+    for svc_dir in "$BUNDLE_SRC"/*/; do
+        svc=$(basename "$svc_dir")
+        target="/cubeos/coreapps/${svc}"
 
-# ─── CubeOS API (Swarm stack) ──────────────────────────────────────────
-cat > /cubeos/coreapps/cubeos-api/appconfig/docker-compose.yml << 'API'
-services:
-  cubeos-api:
-    image: ghcr.io/cubeos-app/api:latest
-    ports:
-      - "6010:6010"
-    environment:
-      - TZ=${TZ:-UTC}
-      - CUBEOS_DB_PATH=/data/cubeos.db
-      - CUBEOS_CONFIG_PATH=/config
-      - CUBEOS_DOMAIN=cubeos.cube
-      - CUBEOS_GATEWAY_IP=10.42.24.1
-      - CUBEOS_HAL_URL=http://10.42.24.1:6013
-      - CUBEOS_PORT=6010
-      - CUBEOS_JWT_SECRET_FILE=/run/secrets/jwt_secret
-    volumes:
-      - /cubeos/data:/data
-      - /cubeos/config:/config:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /cubeos/coreapps:/cubeos/coreapps:ro
-    secrets:
-      - jwt_secret
-    deploy:
-      mode: replicated
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      resources:
-        limits:
-          memory: 256M
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:6010/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+        # Copy appconfig (compose files, .env)
+        if [ -d "${svc_dir}appconfig" ]; then
+            mkdir -p "${target}/appconfig"
+            cp -r "${svc_dir}appconfig/"* "${target}/appconfig/" 2>/dev/null || true
+            echo "[04]   Installed: ${svc}/appconfig/"
+            COPIED=$((COPIED + 1))
+        fi
 
-secrets:
-  jwt_secret:
-    external: true
-API
+        # Copy scripts (watchdog, deploy, init-swarm, etc.)
+        if [ -d "${svc_dir}scripts" ] || [ "$svc" = "scripts" ]; then
+            # Handle both coreapps/scripts/ dir and coreapps/*/scripts/ subdirs
+            if [ -d "${svc_dir}" ] && [ "$svc" = "scripts" ]; then
+                cp -r "${svc_dir}"* /cubeos/coreapps/scripts/ 2>/dev/null || true
+                chmod +x /cubeos/coreapps/scripts/*.sh 2>/dev/null || true
+                echo "[04]   Installed: coreapps/scripts/"
+            fi
+        fi
 
-# ─── CubeOS HAL (Docker Compose — needs host network for hardware) ─────
-cat > /cubeos/coreapps/cubeos-hal/appconfig/docker-compose.yml << 'HAL'
-services:
-  cubeos-hal:
-    container_name: cubeos-hal
-    image: ghcr.io/cubeos-app/hal:latest
-    network_mode: host
-    privileged: true
-    restart: unless-stopped
-    environment:
-      - TZ=${TZ:-UTC}
-      - HAL_PORT=6013
-      - HAL_HOST=0.0.0.0
-    volumes:
-      - /sys:/sys:ro
-      - /proc:/proc:ro
-      - /dev:/dev
-      - /run/dbus:/run/dbus:ro
-      - /etc/hostapd:/etc/hostapd
-      - /var/run/wpa_supplicant:/var/run/wpa_supplicant
-      - /cubeos:/cubeos
-      - /tmp:/tmp
-      - /:/host:ro
-    cap_add:
-      - NET_ADMIN
-      - SYS_RAWIO
-      - SYS_ADMIN
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:6013/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-HAL
+        # Copy src (HAL openapi.yaml etc.) — read-only reference
+        if [ -d "${svc_dir}src" ]; then
+            mkdir -p "${target}/src"
+            cp -r "${svc_dir}src/"* "${target}/src/" 2>/dev/null || true
+        fi
+    done
 
-# ─── CubeOS Dashboard (Swarm stack) ────────────────────────────────────
-cat > /cubeos/coreapps/cubeos-dashboard/appconfig/docker-compose.yml << 'DASH'
-services:
-  cubeos-dashboard:
-    image: ghcr.io/cubeos-app/dashboard:latest
-    ports:
-      - "6011:80"
-    environment:
-      - TZ=${TZ:-UTC}
-      - VITE_API_URL=http://cubeos.cube:6010
-    deploy:
-      mode: replicated
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      resources:
-        limits:
-          memory: 128M
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-DASH
+    # Handle top-level scripts directory if it exists in the bundle
+    if [ -d "${BUNDLE_SRC}/scripts" ]; then
+        cp -r "${BUNDLE_SRC}/scripts/"* /cubeos/coreapps/scripts/ 2>/dev/null || true
+        chmod +x /cubeos/coreapps/scripts/*.sh 2>/dev/null || true
+        echo "[04]   Installed: scripts/ (top-level)"
+    fi
+
+    # Handle top-level files (defaults.env, deploy-coreapps.sh, etc.)
+    for f in "${BUNDLE_SRC}"/*.sh "${BUNDLE_SRC}"/*.env; do
+        [ -f "$f" ] || continue
+        cp "$f" /cubeos/coreapps/
+        chmod +x /cubeos/coreapps/*.sh 2>/dev/null || true
+    done
+
+    echo "[04] Coreapps bundle installed (${COPIED} services)"
+else
+    echo "[04] WARNING: No coreapps bundle found at ${BUNDLE_SRC}"
+    echo "[04] Compose files will need to be deployed via CI on first connect."
+fi
+
+# Cleanup packer temp
+rm -rf "$BUNDLE_SRC"
 
 # ---------------------------------------------------------------------------
 # Install first-boot scripts from /tmp/cubeos-firstboot/
 # ---------------------------------------------------------------------------
 echo "[04] Installing first-boot scripts..."
 
-cp /tmp/cubeos-firstboot/cubeos-first-boot.sh    /usr/local/bin/
-cp /tmp/cubeos-firstboot/cubeos-normal-boot.sh    /usr/local/bin/
-cp /tmp/cubeos-firstboot/cubeos-boot-detect.sh    /usr/local/bin/
-cp /tmp/cubeos-firstboot/cubeos-generate-secrets.sh /usr/local/bin/
+cp /tmp/cubeos-firstboot/cubeos-first-boot.sh       /usr/local/bin/
+cp /tmp/cubeos-firstboot/cubeos-normal-boot.sh       /usr/local/bin/
+cp /tmp/cubeos-firstboot/cubeos-boot-detect.sh       /usr/local/bin/
+cp /tmp/cubeos-firstboot/cubeos-generate-secrets.sh  /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-generate-ap-creds.sh /usr/local/bin/
+cp /tmp/cubeos-firstboot/cubeos-deploy-stacks.sh     /usr/local/bin/
 
 chmod +x /usr/local/bin/cubeos-*.sh
 
 # ---------------------------------------------------------------------------
-# Install config templates from /tmp/cubeos-configs/
+# Config templates
 # ---------------------------------------------------------------------------
 echo "[04] Installing config templates..."
 
@@ -297,10 +254,19 @@ fi
 # ---------------------------------------------------------------------------
 echo "[04] Seeding Pi-hole custom DNS..."
 mkdir -p /cubeos/coreapps/pihole/appdata/etc-pihole/hosts
-echo "10.42.24.1 cubeos.cube" > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list
+cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
+10.42.24.1 cubeos.cube
+10.42.24.1 api.cubeos.cube
+10.42.24.1 npm.cubeos.cube
+10.42.24.1 pihole.cubeos.cube
+10.42.24.1 logs.cubeos.cube
+10.42.24.1 ollama.cubeos.cube
+10.42.24.1 registry.cubeos.cube
+10.42.24.1 docs.cubeos.cube
+DNS
 
 # ---------------------------------------------------------------------------
-# MOTD — show CubeOS info on SSH login
+# MOTD
 # ---------------------------------------------------------------------------
 echo "[04] Writing login banner..."
 
