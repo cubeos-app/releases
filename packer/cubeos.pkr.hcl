@@ -13,6 +13,7 @@
 #   - 02-networking.sh: /etc/hosts fallback for hostname resolution
 #   - 08-pihole-seed.sh: Pre-seed gravity.db for offline-first Pi-hole boot
 #   - Pi-hole compose: FTLCONF_ env vars for offline operation + wildcard DNS
+#   - Combined final shell provisioners to avoid Packer plugin process limit
 #
 # ALPHA.6 CHANGES:
 #   - Coreapps compose files cloned from GitLab at CI time (no more heredocs)
@@ -103,7 +104,6 @@ build {
     destination = "/tmp/cubeos-firstboot/"
   }
 
-  # Coreapps bundle from GitLab clone (replaces heredocs)
   provisioner "file" {
     source      = "coreapps-bundle/"
     destination = "/tmp/cubeos-coreapps/"
@@ -120,22 +120,15 @@ build {
     destination = "/var/cache/cubeos-images/"
   }
 
+  # Phase 4: Docker preload, Pi-hole seed, firstboot service, cleanup
+  # Combined into one provisioner to stay within Packer's plugin process limit.
+  # Scripts run sequentially in order listed.
   provisioner "shell" {
-    script = "packer/scripts/05-docker-preload.sh"
-  }
-
-  # Phase 4: Pi-hole offline seed (gravity.db via sqlite3, no Docker needed)
-  provisioner "shell" {
-    script = "packer/scripts/08-pihole-seed.sh"
-  }
-
-  # Phase 5: First-boot service
-  provisioner "shell" {
-    script = "packer/scripts/06-firstboot-service.sh"
-  }
-
-  # Phase 6: Cleanup
-  provisioner "shell" {
-    script = "packer/scripts/07-cleanup.sh"
+    scripts = [
+      "packer/scripts/05-docker-preload.sh",
+      "packer/scripts/08-pihole-seed.sh",
+      "packer/scripts/06-firstboot-service.sh",
+      "packer/scripts/07-cleanup.sh",
+    ]
   }
 }
