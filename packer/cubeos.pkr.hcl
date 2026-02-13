@@ -109,8 +109,10 @@ build {
     destination = "/tmp/cubeos-firstboot/"
   }
 
+  # Pass CUBEOS_VERSION from packer var → shell env → defaults.env
   provisioner "shell" {
-    script = "packer/scripts/04-cubeos.sh"
+    script           = "packer/scripts/04-cubeos.sh"
+    environment_vars = ["CUBEOS_VERSION=${var.version}"]
   }
 
   # ------------------------------------------------------------------

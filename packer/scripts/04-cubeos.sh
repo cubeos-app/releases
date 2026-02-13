@@ -4,10 +4,18 @@
 # =============================================================================
 # Creates /cubeos directory tree, installs config templates, copies coreapps
 # compose files, and installs first-boot scripts.
+#
+# v3: Uses CUBEOS_VERSION env var from CI pipeline (no hardcoded versions)
 # =============================================================================
 set -euo pipefail
 
 echo "=== [04] CubeOS Setup ==="
+
+# ---------------------------------------------------------------------------
+# Version — injected by CI pipeline, falls back to dev
+# ---------------------------------------------------------------------------
+CUBEOS_VERSION="${CUBEOS_VERSION:-0.0.0-dev}"
+echo "[04] Building CubeOS version: ${CUBEOS_VERSION}"
 
 # ---------------------------------------------------------------------------
 # Directory structure
@@ -27,16 +35,19 @@ chmod 755 /cubeos
 # ---------------------------------------------------------------------------
 # Default configuration — /cubeos/config/defaults.env
 # ---------------------------------------------------------------------------
-echo "[04] Writing defaults.env..."
+# NOTE: CUBEOS_VERSION is injected from CI env var, NOT hardcoded.
+# The heredoc uses double-quotes so $CUBEOS_VERSION is expanded at build time.
+# ---------------------------------------------------------------------------
+echo "[04] Writing defaults.env (version=${CUBEOS_VERSION})..."
 
-cat > /cubeos/config/defaults.env << 'DEFAULTS'
+cat > /cubeos/config/defaults.env << DEFAULTS
 # =============================================================================
 # CubeOS Default Configuration
 # Generated at image build time. Overridden by first-boot and wizard.
 # =============================================================================
 
 # --- Core ---
-CUBEOS_VERSION=0.1.0-alpha
+CUBEOS_VERSION=${CUBEOS_VERSION}
 CUBEOS_DOMAIN=cubeos.cube
 CUBEOS_GATEWAY_IP=10.42.24.1
 CUBEOS_SUBNET=10.42.24.0/24
@@ -76,6 +87,16 @@ NPM_ADMIN_EMAIL=admin@cubeos.cube
 # --- Docker ---
 DOCKER_REGISTRY=ghcr.io/cubeos-app
 DEFAULTS
+
+# Make defaults.env read-only
+chmod 444 /cubeos/config/defaults.env
+
+# ---------------------------------------------------------------------------
+# Hostname — ensure it's cubeos (belt and suspenders with cloud-init)
+# ---------------------------------------------------------------------------
+echo "[04] Setting hostname to cubeos..."
+echo "cubeos" > /etc/hostname
+hostnamectl set-hostname cubeos 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Coreapps Docker Compose files

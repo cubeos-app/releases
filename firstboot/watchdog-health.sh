@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# CubeOS Watchdog Health Check (v2 - hardened)
+# CubeOS Watchdog Health Check (v3 - Voyager)
 # =============================================================================
 # Runs every 60s via cubeos-watchdog.timer. Self-heals critical services.
 #
-# v2 CHANGES:
-#   - Recovers wlan0 IP if it vanishes
-#   - Fixes /etc/resolv.conf (prevents NPM crash loop)
+# v3 — VOYAGER EDITION:
+#   - Starts INDEPENDENTLY of cubeos-init (can heal during first boot)
+#   - NO /var/swap.cubeos references — ZRAM only
+#   - Kills zombie/stuck cubeos processes
+#   - Cleans up stale lock files
 #   - Recovers Swarm + recreates secrets if Swarm died
-#   - Works during first boot (removed setup_complete gate for compose services)
-#   - Checks compose services always, not just after setup
 # =============================================================================
 
 GATEWAY_IP="10.42.24.1"
@@ -54,7 +54,7 @@ for svc in "${!COMPOSE_SERVICES[@]}"; do
         echo "[WATCHDOG] ${svc} not running. Restarting..."
         COMPOSE_FILE="${COREAPPS_DIR}/${COMPOSE_SERVICES[$svc]}/appconfig/docker-compose.yml"
         [ -f "$COMPOSE_FILE" ] && \
-            docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || true
+            DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null || true
     fi
 done
 
@@ -67,10 +67,10 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
         --advertise-addr "$GATEWAY_IP" \
         --listen-addr "0.0.0.0:2377" \
         --force-new-cluster \
-        --task-history-limit 5 2>/dev/null || \
+        --task-history-limit 1 2>/dev/null || \
     docker swarm init \
         --listen-addr "0.0.0.0:2377" \
-        --task-history-limit 5 2>/dev/null || true
+        --task-history-limit 1 2>/dev/null || true
 
     # Recreate secrets after Swarm recovery
     if docker info 2>/dev/null | grep -q "Swarm: active"; then
@@ -108,6 +108,33 @@ fi
 if ! swapon --show 2>/dev/null | grep -q zram; then
     echo "[WATCHDOG] ZRAM swap not active! Starting..."
     systemctl start systemd-zram-setup@zram0.service 2>/dev/null || true
+fi
+
+# ── Clean up obsolete SD card swap ──────────────────────────────────
+# If an old /var/swap.cubeos exists, disable and remove it
+if [ -f /var/swap.cubeos ]; then
+    echo "[WATCHDOG] Found obsolete /var/swap.cubeos — removing..."
+    swapoff /var/swap.cubeos 2>/dev/null || true
+    rm -f /var/swap.cubeos
+    sed -i '\|/var/swap.cubeos|d' /etc/fstab 2>/dev/null || true
+fi
+
+# ── Zombie process cleanup ──────────────────────────────────────────
+# Kill any zombie cubeos boot processes older than 20 minutes
+ZOMBIE_PIDS=$(ps aux 2>/dev/null | grep "cubeos-first-boot\|cubeos-normal-boot" | grep -v grep | \
+    awk '{if ($10 ~ /[0-9]+:[0-9]+/ && $10 > "00:20") print $2}')
+if [ -n "$ZOMBIE_PIDS" ]; then
+    echo "[WATCHDOG] Killing stale boot processes: $ZOMBIE_PIDS"
+    echo "$ZOMBIE_PIDS" | xargs kill -9 2>/dev/null || true
+fi
+
+# ── Stale heartbeat cleanup ─────────────────────────────────────────
+if [ -f /tmp/cubeos-boot-heartbeat ]; then
+    HEARTBEAT_AGE=$(( $(date +%s) - $(stat -c %Y /tmp/cubeos-boot-heartbeat 2>/dev/null || echo 0) ))
+    if [ "$HEARTBEAT_AGE" -gt 1200 ]; then
+        echo "[WATCHDOG] Stale heartbeat file (${HEARTBEAT_AGE}s old) — cleaning up"
+        rm -f /tmp/cubeos-boot-heartbeat /tmp/cubeos-boot-progress /tmp/cubeos-swarm-ready
+    fi
 fi
 
 # ── Disk space ──────────────────────────────────────────────────────

@@ -112,12 +112,6 @@ echo "[02]   systemd-resolved stub listener disabled"
 # ---------------------------------------------------------------------------
 # sysctl — IP forwarding is already enabled in golden base image
 # ---------------------------------------------------------------------------
-# /etc/sysctl.d/99-cubeos.conf (from 01-ubuntu-base.sh) sets:
-#   net.ipv4.ip_forward = 1
-#   net.ipv6.conf.all.forwarding = 1
-#   net.core.somaxconn = 1024
-#   net.ipv4.tcp_max_syn_backlog = 1024
-# No additional sysctl config needed here.
 echo "[02]   IP forwarding: already configured in base image"
 
 # ---------------------------------------------------------------------------
@@ -266,6 +260,10 @@ rfkill unblock wifi 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Cloud-init — configure for Raspberry Pi Imager support
 # ---------------------------------------------------------------------------
+# CRITICAL: Must set default_user to cubeos, otherwise Ubuntu cloud-init
+# creates 'ubuntu' user and ignores the cubeos user from golden base.
+# Must set hostname to cubeos, otherwise it stays 'ubuntu'.
+# ---------------------------------------------------------------------------
 echo "[02] Configuring cloud-init..."
 mkdir -p /etc/cloud/cloud.cfg.d
 
@@ -281,9 +279,38 @@ datasource:
 network:
   config: disabled
 
-# Preserve our hostname setup
-preserve_hostname: true
+# Set hostname to cubeos
+preserve_hostname: false
+hostname: cubeos
+
+# Override default user from ubuntu to cubeos
+system_info:
+  default_user:
+    name: cubeos
+    lock_passwd: false
+    gecos: CubeOS Admin
+    groups: [sudo, docker, adm, i2c]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+
+# Set default password (user should change via wizard)
+chpasswd:
+  expire: false
+  users:
+    - name: cubeos
+      password: cubeos
+      type: text
+
+# Disable creating the ubuntu user
+users:
+  - default
 CLOUDINIT
+
+# Also set hostname directly in the image (belt and suspenders)
+echo "cubeos" > /etc/hostname
+# Update /etc/hosts
+sed -i 's/127\.0\.1\.1.*/127.0.1.1\tcubeos/' /etc/hosts 2>/dev/null || \
+    echo "127.0.1.1	cubeos" >> /etc/hosts
 
 # Enable cloud-init for first boot only
 systemctl enable cloud-init 2>/dev/null || true
