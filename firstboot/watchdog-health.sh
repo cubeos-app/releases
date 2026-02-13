@@ -67,10 +67,10 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
         --advertise-addr "$GATEWAY_IP" \
         --listen-addr "0.0.0.0:2377" \
         --force-new-cluster \
-        --task-history-limit 1 2>/dev/null || \
+        --task-history-limit 5 2>/dev/null || \
     docker swarm init \
         --listen-addr "0.0.0.0:2377" \
-        --task-history-limit 1 2>/dev/null || true
+        --task-history-limit 5 2>/dev/null || true
 
     # Recreate secrets after Swarm recovery
     if docker info 2>/dev/null | grep -q "Swarm: active"; then
@@ -104,10 +104,10 @@ if ! systemctl is-active --quiet hostapd; then
     systemctl start hostapd 2>/dev/null || true
 fi
 
-# ── Swap ────────────────────────────────────────────────────────────
-SWAP_FILE="/var/swap.cubeos"
-if ! swapon --show | grep -q .; then
-    [ -f "$SWAP_FILE" ] && swapon "$SWAP_FILE" 2>/dev/null || true
+# ── ZRAM Swap ──────────────────────────────────────────────────────
+if ! swapon --show 2>/dev/null | grep -q zram; then
+    echo "[WATCHDOG] ZRAM swap not active! Starting..."
+    systemctl start systemd-zram-setup@zram0.service 2>/dev/null || true
 fi
 
 # ── Disk space ──────────────────────────────────────────────────────

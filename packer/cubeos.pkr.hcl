@@ -20,7 +20,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha"
+  default = "0.1.0-alpha.4"
 }
 
 variable "image_size" {
