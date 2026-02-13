@@ -23,7 +23,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.6.1"
+  CUBEOS_VERSION: "0.1.0-alpha.7"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -73,7 +73,7 @@ build-image:
       set -e
       echo ""
       echo "============================================================"
-      echo "  Phase 0a: Clone coreapps repo (alpha.6 — single source of truth)"
+      echo "  Phase 0a: Clone coreapps repo (alpha.7 — single source of truth)"
       echo "============================================================"
 
       git clone --depth 1 \
