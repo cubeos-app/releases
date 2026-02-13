@@ -6,7 +6,14 @@
 # iptables NAT rules, and cloud-init for Raspberry Pi Imager support.
 #
 # Ubuntu 24.04 uses Netplan + systemd-networkd (NOT dhcpcd like Pi OS).
-# This matches the CubeOS production environment.
+# This matches the CubeOS production environment (nllei01mule01).
+#
+# ALPHA.7 CHANGES (from alpha.6):
+#   - eth0: dhcp-identifier=mac, use-dns=false, nameserver=10.42.24.1
+#     (prevents upstream DHCP from overriding Pi-hole as resolver)
+#   - systemd-resolved: DNS=127.0.0.1, Domains=cubeos.cube
+#     (host can resolve *.cubeos.cube via Pi-hole)
+#   - /etc/hosts fallback for hostname resolution before Pi-hole starts
 #
 # CRITICAL DESIGN DECISIONS:
 #   - wlan0 is under 'ethernets' (NOT 'wifis') because hostapd manages it
@@ -74,7 +81,13 @@ network:
   ethernets:
     eth0:
       dhcp4: true
+      dhcp-identifier: mac
       optional: true
+      dhcp4-overrides:
+        use-dns: false
+      nameservers:
+        addresses:
+          - 10.42.24.1
 
     # wlan0 is intentionally here, not under 'wifis:'
     # hostapd handles all radio/association; we just need the IP.
@@ -87,27 +100,43 @@ network:
 NETPLAN
 
 chmod 600 /etc/netplan/01-cubeos.yaml
-echo "[02]   Netplan configured (wlan0=10.42.24.1, eth0=DHCP)"
+echo "[02]   Netplan configured (wlan0=10.42.24.1, eth0=DHCP+Pi-hole DNS)"
 
 # ---------------------------------------------------------------------------
-# systemd-resolved — disable stub listener to free port 53 for Pi-hole
+# systemd-resolved — disable stub listener + point to Pi-hole
 # ---------------------------------------------------------------------------
 # By default, systemd-resolved listens on 127.0.0.53:53 which blocks
 # Pi-hole's dnsmasq from binding to port 53 on all interfaces.
+# Also configure the host to use Pi-hole for DNS resolution, including
+# *.cubeos.cube local domain.
 # ---------------------------------------------------------------------------
-echo "[02] Disabling systemd-resolved stub listener..."
+echo "[02] Configuring systemd-resolved..."
 mkdir -p /etc/systemd/resolved.conf.d
 
-cat > /etc/systemd/resolved.conf.d/no-stub.conf << 'RESOLVED'
-# CubeOS: Disable stub listener to let Pi-hole handle DNS on port 53
+cat > /etc/systemd/resolved.conf.d/cubeos.conf << 'RESOLVED'
+# CubeOS: Disable stub listener (Pi-hole needs port 53) + use Pi-hole for DNS
 [Resolve]
 DNSStubListener=no
+DNS=127.0.0.1
+Domains=cubeos.cube
 RESOLVED
 
 # Point /etc/resolv.conf to the real resolved output (not the stub)
 ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
 
-echo "[02]   systemd-resolved stub listener disabled"
+echo "[02]   systemd-resolved configured (stub disabled, DNS=127.0.0.1)"
+
+# ---------------------------------------------------------------------------
+# /etc/hosts fallback — hostname resolution before Pi-hole starts
+# ---------------------------------------------------------------------------
+# Ensures 'sudo' and other tools can resolve the hostname even when
+# Pi-hole is not yet running (e.g., early in boot sequence).
+# ---------------------------------------------------------------------------
+echo "[02] Configuring /etc/hosts fallback..."
+if ! grep -q "cubeos" /etc/hosts 2>/dev/null; then
+    echo "127.0.1.1 cubeos" >> /etc/hosts
+fi
+echo "[02]   /etc/hosts fallback configured"
 
 # ---------------------------------------------------------------------------
 # sysctl — IP forwarding is already enabled in golden base image
@@ -308,9 +337,8 @@ CLOUDINIT
 
 # Also set hostname directly in the image (belt and suspenders)
 echo "cubeos" > /etc/hostname
-# Update /etc/hosts
-sed -i 's/127\.0\.1\.1.*/127.0.1.1\tcubeos/' /etc/hosts 2>/dev/null || \
-    echo "127.0.1.1	cubeos" >> /etc/hosts
+# Update /etc/hosts (may already have been added above, sed handles duplicates)
+sed -i 's/127\.0\.1\.1.*/127.0.1.1\tcubeos/' /etc/hosts 2>/dev/null || true
 
 # Enable cloud-init for first boot only
 systemctl enable cloud-init 2>/dev/null || true

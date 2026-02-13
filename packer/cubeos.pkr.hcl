@@ -1,11 +1,18 @@
 # =============================================================================
-# CubeOS Release Image Builder — v0.1.0-alpha.6
+# CubeOS Release Image Builder — v0.1.0-alpha.7
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
 # Uses the "golden base image" (Ubuntu 24.04.3 with all packages pre-installed)
 # so this build only writes configuration, compose files, and firstboot scripts.
 # No apt-get, no package downloads — build time is ~3-5 minutes.
+#
+# ALPHA.7 CHANGES:
+#   - 02-networking.sh: eth0 DHCP hardening (dhcp-identifier, use-dns:false)
+#   - 02-networking.sh: systemd-resolved points to Pi-hole + cubeos.cube domain
+#   - 02-networking.sh: /etc/hosts fallback for hostname resolution
+#   - 08-pihole-seed.sh: Pre-seed gravity.db for offline-first Pi-hole boot
+#   - Pi-hole compose: FTLCONF_ env vars for offline operation + wildcard DNS
 #
 # ALPHA.6 CHANGES:
 #   - Coreapps compose files cloned from GitLab at CI time (no more heredocs)
@@ -19,7 +26,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.6"
+  default = "0.1.0-alpha.7"
 }
 
 variable "image_size" {
@@ -80,7 +87,7 @@ source "arm" "cubeos" {
 build {
   sources = ["source.arm.cubeos"]
 
-  # Phase 1: Networking
+  # Phase 1: Networking (hostapd, NAT, cloud-init, netplan)
   provisioner "shell" {
     script = "packer/scripts/02-networking.sh"
   }
@@ -96,7 +103,7 @@ build {
     destination = "/tmp/cubeos-firstboot/"
   }
 
-  # ALPHA.6: Coreapps bundle from GitLab clone (replaces heredocs)
+  # Coreapps bundle from GitLab clone (replaces heredocs)
   provisioner "file" {
     source      = "coreapps-bundle/"
     destination = "/tmp/cubeos-coreapps/"
@@ -117,12 +124,17 @@ build {
     script = "packer/scripts/05-docker-preload.sh"
   }
 
-  # Phase 4: First-boot service
+  # Phase 4: Pi-hole offline seed (gravity.db via sqlite3, no Docker needed)
+  provisioner "shell" {
+    script = "packer/scripts/08-pihole-seed.sh"
+  }
+
+  # Phase 5: First-boot service
   provisioner "shell" {
     script = "packer/scripts/06-firstboot-service.sh"
   }
 
-  # Phase 5: Cleanup
+  # Phase 6: Cleanup
   provisioner "shell" {
     script = "packer/scripts/07-cleanup.sh"
   }
