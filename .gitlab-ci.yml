@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Coreapps Pipeline - Validate, Build, Deploy, Image
+# CubeOS Releases Pipeline - Build, Deploy, Image
 # =============================================================================
 # 
 # Features:
@@ -11,7 +11,6 @@
 # - Packer image build with coreapps bundle (manual trigger)
 #
 stages:
-  - validate
   - build
   - package
   - deploy
@@ -31,39 +30,6 @@ variables:
   # HAL image
   HAL_IMAGE: "ghcr.io/cubeos-app/hal"
   BUILDER_IMAGE: "ghcr.io/cubeos-app/api-builder:latest"
-
-validate-compose:
-  stage: validate
-  image: registry-gitlab.nuclearlighters.net/products/cubeos/coreapps/ci-utils:latest
-  tags:
-    - multiarch
-  script:
-    - |
-      # Create dummy env files for validation (real files are on Pi)
-      mkdir -p /cubeos/config
-      touch /cubeos/config/defaults.env
-      touch /cubeos/config/secrets.env
-      
-      for dir in */; do
-        if [ -f "${dir}appconfig/docker-compose.yml" ]; then
-          echo "Checking ${dir}..."
-          docker compose -f "${dir}appconfig/docker-compose.yml" config -q || exit 1
-        fi
-      done
-      echo "✅ All compose files valid"
-  rules:
-    - if: $CI_COMMIT_BRANCH
-
-shellcheck:
-  stage: validate
-  image: registry-gitlab.nuclearlighters.net/products/cubeos/coreapps/ci-utils:latest
-  tags:
-    - multiarch
-  script:
-    - find . -name "*.sh" -type f -exec shellcheck -x {} \;
-  rules:
-    - if: $CI_COMMIT_BRANCH
-  allow_failure: true
 
 # -----------------------------------------------------------------------------
 # BUILD HAL - Generate OpenAPI docs + Compile Go binary for both architectures
