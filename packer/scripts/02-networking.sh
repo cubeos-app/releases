@@ -94,8 +94,7 @@ network:
     wlan0:
       addresses:
         - 10.42.24.1/24
-      # No gateway — this is the AP interface, not a client
-      # No DNS — Pi-hole handles DNS on this subnet
+      link-local: []
       optional: true
 NETPLAN
 
@@ -352,6 +351,10 @@ systemctl enable cloud-init 2>/dev/null || true
 echo "[02] Enabling SSH password authentication..."
 mkdir -p /etc/ssh/sshd_config.d
 echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-cubeos.conf
+# Cloud-init creates 50-cloud-init.conf with PasswordAuthentication no.
+# OpenSSH uses first-match-wins in sshd_config.d/, so 50-* beats 99-*.
+# Delete it now, and again in first-boot (cloud-init may regenerate it).
+rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 echo "[02]   SSH password auth enabled (via sshd_config.d/99-cubeos.conf)"
 
 echo "[02] Network configuration complete."

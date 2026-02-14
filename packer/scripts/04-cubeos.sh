@@ -87,6 +87,7 @@ cat > /cubeos/config/defaults.env << DEFAULTS
 # ===================
 # System Settings
 # ===================
+CUBEOS_VERSION=${CUBEOS_VERSION}
 TZ=UTC
 DOMAIN=cubeos.cube
 

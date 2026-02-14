@@ -7,6 +7,10 @@
 # v6 — ALPHA.9 FIXES:
 #   1. Docker images pre-loaded at CI time (Phase 1b) — no ensure_image_loaded waits
 #   2. Image verification only — log presence, don't try to load from tarballs
+#   3. B10: Background watchdog start (was blocking 195s on Pi 4B)
+#   4. B13: Watchdog timer enabled at end of first-boot, not during Packer build
+#   5. B5: Safety net deletion of cloud-init SSH override
+#   6. B1: Defensive SSID check before starting hostapd
 #
 # v5 — ALPHA.8 FIXES:
 #   1. secrets.env permissions: 640 root:docker (CI redeploy fix)
@@ -190,6 +194,9 @@ log ""
 
 start_dead_mans_switch
 
+# B5 safety net: cloud-init may regenerate 50-cloud-init.conf with PasswordAuthentication no
+rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
+
 # =========================================================================
 # Step 1/9: ZRAM Swap + Watchdog
 # =========================================================================
@@ -204,7 +211,11 @@ else
     swapon --show 2>/dev/null | grep -q zram && log_ok "ZRAM swap started" || log_warn "ZRAM swap not available"
 fi
 
-[ -e /dev/watchdog ] && systemctl start watchdog 2>/dev/null && log_ok "Hardware watchdog enabled" || true
+# Start hardware watchdog in background (B10 fix: synchronous start hangs 195s on Pi 4B)
+if [ -e /dev/watchdog ]; then
+    ( systemctl start watchdog 2>/dev/null ) &
+    log_ok "Hardware watchdog starting in background"
+fi
 
 log "[BOOT]   $(free -h | awk '/^Mem:/{printf "RAM: total=%s avail=%s", $2, $7}') $(free -h | awk '/^Swap:/{printf "Swap: %s", $2}')"
 
@@ -368,6 +379,14 @@ echo "6/9" > "$PROGRESS"
 source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
 rfkill unblock wifi 2>/dev/null || true
 systemctl unmask hostapd 2>/dev/null || true
+
+# B1 fix: Ensure SSID was set (in case AP creds failed in Step 3)
+if grep -q "ssid=CubeOS-Setup" /etc/hostapd/hostapd.conf; then
+    log_warn "SSID still at default — running AP creds generation"
+    /usr/local/bin/cubeos-generate-ap-creds.sh 2>/dev/null || true
+    source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
+fi
+
 if systemctl start hostapd 2>/dev/null; then
     log_ok "AP started: ${CUBEOS_AP_SSID:-CubeOS-Setup}"
 else
@@ -483,6 +502,12 @@ log "  Dashboard: http://cubeos.cube  or  http://${GATEWAY_IP}"
 log "  Login:     admin / cubeos"
 log ""
 log "============================================================"
+
+# B13 fix: Start watchdog monitoring now that all services are deployed
+# (Timer is NOT enabled during Packer build — avoids I/O contention during first boot)
+systemctl enable cubeos-watchdog.timer 2>/dev/null || true
+systemctl start cubeos-watchdog.timer 2>/dev/null || true
+log_ok "Watchdog monitoring started"
 
 mkdir -p "$(dirname "$SETUP_FLAG")"
 touch "$SETUP_FLAG"

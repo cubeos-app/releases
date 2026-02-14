@@ -148,7 +148,9 @@ BOOT_WD_TMR
 # Enable services
 # ---------------------------------------------------------------------------
 systemctl enable cubeos-init.service 2>/dev/null || true
-systemctl enable cubeos-watchdog.timer 2>/dev/null || true
+# Watchdog timer is started by first-boot script AFTER all services are deployed.
+# DO NOT enable here — it would run during first boot and waste I/O.
+# systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 systemctl enable cubeos-boot-watchdog.timer 2>/dev/null || true
 
 echo "[06] First-boot service installed (timeout=infinity, dead man's switch built-in)."
