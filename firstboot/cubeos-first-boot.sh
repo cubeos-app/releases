@@ -11,6 +11,8 @@
 #   4. B13: Watchdog timer enabled at end of first-boot, not during Packer build
 #   5. B5: Safety net deletion of cloud-init SSH override
 #   6. B1: Defensive SSID check before starting hostapd
+#   7. B2: NPM seeding — creates admin user + 6 proxy hosts on first boot
+#   8. B11: Swarm deploy retry (3 attempts), 10s stabilization delay, prioritized order
 #
 # v5 — ALPHA.8 FIXES:
 #   1. secrets.env permissions: 640 root:docker (CI redeploy fix)
@@ -168,14 +170,115 @@ deploy_stack() {
         log_warn "No compose file for stack ${name}"
         return 1
     fi
-    log "[BOOT]   Deploying stack: ${name}..."
-    if docker stack deploy -c "$compose_file" --resolve-image never "$name" 2>&1; then
-        log_ok "Stack ${name} deployed"
+    local attempt
+    for attempt in 1 2 3; do
+        log "[BOOT]   Deploying stack: ${name} (attempt ${attempt})..."
+        if docker stack deploy -c "$compose_file" --resolve-image never "$name" 2>&1; then
+            log_ok "Stack ${name} deployed"
+            return 0
+        fi
+        sleep 3
+    done
+    log_fail "Stack ${name} deploy failed after 3 attempts"
+    return 1
+}
+
+seed_npm() {
+    local NPM_API="http://127.0.0.1:81/api"
+    local NPM_EMAIL="admin@cubeos.cube"
+    local NPM_PASSWORD
+    NPM_PASSWORD=$(openssl rand -hex 16)
+
+    # Step 1: Check if NPM needs initial setup
+    local SETUP_STATUS
+    SETUP_STATUS=$(curl -sf "${NPM_API}/" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('setup', {}).get('status', 'unknown'))
+except:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
+
+    if [ "$SETUP_STATUS" != "false" ] && [ "$SETUP_STATUS" != "unknown" ]; then
+        log_ok "NPM already initialized"
         return 0
-    else
-        log_fail "Stack ${name} deploy failed"
+    fi
+
+    # Step 2: Create initial admin user
+    log "[BOOT]   NPM: Creating admin user..."
+    local CREATE_RESP
+    CREATE_RESP=$(curl -sf -X POST "${NPM_API}/users" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"name\": \"CubeOS Admin\",
+            \"nickname\": \"admin\",
+            \"email\": \"${NPM_EMAIL}\",
+            \"roles\": [\"admin\"],
+            \"is_disabled\": false,
+            \"auth\": {
+                \"type\": \"password\",
+                \"secret\": \"${NPM_PASSWORD}\"
+            }
+        }" 2>/dev/null) || { log_warn "NPM user creation failed"; return 1; }
+
+    # Step 3: Get auth token
+    log "[BOOT]   NPM: Authenticating..."
+    local TOKEN_RESP TOKEN
+    TOKEN_RESP=$(curl -sf -X POST "${NPM_API}/tokens" \
+        -H "Content-Type: application/json" \
+        -d "{\"identity\": \"${NPM_EMAIL}\", \"secret\": \"${NPM_PASSWORD}\"}" \
+        2>/dev/null) || { log_warn "NPM auth failed"; return 1; }
+
+    TOKEN=$(echo "$TOKEN_RESP" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('token', ''))
+" 2>/dev/null)
+
+    if [ -z "$TOKEN" ]; then
+        log_warn "NPM: no token received"
         return 1
     fi
+
+    # Step 4: Create proxy hosts
+    local -a PROXY_HOSTS=(
+        "cubeos.cube:6011"
+        "api.cubeos.cube:6010"
+        "dozzle.cubeos.cube:6012"
+        "pihole.cubeos.cube:6001"
+        "npm.cubeos.cube:81"
+        "registry.cubeos.cube:5000"
+    )
+
+    for entry in "${PROXY_HOSTS[@]}"; do
+        local domain="${entry%%:*}"
+        local port="${entry##*:}"
+        log "[BOOT]   NPM: Proxy ${domain} → :${port}"
+        curl -sf -X POST "${NPM_API}/nginx/proxy-hosts" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -d "{
+                \"domain_names\": [\"${domain}\"],
+                \"forward_scheme\": \"http\",
+                \"forward_host\": \"${GATEWAY_IP}\",
+                \"forward_port\": ${port},
+                \"block_exploits\": false,
+                \"allow_websocket_upgrade\": true,
+                \"access_list_id\": 0,
+                \"certificate_id\": 0,
+                \"advanced_config\": \"\",
+                \"meta\": {\"dns_challenge\": false},
+                \"locations\": []
+            }" 2>/dev/null || log_warn "  Failed: ${domain}"
+    done
+
+    # Step 5: Store NPM password in secrets.env
+    if [ -f "${CONFIG_DIR}/secrets.env" ]; then
+        echo "CUBEOS_NPM_PASSWORD=${NPM_PASSWORD}" >> "${CONFIG_DIR}/secrets.env"
+        echo "CUBEOS_NPM_EMAIL=${NPM_EMAIL}" >> "${CONFIG_DIR}/secrets.env"
+    fi
+
+    log_ok "NPM initialized with 6 proxy hosts"
 }
 
 # =============================================================================
@@ -414,6 +517,7 @@ DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
     -f "${COREAPPS_DIR}/npm/appconfig/docker-compose.yml" \
     up -d --pull never 2>&1 || log_warn "NPM deploy failed"
 wait_for "NPM" "curl -sf http://127.0.0.1:81/api/" 90 || log_warn "NPM not responding"
+seed_npm || log_warn "NPM seeding failed — cubeos.cube may show default page"
 
 # HAL — port 6005 (NOT 6013!)
 if docker image inspect "ghcr.io/cubeos-app/hal:latest" &>/dev/null; then
@@ -433,13 +537,27 @@ log_step "Step 8/9: Deploying platform services..."
 echo "8/9" > "$PROGRESS"
 
 if [ "$SWARM_READY" = true ]; then
-    # Deploy all stacks matching Pi 5 production
+    # B11 fix: Give Swarm time to stabilize after init before accepting deploys
+    log "[BOOT]   Waiting 10s for Swarm to stabilize..."
+    sleep 10
+    date +%s > "$HEARTBEAT"
+
+    # Deploy stacks with pre-loaded images first (higher chance of success)
     # Images are pre-loaded into overlay2 at CI build time (Phase 1b)
     # --resolve-image=never in deploy_stack() means Swarm won't pull
-    STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
-    for stack in $STACKS; do
+    STACKS_WITH_IMAGES="cubeos-api cubeos-dashboard"
+    STACKS_NO_IMAGES="registry dozzle ollama chromadb"
+
+    for stack in $STACKS_WITH_IMAGES; do
         deploy_stack "$stack" || true
-        sleep 2
+        sleep 3
+        date +%s > "$HEARTBEAT"
+    done
+
+    # Deploy remaining stacks (will be 0/1 until images are available)
+    for stack in $STACKS_NO_IMAGES; do
+        deploy_stack "$stack" || true
+        sleep 1
         date +%s > "$HEARTBEAT"
     done
 
