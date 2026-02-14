@@ -40,9 +40,9 @@ CUBEOS_SESSION_SECRET=${SESSION_SECRET}
 CUBEOS_PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
 EOF
 
-# Restrict permissions
-chmod 600 "$SECRETS_FILE"
-chown root:root "$SECRETS_FILE"
+# Restrict permissions — group-readable for docker group (gitlab-runner needs access for CI redeploys)
+chmod 640 "$SECRETS_FILE"
+chown root:docker "$SECRETS_FILE"
 
 echo "[SECRETS] Secrets generated and saved to ${SECRETS_FILE}"
 

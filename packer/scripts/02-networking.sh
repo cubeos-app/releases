@@ -343,4 +343,15 @@ sed -i 's/127\.0\.1\.1.*/127.0.1.1\tcubeos/' /etc/hosts 2>/dev/null || true
 # Enable cloud-init for first boot only
 systemctl enable cloud-init 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# SSH — enable password authentication for initial access
+# ---------------------------------------------------------------------------
+# Cloud-init defaults to publickey-only. Users need password auth to connect
+# via ssh cubeos@10.42.24.1 on first setup. They can add keys later.
+# ---------------------------------------------------------------------------
+echo "[02] Enabling SSH password authentication..."
+mkdir -p /etc/ssh/sshd_config.d
+echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-cubeos.conf
+echo "[02]   SSH password auth enabled (via sshd_config.d/99-cubeos.conf)"
+
 echo "[02] Network configuration complete."

@@ -1,8 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v4 - Alpha.6)
+# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v5 - Alpha.8)
 # =============================================================================
 # Runs ONCE on the very first power-on of a new CubeOS device.
+#
+# v5 — ALPHA.8 FIXES:
+#   1. secrets.env permissions: 640 root:docker (CI redeploy fix)
+#   2. Removed ensure_image_loaded placeholder guards (confusing error msgs)
+#   3. Cloud-init disabled after first boot (air-gap timeout fix)
 #
 # v4 — ALPHA.6 FIXES:
 #   1. Network name: cubeos-network (was cubeos) — matches all compose files
@@ -174,7 +179,7 @@ date +%s > "$HEARTBEAT"
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 
 log "============================================================"
-log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown} (alpha.6)"
+log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown} (alpha.8)"
 log "  $(date)"
 log "============================================================"
 log ""
@@ -224,6 +229,12 @@ log_ok "SSID: ${CUBEOS_AP_SSID:-CubeOS-Setup}"
 log_ok "Key:  ${CUBEOS_AP_KEY:-cubeos-setup}"
 
 /usr/local/bin/cubeos-generate-secrets.sh 2>/dev/null || log_warn "Secrets generation failed"
+
+# Ensure secrets.env is readable by docker group (needed for docker stack deploy env_file)
+if [ -f "${CONFIG_DIR}/secrets.env" ]; then
+    chmod 640 "${CONFIG_DIR}/secrets.env"
+    chown root:docker "${CONFIG_DIR}/secrets.env"
+fi
 
 # =========================================================================
 # Step 4/9: Docker + Swarm
@@ -388,9 +399,10 @@ echo "8/9" > "$PROGRESS"
 
 if [ "$SWARM_READY" = true ]; then
     # Deploy all stacks matching Pi 5 production
+    # Images are already loaded by cubeos-docker-preload.service
+    # --resolve-image=never in deploy_stack() means Swarm won't pull
     STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
     for stack in $STACKS; do
-        ensure_image_loaded "placeholder" "$stack" 2>/dev/null || true
         deploy_stack "$stack" || true
         sleep 2
         date +%s > "$HEARTBEAT"
@@ -459,6 +471,10 @@ log "============================================================"
 mkdir -p "$(dirname "$SETUP_FLAG")"
 touch "$SETUP_FLAG"
 log "[BOOT] Setup flag created — next boot will run normal-boot.sh"
+
+# Disable cloud-init on subsequent boots (prevents timeout delays on air-gapped operation)
+touch /etc/cloud/cloud-init.disabled
+log "[BOOT] Cloud-init disabled for subsequent boots"
 
 rm -f "$HEARTBEAT" "$PROGRESS" /tmp/cubeos-swarm-ready
 

@@ -1,11 +1,20 @@
 # =============================================================================
-# CubeOS Release Image Builder — v0.1.0-alpha.7
+# CubeOS Release Image Builder — v0.1.0-alpha.8
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
 # Uses the "golden base image" (Ubuntu 24.04.3 with all packages pre-installed)
 # so this build only writes configuration, compose files, and firstboot scripts.
 # No apt-get, no package downloads — build time is ~3-5 minutes.
+#
+# ALPHA.8 CHANGES:
+#   - secrets.env permissions: 640 root:docker (was 600 root:root)
+#   - SSH password auth enabled via sshd_config.d/99-cubeos.conf
+#   - cloud-init disabled after first boot (prevents air-gap timeout delays)
+#   - Removed ensure_image_loaded placeholder guards from stack deploy
+#   - Dashboard nginx proxy_pass fix (66188a7)
+#   - NPM core proxy rule auto-seeding on API startup (de0cffd)
+#   - secrets.env mounted into API container (4e43a3a)
 #
 # ALPHA.7 CHANGES:
 #   - 02-networking.sh: eth0 DHCP hardening (dhcp-identifier, use-dns:false)
@@ -27,7 +36,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.7"
+  default = "0.1.0-alpha.8"
 }
 
 variable "image_size" {
