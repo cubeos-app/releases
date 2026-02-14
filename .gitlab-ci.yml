@@ -73,7 +73,7 @@ build-image:
       set -e
       echo ""
       echo "============================================================"
-      echo "  Phase 0a: Clone coreapps repo (alpha.7 — single source of truth)"
+      echo "  Phase 0a: Clone coreapps repo (alpha.9 — single source of truth)"
       echo "============================================================"
 
       git clone --depth 1 \
@@ -216,7 +216,7 @@ build-image:
       #   --containerd=""  → don't connect to containerd (avoid socket conflicts)
       echo "Starting temporary dockerd with --data-root /mnt/cubeos-image/var/lib/docker..."
 
-      dockerd \
+      /usr/bin/dockerd \
         --data-root /mnt/cubeos-image/var/lib/docker \
         --storage-driver overlay2 \
         -H unix:///tmp/cubeos-preload.sock \
@@ -230,7 +230,7 @@ build-image:
 
       echo "Waiting for dockerd (PID: $DOCKERD_PID)..."
       for i in $(seq 1 60); do
-        if docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
+        if /usr/bin/docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
           echo "  dockerd ready (${i}s)"
           break
         fi
@@ -246,7 +246,7 @@ build-image:
       done
 
       # ── Step 3: Load ARM64 tarballs ────────────────────────────────
-      DOCKER_CMD="docker -H unix:///tmp/cubeos-preload.sock"
+      DOCKER_CMD="/usr/bin/docker -H unix:///tmp/cubeos-preload.sock"
       LOADED=0
       FAILED=0
 
