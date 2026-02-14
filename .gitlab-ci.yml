@@ -67,7 +67,7 @@ build-image:
       # Install tools
       echo "Installing tools..."
       apt-get update -q 2>&1 | tail -3
-      apt-get install -y -q skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git 2>&1 | tail -5
+      apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git 2>&1 | tail -5
       echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
     - |
       set -e
@@ -216,7 +216,7 @@ build-image:
       #   --containerd=""  → don't connect to containerd (avoid socket conflicts)
       echo "Starting temporary dockerd with --data-root /mnt/cubeos-image/var/lib/docker..."
 
-      /usr/bin/dockerd \
+      dockerd \
         --data-root /mnt/cubeos-image/var/lib/docker \
         --storage-driver overlay2 \
         -H unix:///tmp/cubeos-preload.sock \
@@ -230,7 +230,7 @@ build-image:
 
       echo "Waiting for dockerd (PID: $DOCKERD_PID)..."
       for i in $(seq 1 60); do
-        if /usr/bin/docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
+        if docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
           echo "  dockerd ready (${i}s)"
           break
         fi
@@ -246,7 +246,7 @@ build-image:
       done
 
       # ── Step 3: Load ARM64 tarballs ────────────────────────────────
-      DOCKER_CMD="/usr/bin/docker -H unix:///tmp/cubeos-preload.sock"
+      DOCKER_CMD="docker -H unix:///tmp/cubeos-preload.sock"
       LOADED=0
       FAILED=0
 
