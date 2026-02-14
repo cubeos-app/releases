@@ -1,8 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v5 - Alpha.8)
+# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v6 - Alpha.9)
 # =============================================================================
 # Runs ONCE on the very first power-on of a new CubeOS device.
+#
+# v6 — ALPHA.9 FIXES:
+#   1. Docker images pre-loaded at CI time (Phase 1b) — no ensure_image_loaded waits
+#   2. Image verification only — log presence, don't try to load from tarballs
 #
 # v5 — ALPHA.8 FIXES:
 #   1. secrets.env permissions: 640 root:docker (CI redeploy fix)
@@ -179,7 +183,7 @@ date +%s > "$HEARTBEAT"
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 
 log "============================================================"
-log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown} (alpha.8)"
+log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown} (alpha.9)"
 log "  $(date)"
 log "============================================================"
 log ""
@@ -326,7 +330,11 @@ fi
 log_step "Step 5/9: Deploying infrastructure..."
 echo "5/9" > "$PROGRESS"
 
-ensure_image_loaded "pihole/pihole:latest" "pihole" || true
+if docker image inspect "pihole/pihole:latest" &>/dev/null; then
+    log_ok "Pi-hole image present (pre-loaded)"
+else
+    log_warn "Pi-hole image not found — deploy may pull or fail"
+fi
 
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
@@ -378,14 +386,22 @@ if ! grep -q "^nameserver" /etc/resolv.conf 2>/dev/null; then
     echo "nameserver 127.0.0.1" > /etc/resolv.conf
 fi
 
-ensure_image_loaded "jc21/nginx-proxy-manager:latest" "npm" || true
+if docker image inspect "jc21/nginx-proxy-manager:latest" &>/dev/null; then
+    log_ok "NPM image present (pre-loaded)"
+else
+    log_warn "NPM image not found — deploy may pull or fail"
+fi
 DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
     -f "${COREAPPS_DIR}/npm/appconfig/docker-compose.yml" \
     up -d --pull never 2>&1 || log_warn "NPM deploy failed"
 wait_for "NPM" "curl -sf http://127.0.0.1:81/api/" 90 || log_warn "NPM not responding"
 
 # HAL — port 6005 (NOT 6013!)
-ensure_image_loaded "ghcr.io/cubeos-app/hal:latest" "cubeos-hal" || true
+if docker image inspect "ghcr.io/cubeos-app/hal:latest" &>/dev/null; then
+    log_ok "HAL image present (pre-loaded)"
+else
+    log_warn "HAL image not found — deploy may pull or fail"
+fi
 DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
     -f "${COREAPPS_DIR}/cubeos-hal/appconfig/docker-compose.yml" \
     up -d --pull never 2>&1 || log_warn "HAL deploy failed"
@@ -399,7 +415,7 @@ echo "8/9" > "$PROGRESS"
 
 if [ "$SWARM_READY" = true ]; then
     # Deploy all stacks matching Pi 5 production
-    # Images are already loaded by cubeos-docker-preload.service
+    # Images are pre-loaded into overlay2 at CI build time (Phase 1b)
     # --resolve-image=never in deploy_stack() means Swarm won't pull
     STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
     for stack in $STACKS; do

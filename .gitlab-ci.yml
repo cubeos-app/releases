@@ -23,7 +23,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.8"
+  CUBEOS_VERSION: "0.1.0-alpha.9"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -179,6 +179,128 @@ build-image:
 
       ls -lh ${IMAGE_NAME}.img
       echo "Packer build: OK ($(date -u +%H:%M:%S))"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1b: Pre-load Docker images into image"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      # ── Step 1: Mount the built image ──────────────────────────────
+      LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+      echo "Loop device: $LOOPDEV"
+      sleep 2
+
+      ROOT_PART="${LOOPDEV}p2"
+      if [ ! -b "$ROOT_PART" ]; then
+        echo "ERROR: Root partition ${ROOT_PART} not found"
+        losetup -d "$LOOPDEV"
+        exit 1
+      fi
+
+      mkdir -p /mnt/cubeos-image
+      mount "$ROOT_PART" /mnt/cubeos-image
+      echo "Mounted root partition at /mnt/cubeos-image"
+
+      # Ensure /var/lib/docker exists on the image
+      mkdir -p /mnt/cubeos-image/var/lib/docker
+
+      # ── Step 2: Start temporary dockerd ────────────────────────────
+      # Key flags for isolation from any existing daemon:
+      #   --data-root     → writes to the MOUNTED IMAGE, not the CI host
+      #   -H              → separate socket to avoid conflicts
+      #   --pidfile       → separate PID file
+      #   --exec-root     → separate runtime state
+      #   --iptables=false --bridge=none → no host networking changes
+      #   --containerd=""  → don't connect to containerd (avoid socket conflicts)
+      echo "Starting temporary dockerd with --data-root /mnt/cubeos-image/var/lib/docker..."
+
+      dockerd \
+        --data-root /mnt/cubeos-image/var/lib/docker \
+        --storage-driver overlay2 \
+        -H unix:///tmp/cubeos-preload.sock \
+        --pidfile /tmp/cubeos-preload.pid \
+        --exec-root /tmp/cubeos-preload-exec \
+        --iptables=false \
+        --bridge=none \
+        --containerd="" \
+        &>/tmp/dockerd-preload.log &
+      DOCKERD_PID=$!
+
+      echo "Waiting for dockerd (PID: $DOCKERD_PID)..."
+      for i in $(seq 1 60); do
+        if docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
+          echo "  dockerd ready (${i}s)"
+          break
+        fi
+        if [ "$i" -eq 60 ]; then
+          echo "ERROR: dockerd failed to start. Log:"
+          tail -30 /tmp/dockerd-preload.log
+          kill "$DOCKERD_PID" 2>/dev/null || true
+          umount /mnt/cubeos-image 2>/dev/null || true
+          losetup -d "$LOOPDEV" 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # ── Step 3: Load ARM64 tarballs ────────────────────────────────
+      DOCKER_CMD="docker -H unix:///tmp/cubeos-preload.sock"
+      LOADED=0
+      FAILED=0
+
+      for tarball in docker-images/*.tar; do
+        [ -f "$tarball" ] || continue
+        NAME=$(basename "$tarball" .tar)
+        SIZE=$(du -h "$tarball" | cut -f1)
+        echo "  Loading: ${NAME} (${SIZE})..."
+        LOAD_START=$(date +%s)
+
+        if $DOCKER_CMD load < "$tarball" 2>&1; then
+          LOAD_END=$(date +%s)
+          echo "    OK ($(( LOAD_END - LOAD_START ))s)"
+          LOADED=$((LOADED + 1))
+        else
+          echo "    FAILED"
+          FAILED=$((FAILED + 1))
+        fi
+      done
+
+      echo ""
+      echo "Pre-load results: ${LOADED} loaded, ${FAILED} failed"
+      $DOCKER_CMD images --format "  {{.Repository}}:{{.Tag}} ({{.Size}})"
+
+      if [ "$FAILED" -gt 0 ]; then
+        echo "WARNING: ${FAILED} images failed to load!"
+        tail -20 /tmp/dockerd-preload.log
+      fi
+
+      # ── Step 4: Graceful shutdown ──────────────────────────────────
+      # CRITICAL: Must use SIGTERM (not SIGKILL) to flush metadata to disk.
+      # overlay2 metadata databases must be written out cleanly or the
+      # Pi's dockerd will see a corrupted store on first boot.
+      echo "Shutting down temporary dockerd..."
+      kill -SIGTERM "$DOCKERD_PID"
+      wait "$DOCKERD_PID" 2>/dev/null || true
+      echo "  dockerd shut down cleanly"
+
+      # ── Step 5: Cleanup ────────────────────────────────────────────
+      # Remove the tarball cache from the image — no longer needed
+      rm -rf /mnt/cubeos-image/var/cache/cubeos-images
+      echo "  Removed tarball cache from image (images are in overlay2 now)"
+
+      # Verify overlay2 data exists
+      echo "  Docker storage size: $(du -sh /mnt/cubeos-image/var/lib/docker/ | cut -f1)"
+      ls /mnt/cubeos-image/var/lib/docker/overlay2/ | wc -l | xargs -I{} echo "  overlay2 layers: {}"
+
+      sync
+      umount /mnt/cubeos-image
+      losetup -d "$LOOPDEV"
+      rmdir /mnt/cubeos-image 2>/dev/null || true
+
+      echo "Docker pre-load complete: ${LOADED} images baked into ${IMAGE_NAME}.img"
+      echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
     - |
       set -e
       echo ""

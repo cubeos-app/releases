@@ -59,12 +59,15 @@ ln -sf /cubeos/coreapps/scripts /cubeos/scripts
 # ---------------------------------------------------------------------------
 # CRITICAL: live-restore:true is INCOMPATIBLE with Docker Swarm since 1.12.
 # This was Bug #1 in alpha.5. Only set default-address-pools.
+# Alpha.9: Pin overlay2 to ensure CI-preloaded storage is always used
+# (Docker 29+ may default to containerd image store on fresh installs).
 # ---------------------------------------------------------------------------
 echo "[04] Writing Swarm-compatible daemon.json..."
 
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json << 'DAEMON'
 {
+  "storage-driver": "overlay2",
   "default-address-pools": [
     {"base": "172.16.0.0/12", "size": 24}
   ]
