@@ -174,7 +174,7 @@ check_stack() {
 check_stack "registry"
 check_stack "cubeos-api"       "curl -sf --max-time 5 http://127.0.0.1:6010/health"
 check_stack "cubeos-dashboard" "curl -sf --max-time 5 http://127.0.0.1:6011/"
-check_stack "dozzle"
+check_stack "cubeos-docsindex" "curl -sf --max-time 5 http://127.0.0.1:6032/health"
 check_stack "ollama"
 check_stack "chromadb"
 

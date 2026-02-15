@@ -92,7 +92,7 @@ done
 echo ""
 echo "[RECOVER] Deploying Swarm stacks..."
 
-STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
+STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex ollama chromadb"
 
 for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
