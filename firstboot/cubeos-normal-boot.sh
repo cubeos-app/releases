@@ -1,9 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-normal-boot.sh — CubeOS Normal Boot (v5 - Alpha.10)
+# cubeos-normal-boot.sh — CubeOS Normal Boot (v6 - Alpha.11)
 # =============================================================================
 # On normal boots, Docker Swarm auto-reconciles all stacks. This script
 # verifies critical services and applies the saved network mode.
+#
+# v6 — ALPHA.11 FIXES:
+#   1. Removed netplan apply (deadlocks against Docker bridges + hostapd)
+#   2. Added overlay network verify loop (race condition fix)
+#   3. Pre-deploy network existence check before stack redeploy
 #
 # v5 — ALPHA.10 FIXES:
 #   1. B19: Set regulatory domain (iw reg set) before hostapd start
@@ -78,7 +83,8 @@ fi
 log "[BOOT] Ensuring wlan0 has ${GATEWAY_IP}..."
 ip link set wlan0 up 2>/dev/null || true
 ip addr add "${GATEWAY_IP}/24" dev wlan0 2>/dev/null || true
-netplan apply 2>/dev/null || true
+# NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
+# The ip link set + ip addr add above already configure wlan0.
 
 # ── Docker ────────────────────────────────────────────────────────────
 wait_for "Docker" "docker info" 60 || {
@@ -115,7 +121,14 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     if docker info 2>/dev/null | grep -q "Swarm: active"; then
         docker network create --driver overlay --attachable \
             --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
-        log_ok "Swarm recovered + overlay recreated"
+        # Verify overlay is ready (swarm scope)
+        for i in $(seq 1 30); do
+            if docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null | grep -q swarm; then
+                log_ok "Swarm recovered + overlay verified (${i}s)"
+                break
+            fi
+            sleep 1
+        done
     fi
 fi
 
@@ -176,6 +189,13 @@ if docker info 2>/dev/null | grep -q "Swarm: active"; then
             log_ok "Stack ${stack}: present (Swarm will reconcile)"
         else
             log_warn "Stack ${stack}: MISSING — redeploying..."
+            # Verify network before redeploy
+            if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
+                log_warn "Network ${NETWORK_NAME} gone — recreating"
+                docker network create --driver overlay --attachable \
+                    --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
+                sleep 5
+            fi
             COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
             [ -f "$COMPOSE_FILE" ] && \
                 docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>/dev/null || true

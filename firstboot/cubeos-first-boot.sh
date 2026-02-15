@@ -1,8 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v7 - Alpha.10)
+# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v8 - Alpha.11)
 # =============================================================================
 # Runs ONCE on the very first power-on of a new CubeOS device.
+#
+# v8 — ALPHA.11 FIXES:
+#   1. Removed netplan apply (deadlocks against Docker bridges + hostapd)
+#   2. Added overlay network verify loop after creation (race condition fix)
+#   3. Pre-deploy network existence check in deploy_stack()
 #
 # v7 — ALPHA.10 FIXES:
 #   1. B14: All 9 Docker images pre-loaded at CI time — no missing images
@@ -176,6 +181,15 @@ deploy_stack() {
         log_warn "No compose file for stack ${name}"
         return 1
     fi
+
+    # Verify overlay network exists before deploying (race condition fix)
+    if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
+        log_warn "Network ${NETWORK_NAME} gone before deploying ${name} — recreating"
+        docker network create --driver overlay --attachable \
+            --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
+        sleep 5
+    fi
+
     local attempt
     for attempt in 1 2 3; do
         log "[BOOT]   Deploying stack: ${name} (attempt ${attempt})..."
@@ -334,7 +348,8 @@ log "[BOOT]   $(free -h | awk '/^Mem:/{printf "RAM: total=%s avail=%s", $2, $7}'
 log_step "Step 2/9: Configuring network interface..."
 echo "2/9" > "$PROGRESS"
 
-netplan apply 2>/dev/null || true
+# NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
+# ensure_ip_on_interface uses ip link/addr directly, which is sufficient.
 if ensure_ip_on_interface wlan0 "$GATEWAY_IP" 10; then
     log_ok "wlan0 has ${GATEWAY_IP}"
 else
@@ -441,7 +456,20 @@ if [ "$SWARM_READY" = true ]; then
             --subnet "$OVERLAY_SUBNET" \
             "$NETWORK_NAME" 2>/dev/null || true
     fi
-    log_ok "${NETWORK_NAME} overlay network ready (${OVERLAY_SUBNET})"
+
+    # Verify overlay network is ready (swarm scope) — race condition fix
+    NETWORK_VERIFIED=false
+    for i in $(seq 1 30); do
+        if docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null | grep -q swarm; then
+            log_ok "${NETWORK_NAME} overlay verified after ${i}s"
+            NETWORK_VERIFIED=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$NETWORK_VERIFIED" = false ]; then
+        log_warn "${NETWORK_NAME} overlay not verified after 30s — stacks may fail"
+    fi
 fi
 
 # =========================================================================

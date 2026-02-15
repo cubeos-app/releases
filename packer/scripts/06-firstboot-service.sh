@@ -70,7 +70,7 @@ ExecStart=/bin/bash -c '\
     fi'
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=infinity
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
@@ -109,24 +109,34 @@ WATCHDOG_TMR
 # ---------------------------------------------------------------------------
 # cubeos-boot-watchdog — kills hung cubeos-init after 20 minutes
 # ---------------------------------------------------------------------------
+# NOTE: No After=cubeos-init.service here! The timer fires at T+1200s,
+# and this service must start REGARDLESS of cubeos-init's state.
+# If cubeos-init is stuck in "activating", After= would deadlock.
+# ---------------------------------------------------------------------------
 cat > /etc/systemd/system/cubeos-boot-watchdog.service << 'BOOT_WD_SVC'
 [Unit]
 Description=CubeOS Boot Timeout Watchdog
-After=cubeos-init.service
 
 [Service]
 Type=oneshot
 ExecStart=/bin/bash -c '\
-    sleep 1200; \
-    if systemctl is-active --quiet cubeos-init.service 2>/dev/null; then \
-        echo "cubeos-init completed normally"; \
+    STATUS=$(systemctl show cubeos-init.service --property=ActiveState --value 2>/dev/null || echo "unknown"); \
+    echo "cubeos-init state: $STATUS"; \
+    if [ "$STATUS" = "active" ] || [ "$STATUS" = "inactive" ]; then \
+        echo "cubeos-init completed (state=$STATUS) — nothing to do"; \
         exit 0; \
     fi; \
-    STATUS=$(systemctl show cubeos-init.service --property=ActiveState --value 2>/dev/null); \
     if [ "$STATUS" = "activating" ]; then \
         echo "cubeos-init stuck in activating state for 20min — killing"; \
         systemctl kill cubeos-init.service 2>/dev/null; \
         systemctl reset-failed cubeos-init.service 2>/dev/null; \
+        echo "Attempting recovery: cubeos-normal-boot.sh"; \
+        /usr/local/bin/cubeos-normal-boot.sh 2>/dev/null || true; \
+    fi; \
+    if [ "$STATUS" = "failed" ]; then \
+        echo "cubeos-init failed — attempting recovery"; \
+        systemctl reset-failed cubeos-init.service 2>/dev/null; \
+        /usr/local/bin/cubeos-normal-boot.sh 2>/dev/null || true; \
     fi'
 StandardOutput=journal
 StandardError=journal
@@ -153,7 +163,7 @@ systemctl enable cubeos-init.service 2>/dev/null || true
 # systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 systemctl enable cubeos-boot-watchdog.timer 2>/dev/null || true
 
-echo "[06] First-boot service installed (timeout=infinity, dead man's switch built-in)."
+echo "[06] First-boot service installed (timeout=600s, dead man's switch built-in)."
 echo "[06] Watchdog: /cubeos/coreapps/scripts/watchdog-health.sh (starts at T+120s, every 60s)."
 echo "[06] Boot watchdog: kills cubeos-init if stuck >20 minutes."
 echo "[06] Recovery: /usr/local/bin/cubeos-deploy-stacks.sh"

@@ -74,6 +74,18 @@ if docker network ls --format '{{.Name}}' | grep -q "^cubeos$"; then
     echo "[RECOVER] Removing old 'cubeos' network (alpha.5 leftover)..."
     docker network rm cubeos 2>/dev/null || true
 fi
+
+# Verify overlay network is ready (swarm scope)
+for i in $(seq 1 30); do
+    if docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null | grep -q swarm; then
+        echo "[RECOVER] ${NETWORK_NAME} overlay verified (${i}s)"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "[RECOVER] WARNING: ${NETWORK_NAME} not verified after 30s"
+    fi
+    sleep 1
+done
 echo "[RECOVER] ${NETWORK_NAME} overlay ready."
 
 # ── Ensure compose services ─────────────────────────────────────────
@@ -97,6 +109,13 @@ STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex ollama chromadb"
 for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"
     if [ -f "$COMPOSE_FILE" ]; then
+        # Verify network still exists before each deploy
+        if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
+            echo "[RECOVER] Network ${NETWORK_NAME} gone — recreating..."
+            docker network create --driver overlay --attachable \
+                --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
+            sleep 5
+        fi
         echo "[RECOVER] Deploying ${stack}..."
         docker stack deploy -c "$COMPOSE_FILE" --resolve-image never "$stack" 2>&1 || \
             echo "[RECOVER] WARNING: ${stack} deploy failed"

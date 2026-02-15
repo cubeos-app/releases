@@ -110,7 +110,7 @@ ConditionPathExists=/var/cache/cubeos-images
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/cubeos-docker-preload.sh
-TimeoutStartSec=infinity
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
