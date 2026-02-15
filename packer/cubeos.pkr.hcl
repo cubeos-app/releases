@@ -41,7 +41,7 @@ variable "version" {
 
 variable "image_size" {
   type    = string
-  default = "8G"
+  default = "14G"
 }
 
 variable "base_image_url" {
@@ -123,15 +123,11 @@ build {
     environment_vars = ["CUBEOS_VERSION=${var.version}"]
   }
 
-  # Phase 3: Docker image tarballs
-  provisioner "file" {
-    source      = "docker-images/"
-    destination = "/var/cache/cubeos-images/"
-  }
-
-  # Phase 4: Docker preload, Pi-hole seed, firstboot service, cleanup
+  # Phase 3: Docker preload, Pi-hole seed, firstboot service, cleanup
+  # NOTE: Docker image tarballs are NOT copied into the image here.
+  # Phase 1b (in .gitlab-ci.yml) loads them directly into overlay2
+  # AFTER Packer finishes, by mounting the image and running a temp dockerd.
   # Combined into one provisioner to stay within Packer's plugin process limit.
-  # Scripts run sequentially in order listed.
   provisioner "shell" {
     scripts = [
       "packer/scripts/05-docker-preload.sh",
