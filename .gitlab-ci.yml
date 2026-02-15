@@ -85,7 +85,7 @@ build-image:
         "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
         /tmp/coreapps-src
 
-      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard dozzle ollama chromadb registry"
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex ollama chromadb registry"
 
       mkdir -p coreapps-bundle
       for svc in $SERVICES; do
@@ -146,10 +146,11 @@ build-image:
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
-      echo "[6/9] Dozzle..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
-        docker://docker.io/amir20/dozzle:latest \
-        docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+      echo "[6/9] CubeOS DocsIndex..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
+        docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
 
       echo "[7/9] Ollama..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \

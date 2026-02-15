@@ -42,7 +42,7 @@ IMAGES=(
     "docker://ghcr.io/cubeos-app/api:latest|cubeos-api.tar|true"
     "docker://ghcr.io/cubeos-app/hal:latest|cubeos-hal.tar|true"
     "docker://ghcr.io/cubeos-app/dashboard:latest|cubeos-dashboard.tar|true"
-    "docker://docker.io/amir20/dozzle:latest|dozzle.tar|false"
+    "docker://ghcr.io/cubeos-app/cubeos-docsindex:latest|cubeos-docsindex.tar|true"
     "docker://docker.io/ollama/ollama:latest|ollama.tar|false"
     "docker://docker.io/chromadb/chroma:latest|chromadb.tar|false"
     "docker://docker.io/library/registry:2|registry.tar|false"

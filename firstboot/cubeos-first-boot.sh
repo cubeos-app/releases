@@ -31,7 +31,7 @@
 #   3. Swarm init captures stderr (was silently swallowed)
 #   4. HAL port: 6005 (was 6013) — matches production HAL
 #   5. No Docker secrets — API uses env_file, not Swarm secrets
-#   6. Deploys ALL stacks: registry, api, dashboard, dozzle, ollama, chromadb
+#   6. Deploys ALL stacks: registry, api, dashboard, docsindex, ollama, chromadb
 #   7. Pi-hole v6 healthcheck (curl :6001/admin/)
 #   8. Dead man's switch, per-step timeouts, heartbeat (from v3)
 # =============================================================================
@@ -250,7 +250,7 @@ print(json.load(sys.stdin).get('token', ''))
     local -a PROXY_HOSTS=(
         "cubeos.cube:6011"
         "api.cubeos.cube:6010"
-        "dozzle.cubeos.cube:6012"
+        "docs.cubeos.cube:6032"
         "pihole.cubeos.cube:6001"
         "npm.cubeos.cube:81"
         "registry.cubeos.cube:5000"
@@ -574,7 +574,7 @@ if [ "$SWARM_READY" = true ]; then
     # B14 fix: All 9 images are now pre-loaded at CI build time (Phase 1b)
     # No more STACKS_NO_IMAGES — all stacks have their images in overlay2
     # --resolve-image=never in deploy_stack() means Swarm won't pull
-    STACKS="cubeos-api cubeos-dashboard registry dozzle ollama chromadb"
+    STACKS="cubeos-api cubeos-dashboard registry cubeos-docsindex ollama chromadb"
 
     for stack in $STACKS; do
         deploy_stack "$stack" || true

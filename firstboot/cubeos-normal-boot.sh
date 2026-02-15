@@ -14,7 +14,7 @@
 #   1. Network name: cubeos-network (was cubeos)
 #   2. Overlay subnet: 10.42.25.0/24 (was 172.20.0.0/24)
 #   3. HAL port: 6005 (was 6013)
-#   4. Deploys ALL stacks on recovery (registry, api, dashboard, dozzle, ollama, chromadb)
+#   4. Deploys ALL stacks on recovery (registry, api, dashboard, docsindex, ollama, chromadb)
 #   5. Compose services include HAL on port 6005
 #   6. No Docker secrets — API uses env_file
 # =============================================================================
@@ -169,7 +169,7 @@ if docker info 2>/dev/null | grep -q "Swarm: active"; then
     log "[BOOT] Verifying Swarm stacks..."
 
     # ALL stacks that should be running (matching Pi 5 production)
-    STACKS="registry cubeos-api cubeos-dashboard dozzle ollama chromadb"
+    STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex ollama chromadb"
 
     for stack in $STACKS; do
         if docker stack ls 2>/dev/null | grep -q "^${stack} "; then
