@@ -32,9 +32,28 @@ echo "=== [02] Network Configuration (Ubuntu) ==="
 # ---------------------------------------------------------------------------
 echo "[02] Disabling conflicting services..."
 
-# hostapd — enable so it starts via systemd AND boot script (two independent paths to AP)
+# hostapd — unmask but do NOT enable directly. Instead, use a systemd drop-in
+# that delays hostapd until AFTER cubeos-init.service configures the SSID/key.
+# This eliminates the race where hostapd starts with default "CubeOS-Setup" SSID
+# before the boot script generates MAC-based credentials (B43 fix).
 systemctl unmask hostapd 2>/dev/null || true
+systemctl disable hostapd 2>/dev/null || true
+
+# Create drop-in that starts hostapd AFTER cubeos-init finishes
+mkdir -p /etc/systemd/system/hostapd.service.d
+cat > /etc/systemd/system/hostapd.service.d/cubeos-after-init.conf << 'HOSTAPD_DROPIN'
+[Unit]
+# Wait for cubeos-init to configure SSID/key before starting hostapd
+After=cubeos-init.service
+Wants=cubeos-init.service
+
+[Install]
+# hostapd starts as a dependency of cubeos-init completing, not multi-user.target
+WantedBy=cubeos-init.service
+HOSTAPD_DROPIN
+
 systemctl enable hostapd 2>/dev/null || true
+echo "[02]   hostapd: delayed until after cubeos-init (B43 race fix)"
 
 # dnsmasq — Pi-hole replaces this for DNS/DHCP
 systemctl disable dnsmasq 2>/dev/null || true

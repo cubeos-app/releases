@@ -27,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.12"
+  CUBEOS_VERSION: "0.1.0-alpha.13"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -78,7 +78,7 @@ build-image:
       set -e
       echo ""
       echo "============================================================"
-      echo "  Phase 0a: Clone coreapps repo (alpha.12 — single source of truth)"
+      echo "  Phase 0a: Clone coreapps repo (single source of truth)"
       echo "============================================================"
 
       git clone --depth 1 \
@@ -97,6 +97,17 @@ build-image:
           echo "  - ${svc} (not found or no appconfig)"
         fi
       done
+
+      # Bundle Ollama models for offline AI (qwen2.5:0.5b + nomic-embed-text)
+      # Copy ONLY the models directory — NOT SSH keys or other appdata files
+      if [ -d "/tmp/coreapps-src/ollama/appdata/models" ]; then
+        mkdir -p "coreapps-bundle/ollama/appdata"
+        cp -r "/tmp/coreapps-src/ollama/appdata/models" "coreapps-bundle/ollama/appdata/"
+        MODELS_SIZE=$(du -sh "coreapps-bundle/ollama/appdata/models" | cut -f1)
+        echo "  + ollama/appdata/models (${MODELS_SIZE} — offline AI models)"
+      else
+        echo "  - ollama/appdata/models (not found — AI models won't be available offline)"
+      fi
 
       if [ -d "/tmp/coreapps-src/scripts" ]; then
         cp -r /tmp/coreapps-src/scripts coreapps-bundle/

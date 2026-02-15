@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.12) ==="
+echo "=== [04] CubeOS Setup (alpha.13) ==="
 
 # ---------------------------------------------------------------------------
 # Version — injected by CI pipeline, falls back to dev
@@ -191,6 +191,13 @@ if [ -d "$BUNDLE_SRC" ]; then
             COPIED=$((COPIED + 1))
         fi
 
+        # Copy appdata (pre-populated data like Ollama models)
+        if [ -d "${svc_dir}appdata" ]; then
+            mkdir -p "${target}/appdata"
+            cp -r "${svc_dir}appdata/"* "${target}/appdata/" 2>/dev/null || true
+            echo "[04]   Installed: ${svc}/appdata/"
+        fi
+
         # Copy scripts (watchdog, deploy, init-swarm, etc.)
         if [ -d "${svc_dir}scripts" ] || [ "$svc" = "scripts" ]; then
             # Handle both coreapps/scripts/ dir and coreapps/*/scripts/ subdirs
@@ -236,6 +243,7 @@ rm -rf "$BUNDLE_SRC"
 # ---------------------------------------------------------------------------
 echo "[04] Installing first-boot scripts..."
 
+cp /tmp/cubeos-firstboot/cubeos-boot-lib.sh         /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-first-boot.sh       /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-normal-boot.sh       /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-boot-detect.sh       /usr/local/bin/
@@ -265,10 +273,13 @@ cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
 10.42.24.1 api.cubeos.cube
 10.42.24.1 npm.cubeos.cube
 10.42.24.1 pihole.cubeos.cube
-10.42.24.1 logs.cubeos.cube
+10.42.24.1 hal.cubeos.cube
+10.42.24.1 dozzle.cubeos.cube
 10.42.24.1 ollama.cubeos.cube
+10.42.24.1 chromadb.cubeos.cube
 10.42.24.1 registry.cubeos.cube
 10.42.24.1 docs.cubeos.cube
+10.42.24.1 terminal.cubeos.cube
 DNS
 
 # ---------------------------------------------------------------------------
