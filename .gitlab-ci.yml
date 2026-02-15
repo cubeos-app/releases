@@ -98,15 +98,43 @@ build-image:
         fi
       done
 
-      # Bundle Ollama models for offline AI (qwen2.5:0.5b + nomic-embed-text)
-      # Copy ONLY the models directory — NOT SSH keys or other appdata files
-      if [ -d "/tmp/coreapps-src/ollama/appdata/models" ]; then
-        mkdir -p "coreapps-bundle/ollama/appdata"
-        cp -r "/tmp/coreapps-src/ollama/appdata/models" "coreapps-bundle/ollama/appdata/"
-        MODELS_SIZE=$(du -sh "coreapps-bundle/ollama/appdata/models" | cut -f1)
-        echo "  + ollama/appdata/models (${MODELS_SIZE} — offline AI models)"
-      else
-        echo "  - ollama/appdata/models (not found — AI models won't be available offline)"
+      # Pull Ollama models using native x86_64 ollama binary
+      # Model blobs (GGUF weights + manifests) are architecture-neutral
+      echo ""
+      echo "  Pulling Ollama models for offline AI..."
+      mkdir -p "coreapps-bundle/ollama/appdata"
+      OLLAMA_MODELS_DIR="${CI_PROJECT_DIR}/coreapps-bundle/ollama/appdata"
+
+      curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tail -3
+      echo "  ollama $(ollama --version 2>/dev/null || echo 'installed')"
+
+      OLLAMA_MODELS="${OLLAMA_MODELS_DIR}" ollama serve &>/tmp/ollama-serve.log &
+      OLLAMA_PID=$!
+
+      # Wait for ollama to be ready
+      for i in $(seq 1 30); do
+        if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+          echo "  ollama ready (${i}s)"
+          break
+        fi
+        if [ "$i" -eq 30 ]; then
+          echo "  WARN: ollama failed to start — AI models won't be available offline"
+          cat /tmp/ollama-serve.log
+          kill $OLLAMA_PID 2>/dev/null || true
+        fi
+        sleep 1
+      done
+
+      # Pull models (only if ollama is running)
+      if kill -0 $OLLAMA_PID 2>/dev/null; then
+        OLLAMA_MODELS="${OLLAMA_MODELS_DIR}" ollama pull qwen2.5:0.5b && \
+          echo "  + qwen2.5:0.5b" || echo "  - qwen2.5:0.5b (pull failed)"
+        OLLAMA_MODELS="${OLLAMA_MODELS_DIR}" ollama pull nomic-embed-text && \
+          echo "  + nomic-embed-text" || echo "  - nomic-embed-text (pull failed)"
+        kill $OLLAMA_PID 2>/dev/null || true
+        wait $OLLAMA_PID 2>/dev/null || true
+        MODELS_SIZE=$(du -sh "${OLLAMA_MODELS_DIR}" | cut -f1)
+        echo "  + ollama/appdata (${MODELS_SIZE} — offline AI models)"
       fi
 
       if [ -d "/tmp/coreapps-src/scripts" ]; then
