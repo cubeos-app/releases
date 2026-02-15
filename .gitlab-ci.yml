@@ -72,7 +72,7 @@ build-image:
       # Install tools
       echo "Installing tools..."
       apt-get update -q 2>&1 | tail -3
-      apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git 2>&1 | tail -5
+      apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git zstd 2>&1 | tail -5
       echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
     - |
       set -e
