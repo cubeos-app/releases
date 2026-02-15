@@ -3,11 +3,15 @@
 # =============================================================================
 # Builds a flashable ARM64 image from the pre-built golden base image.
 #
-# SINGLE JOB: Everything runs in one container to avoid transferring
-# 1.5GB+ of Docker image tarballs as CI artifacts between stages.
+# WORKFLOW (build once, release later):
+#   1. Push to main  → build-image runs (~20 min), uploads to Package Registry
+#   2. Verify green  → test the image if needed
+#   3. Tag (git tag v0.1.0-alpha.10 && git push --tags)
+#      → release jobs run (~2 min), create GitLab + GitHub releases
+#      → NO rebuild — release jobs download the already-built image
 #
-# ALPHA.6 CHANGE: Clones coreapps repo at build time so compose files
-# in the image always match production (replaces stale heredocs).
+# SINGLE JOB BUILD: Everything runs in one container to avoid transferring
+# 1.5GB+ of Docker image tarballs as CI artifacts between stages.
 #
 # PREREQUISITES:
 #   1. Golden base image in Package Registry (cubeos-base/1.1.0)
@@ -15,7 +19,7 @@
 #   3. CI variable: GHCR_TOKEN (used for both GHCR pushes and GitHub API releases)
 #   4. Token access: releases project allowed to access coreapps project
 #
-# TIME: ~15-20 minutes total
+# TIME: ~20 minutes (build) + ~2 minutes (release on tag)
 # =============================================================================
 
 stages:
@@ -23,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.9"
+  CUBEOS_VERSION: "0.1.0-alpha.10"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -38,9 +42,10 @@ build-image:
     name: mkaczanowski/packer-builder-arm:latest
     entrypoint: [""]
   rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
-    - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
     - |
       set -e
@@ -73,7 +78,7 @@ build-image:
       set -e
       echo ""
       echo "============================================================"
-      echo "  Phase 0a: Clone coreapps repo (alpha.9 — single source of truth)"
+      echo "  Phase 0a: Clone coreapps repo (alpha.10 — single source of truth)"
       echo "============================================================"
 
       git clone --depth 1 \
@@ -113,38 +118,58 @@ build-image:
 
       mkdir -p docker-images
 
-      echo "[1/5] Pi-hole..."
+      echo "[1/9] Pi-hole..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
 
-      echo "[2/5] Nginx Proxy Manager..."
+      echo "[2/9] Nginx Proxy Manager..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
 
-      echo "[3/5] CubeOS API..."
+      echo "[3/9] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
 
-      echo "[4/5] CubeOS HAL..."
+      echo "[4/9] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
 
-      echo "[5/5] CubeOS Dashboard..."
+      echo "[5/9] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
+      echo "[6/9] Dozzle..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/amir20/dozzle:latest \
+        docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+
+      echo "[7/9] Ollama..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/ollama/ollama:latest \
+        docker-archive:docker-images/ollama.tar:ollama/ollama:latest
+
+      echo "[8/9] ChromaDB..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/chromadb/chroma:latest \
+        docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
+
+      echo "[9/9] Docker Registry..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/library/registry:2 \
+        docker-archive:docker-images/registry.tar:library/registry:2
+
       echo ""
       ls -lh docker-images/
       du -sh docker-images/
-      echo "Docker images: OK"
+      echo "Docker images: OK (9 images)"
     - |
       set -e
       echo ""
@@ -382,19 +407,35 @@ build-image:
   timeout: 60m
 
 # =============================================================================
-# Create GitLab Release (tag push only)
+# Create GitLab Release (tag push only — uses pre-built image from Package Registry)
 # =============================================================================
 create-gitlab-release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs:
-    - build-image
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
-    - echo "Creating GitLab release for ${CI_COMMIT_TAG}..."
-    - CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
-    - echo "SHA256 ${CHECKSUM}"
+    - |
+      echo "Creating GitLab release for ${CI_COMMIT_TAG}..."
+
+      # Download checksum from Package Registry (uploaded during build-image)
+      echo "Fetching checksum from Package Registry..."
+      apk add --no-cache curl 2>/dev/null || true
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o ${IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+
+      CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
+      echo "SHA256: ${CHECKSUM}"
+
+      if [ -z "$CHECKSUM" ]; then
+        echo "ERROR: Image not found in Package Registry."
+        echo "Did you push to main first? build-image must succeed before tagging."
+        exit 1
+      fi
   release:
     tag_name: "${CI_COMMIT_TAG}"
     name: "CubeOS ${CI_COMMIT_TAG}"
@@ -421,13 +462,11 @@ create-gitlab-release:
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
 
 # =============================================================================
-# Create GitHub Release (mirror — tag push only)
+# Create GitHub Release (mirror — tag push only, uses pre-built image from Package Registry)
 # =============================================================================
 create-github-release:
   stage: release
   image: alpine:latest
-  needs:
-    - build-image
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
@@ -440,9 +479,27 @@ create-github-release:
         exit 0
       fi
 
-      CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
       IMAGE_FILE="${IMAGE_NAME}.img.xz"
       CHECKSUM_FILE="${IMAGE_NAME}.img.xz.sha256"
+
+      # --- Step 0: Download checksum from Package Registry ---
+      echo "============================================================"
+      echo "  Step 0: Fetch checksum from GitLab Package Registry"
+      echo "============================================================"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${CHECKSUM_FILE}" \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}"
+
+      CHECKSUM=$(cut -d' ' -f1 "${CHECKSUM_FILE}")
+      echo "SHA256: ${CHECKSUM}"
+
+      if [ -z "$CHECKSUM" ]; then
+        echo "ERROR: Image not found in Package Registry."
+        echo "Did you push to main first? build-image must succeed before tagging."
+        exit 1
+      fi
 
       # --- Step 1: Download image from GitLab Package Registry ---
       echo "============================================================"

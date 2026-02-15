@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.6) ==="
+echo "=== [04] CubeOS Setup (alpha.10) ==="
 
 # ---------------------------------------------------------------------------
 # Version — injected by CI pipeline, falls back to dev
@@ -88,6 +88,7 @@ cat > /cubeos/config/defaults.env << DEFAULTS
 # System Settings
 # ===================
 CUBEOS_VERSION=${CUBEOS_VERSION}
+CUBEOS_COUNTRY_CODE=\${CUBEOS_COUNTRY_CODE:-US}
 TZ=UTC
 DOMAIN=cubeos.cube
 

@@ -1,8 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v6 - Alpha.9)
+# cubeos-first-boot.sh — CubeOS First Boot Orchestrator (v7 - Alpha.10)
 # =============================================================================
 # Runs ONCE on the very first power-on of a new CubeOS device.
+#
+# v7 — ALPHA.10 FIXES:
+#   1. B14: All 9 Docker images pre-loaded at CI time — no missing images
+#   2. B19: Set regulatory domain (iw reg set) before hostapd start
+#   3. B15: All stacks treated equally (no STACKS_NO_IMAGES), 15s stabilization,
+#           Swarm node readiness check before deploys
 #
 # v6 — ALPHA.9 FIXES:
 #   1. Docker images pre-loaded at CI time (Phase 1b) — no ensure_image_loaded waits
@@ -290,7 +296,7 @@ date +%s > "$HEARTBEAT"
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 
 log "============================================================"
-log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown} (alpha.9)"
+log "  CubeOS First Boot — v${CUBEOS_VERSION:-unknown}"
 log "  $(date)"
 log "============================================================"
 log ""
@@ -490,8 +496,28 @@ if grep -q "ssid=CubeOS-Setup" /etc/hostapd/hostapd.conf; then
     source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
 fi
 
+# B19 fix: Set regulatory domain before starting hostapd
+COUNTRY_CODE="${CUBEOS_COUNTRY_CODE:-US}"
+log "[BOOT]   Setting regulatory domain: $COUNTRY_CODE"
+iw reg set "$COUNTRY_CODE" 2>/dev/null || true
+sleep 2  # Give kernel time to apply regulatory domain
+
 if systemctl start hostapd 2>/dev/null; then
-    log_ok "AP started: ${CUBEOS_AP_SSID:-CubeOS-Setup}"
+    sleep 3
+    if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+        log_ok "AP started: ${CUBEOS_AP_SSID:-CubeOS-Setup} (country: $COUNTRY_CODE)"
+    else
+        log_warn "WiFi AP not broadcasting — restarting hostapd..."
+        iw reg set "$COUNTRY_CODE" 2>/dev/null || true
+        sleep 1
+        systemctl restart hostapd 2>/dev/null || true
+        sleep 2
+        if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+            log_ok "AP recovered after restart: ${CUBEOS_AP_SSID:-CubeOS-Setup}"
+        else
+            log_warn "WiFi AP STILL not broadcasting — manual intervention needed"
+        fi
+    fi
 else
     log_warn "hostapd failed — ethernet access only at ${GATEWAY_IP}"
 fi
@@ -537,27 +563,22 @@ log_step "Step 8/9: Deploying platform services..."
 echo "8/9" > "$PROGRESS"
 
 if [ "$SWARM_READY" = true ]; then
-    # B11 fix: Give Swarm time to stabilize after init before accepting deploys
-    log "[BOOT]   Waiting 10s for Swarm to stabilize..."
-    sleep 10
+    # B15 fix: Verify Swarm node is ready before deploying
+    wait_for "Swarm node ready" "docker node ls --format '{{.Status}}' | grep -q Ready" 30 2
+
+    # B15 fix: Increased stabilization from 10s to 15s
+    log "[BOOT]   Waiting 15s for Swarm to stabilize..."
+    sleep 15
     date +%s > "$HEARTBEAT"
 
-    # Deploy stacks with pre-loaded images first (higher chance of success)
-    # Images are pre-loaded into overlay2 at CI build time (Phase 1b)
+    # B14 fix: All 9 images are now pre-loaded at CI build time (Phase 1b)
+    # No more STACKS_NO_IMAGES — all stacks have their images in overlay2
     # --resolve-image=never in deploy_stack() means Swarm won't pull
-    STACKS_WITH_IMAGES="cubeos-api cubeos-dashboard"
-    STACKS_NO_IMAGES="registry dozzle ollama chromadb"
+    STACKS="cubeos-api cubeos-dashboard registry dozzle ollama chromadb"
 
-    for stack in $STACKS_WITH_IMAGES; do
+    for stack in $STACKS; do
         deploy_stack "$stack" || true
         sleep 3
-        date +%s > "$HEARTBEAT"
-    done
-
-    # Deploy remaining stacks (will be 0/1 until images are available)
-    for stack in $STACKS_NO_IMAGES; do
-        deploy_stack "$stack" || true
-        sleep 1
         date +%s > "$HEARTBEAT"
     done
 

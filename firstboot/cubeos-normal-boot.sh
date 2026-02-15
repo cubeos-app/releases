@@ -1,9 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-normal-boot.sh — CubeOS Normal Boot (v4 - Alpha.6)
+# cubeos-normal-boot.sh — CubeOS Normal Boot (v5 - Alpha.10)
 # =============================================================================
 # On normal boots, Docker Swarm auto-reconciles all stacks. This script
 # verifies critical services and applies the saved network mode.
+#
+# v5 — ALPHA.10 FIXES:
+#   1. B19: Set regulatory domain (iw reg set) before hostapd start
+#   2. WiFi AP verification with automatic restart fallback
+#   3. Version banner reads from CUBEOS_VERSION env var
 #
 # v4 — ALPHA.6 FIXES:
 #   1. Network name: cubeos-network (was cubeos)
@@ -54,7 +59,7 @@ wait_for() {
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 
 log "============================================================"
-log "  CubeOS Normal Boot — v${CUBEOS_VERSION:-unknown} (alpha.6)"
+log "  CubeOS Normal Boot — v${CUBEOS_VERSION:-unknown}"
 log "  $(date)"
 log "============================================================"
 
@@ -133,9 +138,31 @@ if ! grep -q "^nameserver" /etc/resolv.conf 2>/dev/null; then
 fi
 
 # ── WiFi AP ───────────────────────────────────────────────────────────
+log "[BOOT] Setting regulatory domain..."
+COUNTRY_CODE="${CUBEOS_COUNTRY_CODE:-US}"
+iw reg set "$COUNTRY_CODE" 2>/dev/null || true
+sleep 2  # Give kernel time to apply regulatory domain
+
 log "[BOOT] Starting WiFi Access Point..."
 rfkill unblock wifi 2>/dev/null || true
 systemctl start hostapd 2>/dev/null || log_warn "hostapd failed"
+
+# Verify AP is broadcasting
+sleep 3
+if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+    log_ok "WiFi AP broadcasting (country: $COUNTRY_CODE)"
+else
+    log_warn "WiFi AP not broadcasting — restarting hostapd..."
+    iw reg set "$COUNTRY_CODE" 2>/dev/null || true
+    sleep 1
+    systemctl restart hostapd 2>/dev/null || true
+    sleep 2
+    if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+        log_ok "WiFi AP recovered after restart"
+    else
+        log_warn "WiFi AP STILL not broadcasting — manual intervention needed"
+    fi
+fi
 
 # ── Swarm stacks ──────────────────────────────────────────────────────
 if docker info 2>/dev/null | grep -q "Swarm: active"; then
