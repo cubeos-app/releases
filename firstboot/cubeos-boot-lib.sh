@@ -63,10 +63,10 @@ CORE_DNS_HOSTS=(
 # ── Swarm Stacks ─────────────────────────────────────────────────────
 # B08: Split into pre-API and post-API stacks.
 # Dashboard deploys AFTER API health check to prevent 502/wizard flash.
-SWARM_STACKS_PRE_API="cubeos-api registry cubeos-docsindex"
+SWARM_STACKS_PRE_API="cubeos-api registry cubeos-docsindex dozzle"
 SWARM_STACKS_POST_API="cubeos-dashboard"
 # Combined list for recovery/normal boot where ordering is less critical
-SWARM_STACKS="registry cubeos-api cubeos-docsindex cubeos-dashboard"
+SWARM_STACKS="registry cubeos-api cubeos-docsindex dozzle cubeos-dashboard"
 
 # ── Compose Services ─────────────────────────────────────────────────
 COMPOSE_SERVICES="pihole npm cubeos-hal"
@@ -264,15 +264,19 @@ ensure_overlay_network() {
             "$NETWORK_NAME" 2>/dev/null || true
     fi
 
-    # Verify overlay network is ready (swarm scope)
-    for i in $(seq 1 30); do
+    # B16: Verify overlay network is ready (swarm scope) — 60s with backoff
+    local elapsed=0 sleep_time=1
+    while [ $elapsed -lt 60 ]; do
         if docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null | grep -q swarm; then
-            log_ok "${NETWORK_NAME} overlay verified (${i}s)"
+            log_ok "${NETWORK_NAME} overlay verified (${elapsed}s)"
             return 0
         fi
-        sleep 1
+        sleep "$sleep_time"
+        elapsed=$((elapsed + sleep_time))
+        # Exponential backoff: 1, 2, 4, 4, 4, ...
+        [ "$sleep_time" -lt 4 ] && sleep_time=$((sleep_time * 2))
     done
-    log_warn "${NETWORK_NAME} overlay not verified after 30s -- stacks may fail"
+    log_warn "${NETWORK_NAME} overlay not verified after 60s -- stacks may fail"
     return 1
 }
 

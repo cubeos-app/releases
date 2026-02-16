@@ -27,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.16"
+  CUBEOS_VERSION: "0.1.0-alpha.17"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -111,15 +111,27 @@ build-image:
       echo "Coreapps bundle: OK"
 
       # Clone docs repo for offline filesystem mode (T05)
+      # B05: Try GitHub first, then GitLab, then mark as unavailable (04-cubeos.sh has fallback)
       echo ""
       echo "  Cloning docs repo for offline access..."
+      DOCS_CLONED=false
       git clone --depth=1 https://github.com/cubeos-app/docs.git /tmp/cubeos-docs-src 2>&1 | tail -3 && \
-        echo "  + docs repo cloned" || echo "  - docs repo clone failed (non-fatal, docsindex will clone on first boot)"
+        DOCS_CLONED=true && echo "  + docs repo cloned from GitHub" || \
+        echo "  - GitHub docs clone failed, trying GitLab..."
+      if [ "$DOCS_CLONED" = "false" ]; then
+        git clone --depth=1 \
+          "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/docs.git" \
+          /tmp/cubeos-docs-src 2>&1 | tail -3 && \
+          DOCS_CLONED=true && echo "  + docs repo cloned from GitLab" || \
+          echo "  - GitLab docs clone also failed (non-fatal, 04-cubeos.sh has placeholder fallback)"
+      fi
       if [ -d /tmp/cubeos-docs-src ]; then
         mkdir -p coreapps-bundle/docs
-        cp -r /tmp/cubeos-docs-src/* coreapps-bundle/docs/ 2>/dev/null || true
+        # Copy .md files only (exclude .git and other artifacts)
+        find /tmp/cubeos-docs-src -maxdepth 2 -name '*.md' -exec cp {} coreapps-bundle/docs/ \; 2>/dev/null || true
         rm -rf /tmp/cubeos-docs-src
-        echo "  + docs bundled into coreapps-bundle/docs/"
+        DOCS_COUNT=$(find coreapps-bundle/docs -name '*.md' 2>/dev/null | wc -l)
+        echo "  + ${DOCS_COUNT} docs bundled into coreapps-bundle/docs/"
       fi
     - |
       set -e

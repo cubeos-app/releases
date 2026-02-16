@@ -46,6 +46,7 @@ IMAGES=(
     "docker://docker.io/ollama/ollama:latest|ollama.tar|false"
     "docker://docker.io/chromadb/chroma:latest|chromadb.tar|false"
     "docker://docker.io/library/registry:2|registry.tar|false"
+    "docker://docker.io/amir20/dozzle:latest|dozzle.tar|false"
 )
 
 # ---------------------------------------------------------------------------

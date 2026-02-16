@@ -15,15 +15,23 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.16) ==="
+echo "=== [04] CubeOS Setup (alpha.17) ==="
 
 # ---------------------------------------------------------------------------
-# B03 Quick-fix: Ensure hwclock is available (util-linux-extra)
-# This will be a no-op once the base image includes it natively.
+# B03: Ensure hwclock is available (util-linux-extra)
+# Golden base should include it, but verify + install if missing.
 # ---------------------------------------------------------------------------
 if ! command -v hwclock &>/dev/null; then
-    echo "[04] Installing util-linux-extra (hwclock for RTC support)..."
-    apt-get update -qq && apt-get install -y --no-install-recommends util-linux-extra 2>/dev/null || true
+    echo "[04] hwclock not found — installing util-linux-extra..."
+    apt-get update -qq
+    apt-get install -y --no-install-recommends util-linux-extra
+    if command -v hwclock &>/dev/null; then
+        echo "[04]   OK: hwclock now available ($(hwclock --version 2>/dev/null || echo 'installed'))"
+    else
+        echo "[04]   WARN: hwclock still not available after install — RTC sync will fail"
+    fi
+else
+    echo "[04] hwclock: OK (already installed)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -246,11 +254,16 @@ else
 fi
 
 # B05: Handle docs bundle explicitly (bare .md files, not standard appconfig structure)
-if [ -d "${BUNDLE_SRC}/docs" ]; then
+if [ -d "${BUNDLE_SRC}/docs" ] && [ "$(ls -A "${BUNDLE_SRC}/docs" 2>/dev/null)" ]; then
     mkdir -p /cubeos/docs
-    cp -r "${BUNDLE_SRC}/docs/"* /cubeos/docs/ 2>/dev/null || true
+    # Exclude .git directory from docs clone
+    find "${BUNDLE_SRC}/docs" -maxdepth 1 -name '*.md' -exec cp {} /cubeos/docs/ \; 2>/dev/null || true
+    # Also copy subdirectories (but not .git)
+    find "${BUNDLE_SRC}/docs" -mindepth 1 -maxdepth 1 -type d ! -name '.git' -exec cp -r {} /cubeos/docs/ \; 2>/dev/null || true
     DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
     echo "[04]   Pre-populated ${DOCS_COUNT} docs from coreapps bundle"
+else
+    echo "[04]   WARN: No docs in coreapps bundle (${BUNDLE_SRC}/docs not found or empty)"
 fi
 
 # Cleanup packer temp
@@ -259,22 +272,25 @@ rm -rf "$BUNDLE_SRC"
 # ---------------------------------------------------------------------------
 # Pre-populate docs for offline first boot (T05)
 # ---------------------------------------------------------------------------
-# Docs are cloned at CI time and bundled into coreapps-bundle/docs/.
-# Docsindex will use these in filesystem mode without requiring Ollama/ChromaDB.
+# Priority: 1) coreapps-bundle/docs (CI clone), 2) /tmp/cubeos-docs (packer),
+# 3) Git clone at build time, 4) Minimal placeholder docs.
 # ---------------------------------------------------------------------------
-if [ -d "/cubeos/coreapps/docs" ] && [ "$(ls -A /cubeos/coreapps/docs 2>/dev/null)" ]; then
+DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
+if [ "$DOCS_COUNT" -eq 0 ] && [ -d "/cubeos/coreapps/docs" ] && [ "$(ls -A /cubeos/coreapps/docs 2>/dev/null)" ]; then
     echo "[04] Pre-populating /cubeos/docs from coreapps bundle..."
     cp -r /cubeos/coreapps/docs/* /cubeos/docs/ 2>/dev/null || true
     DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
     echo "[04]   Copied ${DOCS_COUNT} markdown files from bundle"
-elif [ -d "/tmp/cubeos-docs" ]; then
+fi
+if [ "$DOCS_COUNT" -eq 0 ] && [ -d "/tmp/cubeos-docs" ]; then
     echo "[04] Pre-populating /cubeos/docs from Packer provisioner..."
     cp -r /tmp/cubeos-docs/* /cubeos/docs/ 2>/dev/null || true
     rm -rf /tmp/cubeos-docs
     DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
     echo "[04]   Copied ${DOCS_COUNT} markdown files from provisioner"
-else
-    echo "[04] No docs bundle found — attempting git clone (network available during build)..."
+fi
+if [ "$DOCS_COUNT" -eq 0 ]; then
+    echo "[04] No docs found from any source — attempting git clone..."
     if command -v git &>/dev/null; then
         git clone --depth=1 https://github.com/cubeos-app/docs.git /tmp/cubeos-docs-clone 2>/dev/null || true
         if [ -d "/tmp/cubeos-docs-clone" ]; then
@@ -284,13 +300,38 @@ else
         DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
         if [ "$DOCS_COUNT" -gt 0 ]; then
             echo "[04]   Cloned ${DOCS_COUNT} markdown files from GitHub"
-        else
-            echo "[04]   WARN: Git clone produced no .md files — docsindex will retry on first boot"
         fi
-    else
-        echo "[04]   WARN: git not available — docsindex will clone on first boot"
     fi
 fi
+# B05 fallback: Create minimal placeholder docs so /cubeos/docs/ is never empty
+if [ "$DOCS_COUNT" -eq 0 ]; then
+    echo "[04]   Creating placeholder docs (all sources unavailable)..."
+    cat > /cubeos/docs/README.md << 'PLACEHOLDER'
+# CubeOS Documentation
+
+Welcome to CubeOS — your self-hosted server operating system.
+
+## Quick Start
+
+1. Open your browser and navigate to `http://cubeos.cube`
+2. Complete the setup wizard
+3. Start installing apps from the App Store
+
+## Key Features
+
+- **Offline-first**: Works without internet connectivity
+- **Docker Swarm**: Self-healing container orchestration
+- **WiFi Access Point**: Built-in hotspot for device connections
+- **Web Dashboard**: Manage everything from your browser
+
+## Links
+
+- GitHub: https://github.com/cubeos-app
+- Documentation: https://docs.cubeos.app
+PLACEHOLDER
+    echo "[04]   Placeholder docs created (1 file)"
+fi
+echo "[04] Final docs count: $(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l) files in /cubeos/docs/"
 
 # ---------------------------------------------------------------------------
 # Install static web assets from /tmp/cubeos-static/
