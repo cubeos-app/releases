@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v10 - Alpha.14)
+# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v11 - Alpha.18)
 # =============================================================================
 # Sourced by both cubeos-first-boot.sh and cubeos-normal-boot.sh.
 # Contains all shared functions, constants, and configuration arrays.
@@ -12,6 +12,10 @@
 #   - Common helpers (wait_for, container_running, etc.)
 #   - WiFi AP configuration
 #   - Watchdog management
+#
+# v11 — ALPHA.18:
+#   - B16: Replaced overlay network scope-verify loop with retry-on-create
+#   - deploy_stack() uses ensure_overlay_network() for recreation (not raw create)
 #
 # v10 — ALPHA.14:
 #   - Removed Ollama + ChromaDB (9 proxy rules, 9 DNS entries, 4 Swarm stacks)
@@ -130,9 +134,9 @@ deploy_stack() {
     # Verify overlay network exists before deploying
     if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
         log_warn "Network ${NETWORK_NAME} gone before deploying ${name} -- recreating"
-        docker network create --driver overlay --attachable \
-            --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
-        sleep 5
+        ensure_overlay_network || {
+            log_warn "Network recreation failed -- attempting deploy anyway"
+        }
     fi
 
     local attempt
@@ -247,36 +251,50 @@ recover_swarm() {
     }
 }
 
-# ── Overlay Network Verify ───────────────────────────────────────────
+# ── Overlay Network Create (retry-on-create) ────────────────────────
 ensure_overlay_network() {
-    # Check if network exists with wrong scope
+    # B16 FIX: Retry on CREATE, not on scope verification.
+    # Previous approach wasted 60s verifying "swarm" scope — unreliable.
+    # New approach: remove bad networks, create with retries, verify existence only.
+
+    # Step 1: Remove network if it exists with wrong scope (local instead of swarm)
     local NETWORK_SCOPE
     NETWORK_SCOPE=$(docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null || echo "none")
     if [ "$NETWORK_SCOPE" = "local" ]; then
         log "Removing local ${NETWORK_NAME} (wrong scope)..."
         docker network rm "$NETWORK_NAME" 2>/dev/null || true
+        sleep 2
         NETWORK_SCOPE="none"
     fi
-    if [ "$NETWORK_SCOPE" = "none" ]; then
-        docker network create \
-            --driver overlay --attachable \
-            --subnet "$OVERLAY_SUBNET" \
-            "$NETWORK_NAME" 2>/dev/null || true
+
+    # Step 2: If network already exists with correct scope, we're done
+    if [ "$NETWORK_SCOPE" = "swarm" ]; then
+        log_ok "${NETWORK_NAME} overlay already exists"
+        return 0
     fi
 
-    # B16: Verify overlay network is ready (swarm scope) — 60s with backoff
-    local elapsed=0 sleep_time=1
-    while [ $elapsed -lt 60 ]; do
-        if docker network inspect "$NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null | grep -q swarm; then
-            log_ok "${NETWORK_NAME} overlay verified (${elapsed}s)"
-            return 0
+    # Step 3: Create with retries and backoff
+    local attempt sleep_time=2
+    for attempt in 1 2 3 4 5; do
+        log "  Creating overlay network (attempt ${attempt}/5)..."
+        if docker network create \
+            --driver overlay \
+            --attachable \
+            --subnet "$OVERLAY_SUBNET" \
+            "$NETWORK_NAME" 2>&1; then
+            # Verify it actually exists (quick check, no scope wait)
+            sleep 1
+            if docker network inspect "$NETWORK_NAME" &>/dev/null; then
+                log_ok "${NETWORK_NAME} overlay created (attempt ${attempt})"
+                return 0
+            fi
         fi
+        log "  Attempt ${attempt} failed -- waiting ${sleep_time}s..."
         sleep "$sleep_time"
-        elapsed=$((elapsed + sleep_time))
-        # Exponential backoff: 1, 2, 4, 4, 4, ...
-        [ "$sleep_time" -lt 4 ] && sleep_time=$((sleep_time * 2))
+        # Backoff: 2, 4, 6, 8, 10
+        sleep_time=$((sleep_time + 2))
     done
-    log_warn "${NETWORK_NAME} overlay not verified after 60s -- stacks may fail"
+    log_warn "${NETWORK_NAME} overlay creation failed after 5 attempts -- stacks may fail"
     return 1
 }
 

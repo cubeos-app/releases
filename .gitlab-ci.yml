@@ -27,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.17"
+  CUBEOS_VERSION: "0.1.0-alpha.18"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "1.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -85,7 +85,7 @@ build-image:
         "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
         /tmp/coreapps-src
 
-      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry"
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle"
 
       mkdir -p coreapps-bundle
       for svc in $SERVICES; do

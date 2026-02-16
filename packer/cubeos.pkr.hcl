@@ -44,7 +44,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.17"
+  default = "0.1.0-alpha.18"
 }
 
 variable "image_size" {

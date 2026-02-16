@@ -17,6 +17,8 @@ echo "=== [BASE-CLEANUP] Cleaning base image ==="
 # APT cleanup
 # ---------------------------------------------------------------------------
 echo "[BASE-CLEANUP] Cleaning APT cache..."
+# B03: Protect util-linux-extra (hwclock) from autoremove
+apt-mark manual util-linux-extra 2>/dev/null || true
 apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y 2>&1 | tail -5
 apt-get clean
 rm -rf /var/lib/apt/lists/*

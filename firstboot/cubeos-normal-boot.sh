@@ -55,7 +55,7 @@ cat > /var/log/cubeos-boot-meta.json << EOF
 EOF
 
 # Alpha.17: Predictable symlink for nginx log serving
-ln -sf "$LOG_FILE" /var/log/cubeos-current-boot.log
+ln -sf "$(basename "$LOG_FILE")" /var/log/cubeos-current-boot.log
 
 # =============================================================================
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true

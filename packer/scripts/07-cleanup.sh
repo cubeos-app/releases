@@ -21,7 +21,16 @@ rm -rf /tmp/cubeos-configs /tmp/cubeos-firstboot
 # APT cleanup
 # ---------------------------------------------------------------------------
 echo "[07] Cleaning APT cache..."
+# B03: Protect util-linux-extra from autoremove (hwclock required at runtime)
+apt-mark manual util-linux-extra 2>/dev/null || true
 apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y 2>&1 | tail -5
+# B03: Verify hwclock survived autoremove
+if command -v hwclock &>/dev/null; then
+    echo "[07]   hwclock: OK (survived autoremove)"
+else
+    echo "[07]   ERROR: hwclock removed by autoremove! Reinstalling..."
+    apt-get install -y --no-install-recommends util-linux-extra 2>&1 || true
+fi
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/archives/*.deb

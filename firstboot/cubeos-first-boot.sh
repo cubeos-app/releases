@@ -55,7 +55,7 @@ cat > /var/log/cubeos-boot-meta.json << EOF
 EOF
 
 # Alpha.17: Predictable symlink for nginx log serving
-ln -sf "$LOG_FILE" /var/log/cubeos-current-boot.log
+ln -sf "$(basename "$LOG_FILE")" /var/log/cubeos-current-boot.log
 
 # ── Dead Man's Switch ────────────────────────────────────────────────
 STALL_TIMEOUT=180
@@ -470,9 +470,9 @@ if [ "$SWARM_READY" = true ]; then
     # Verify Swarm node is ready before deploying
     wait_for "Swarm node ready" "docker node ls --format '{{.Status}}' | grep -q Ready" 30 2
 
-    # Stabilization delay
-    log "  Waiting 15s for Swarm to stabilize..."
-    sleep 15
+    # Stabilization delay (reduced from 15s — overlay network no longer wastes 60s)
+    log "  Waiting 5s for Swarm to stabilize..."
+    sleep 5
     date +%s > "$HEARTBEAT"
 
     for stack in $SWARM_STACKS_PRE_API; do
