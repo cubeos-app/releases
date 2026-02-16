@@ -403,7 +403,7 @@ if [ "$SWARM_READY" = true ]; then
     sleep 15
     date +%s > "$HEARTBEAT"
 
-    for stack in $SWARM_STACKS; do
+    for stack in $SWARM_STACKS_PRE_API; do
         deploy_stack "$stack" || true
         sleep 3
         date +%s > "$HEARTBEAT"
@@ -411,6 +411,14 @@ if [ "$SWARM_READY" = true ]; then
 
     # Wait for critical services
     wait_for "API" "curl -sf http://127.0.0.1:6010/health" 120 || log_warn "API not healthy"
+
+    # B08: Deploy dashboard AFTER API is healthy to prevent 502/wizard flash
+    for stack in $SWARM_STACKS_POST_API; do
+        deploy_stack "$stack" || true
+        sleep 3
+        date +%s > "$HEARTBEAT"
+    done
+
     wait_for "Dashboard" "curl -sf http://127.0.0.1:6011/" 60 || log_warn "Dashboard not healthy"
 else
     log_warn "Stacks need Swarm. Run: cubeos-deploy-stacks.sh"

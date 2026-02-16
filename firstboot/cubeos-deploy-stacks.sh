@@ -105,7 +105,7 @@ done
 echo ""
 echo "[RECOVER] Deploying Swarm stacks..."
 
-STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex"
+STACKS="registry cubeos-api cubeos-docsindex cubeos-dashboard"
 
 for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"

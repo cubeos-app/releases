@@ -219,6 +219,7 @@ install_group "Security" \
 
 install_group "Hardware / Pi" \
     i2c-tools \
+    util-linux-extra \
     watchdog \
     linux-firmware
 

@@ -15,7 +15,16 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.14) ==="
+echo "=== [04] CubeOS Setup (alpha.16) ==="
+
+# ---------------------------------------------------------------------------
+# B03 Quick-fix: Ensure hwclock is available (util-linux-extra)
+# This will be a no-op once the base image includes it natively.
+# ---------------------------------------------------------------------------
+if ! command -v hwclock &>/dev/null; then
+    echo "[04] Installing util-linux-extra (hwclock for RTC support)..."
+    apt-get update -qq && apt-get install -y --no-install-recommends util-linux-extra 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # Version — injected by CI pipeline, falls back to dev
@@ -127,17 +136,17 @@ OPENVPN_PORT=6021
 TOR_PORT=6022
 
 # ===================
-# AI/ML Ports (6030-6039) — disabled until AI stack re-enabled
+# AI/ML Ports (6030-6039) — services disabled but ports reserved
 # ===================
-# OLLAMA_PORT=6030
-# CHROMADB_PORT=6031
+OLLAMA_PORT=6030
+CHROMADB_PORT=6031
 DOCS_INDEXER_PORT=6032
 
 # ===================
-# AI Service Endpoints — disabled until AI stack re-enabled
+# AI Service Endpoints — services disabled but defaults set
 # ===================
-# OLLAMA_HOST=10.42.24.1
-# CHROMADB_HOST=10.42.24.1
+OLLAMA_HOST=10.42.24.1
+CHROMADB_HOST=10.42.24.1
 
 # ===================
 # User Apps (6100-6999)
@@ -233,6 +242,14 @@ if [ -d "$BUNDLE_SRC" ]; then
 else
     echo "[04] WARNING: No coreapps bundle found at ${BUNDLE_SRC}"
     echo "[04] Compose files will need to be deployed via CI on first connect."
+fi
+
+# B05: Handle docs bundle explicitly (bare .md files, not standard appconfig structure)
+if [ -d "${BUNDLE_SRC}/docs" ]; then
+    mkdir -p /cubeos/docs
+    cp -r "${BUNDLE_SRC}/docs/"* /cubeos/docs/ 2>/dev/null || true
+    DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
+    echo "[04]   Pre-populated ${DOCS_COUNT} docs from coreapps bundle"
 fi
 
 # Cleanup packer temp

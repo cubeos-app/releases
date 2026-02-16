@@ -61,7 +61,12 @@ CORE_DNS_HOSTS=(
 )
 
 # ── Swarm Stacks ─────────────────────────────────────────────────────
-SWARM_STACKS="cubeos-api cubeos-dashboard registry cubeos-docsindex"
+# B08: Split into pre-API and post-API stacks.
+# Dashboard deploys AFTER API health check to prevent 502/wizard flash.
+SWARM_STACKS_PRE_API="cubeos-api registry cubeos-docsindex"
+SWARM_STACKS_POST_API="cubeos-dashboard"
+# Combined list for recovery/normal boot where ordering is less critical
+SWARM_STACKS="registry cubeos-api cubeos-docsindex cubeos-dashboard"
 
 # ── Compose Services ─────────────────────────────────────────────────
 COMPOSE_SERVICES="pihole npm cubeos-hal"
