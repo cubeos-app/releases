@@ -33,6 +33,9 @@ COREAPPS_DIR="/cubeos/coreapps"
 DATA_DIR="/cubeos/data"
 CACHE_DIR="/var/cache/cubeos-images"
 SETUP_FLAG="/cubeos/data/.setup_complete"
+# B37: Provisioned flag = first-boot script completed (services deployed).
+# Separate from wizard completion (tracked in DB by API).
+PROVISIONED_FLAG="/cubeos/data/.provisioned"
 LOG_FILE="${LOG_FILE:-/var/log/cubeos-boot.log}"
 
 # ── NPM Proxy Rules (Single Source of Truth — 9 rules) ──────────────

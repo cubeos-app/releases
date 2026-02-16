@@ -557,9 +557,11 @@ systemctl enable cubeos-watchdog.timer 2>/dev/null || true
 systemctl start cubeos-watchdog.timer 2>/dev/null || true
 log_ok "Watchdog monitoring started"
 
-mkdir -p "$(dirname "$SETUP_FLAG")"
-touch "$SETUP_FLAG"
-log "Setup flag created -- next boot will run normal-boot.sh"
+# B37: Create .provisioned flag (services deployed, ready for wizard).
+# Wizard completion is tracked separately in DB by API.
+mkdir -p "$(dirname "$PROVISIONED_FLAG")"
+touch "$PROVISIONED_FLAG"
+log "Provisioned flag created -- next boot will run normal-boot.sh"
 
 # Disable cloud-init on subsequent boots (prevents timeout delays on air-gapped operation)
 touch /etc/cloud/cloud-init.disabled

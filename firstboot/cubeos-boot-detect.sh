@@ -2,15 +2,19 @@
 # =============================================================================
 # cubeos-boot-detect.sh — Detect boot mode
 # =============================================================================
-# Returns "first-boot" or "normal-boot" based on setup state.
+# Returns "first-boot" or "normal-boot" based on provisioning state.
 # Called by cubeos-init.service to select the correct boot script.
+#
+# B37: Uses .provisioned (set by first-boot.sh after services deployed)
+#      NOT .setup_complete (wizard completion is tracked in DB by API).
+#      This prevents bricked state if Pi reboots before wizard finishes.
 # =============================================================================
 
-SETUP_FLAG="/cubeos/data/.setup_complete"
+PROVISIONED_FLAG="/cubeos/data/.provisioned"
 DB_PATH="/cubeos/data/cubeos.db"
 
-# First boot if setup flag doesn't exist
-if [ ! -f "$SETUP_FLAG" ]; then
+# First boot if provisioning hasn't completed
+if [ ! -f "$PROVISIONED_FLAG" ]; then
     echo "first-boot"
     exit 0
 fi
