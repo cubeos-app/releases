@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.13) ==="
+echo "=== [04] CubeOS Setup (alpha.14) ==="
 
 # ---------------------------------------------------------------------------
 # Version — injected by CI pipeline, falls back to dev
@@ -35,7 +35,7 @@ mkdir -p /cubeos/config/vpn/{wireguard,openvpn}
 # Create coreapps directories for ALL services (matching Pi 5)
 COREAPPS=(
     pihole npm cubeos-api cubeos-hal cubeos-dashboard
-    dozzle ollama chromadb registry
+    dozzle registry
     cubeos-docsindex cubeos-filebrowser
     wireguard openvpn tor
     diagnostics reset terminal backup watchdog
@@ -239,6 +239,25 @@ fi
 rm -rf "$BUNDLE_SRC"
 
 # ---------------------------------------------------------------------------
+# Pre-populate docs for offline first boot (T05)
+# ---------------------------------------------------------------------------
+# Docs are cloned at CI time and bundled into coreapps-bundle/docs/.
+# Docsindex will use these in filesystem mode without requiring Ollama/ChromaDB.
+# ---------------------------------------------------------------------------
+if [ -d "/cubeos/coreapps/docs" ] && [ "$(ls -A /cubeos/coreapps/docs 2>/dev/null)" ]; then
+    echo "[04] Pre-populating /cubeos/docs from coreapps bundle..."
+    cp -r /cubeos/coreapps/docs/* /cubeos/docs/ 2>/dev/null || true
+    echo "[04]   Docs pre-populated for offline filesystem mode"
+elif [ -d "/tmp/cubeos-docs" ]; then
+    echo "[04] Pre-populating /cubeos/docs from Packer provisioner..."
+    cp -r /tmp/cubeos-docs/* /cubeos/docs/ 2>/dev/null || true
+    rm -rf /tmp/cubeos-docs
+    echo "[04]   Docs pre-populated for offline filesystem mode"
+else
+    echo "[04]   No docs bundle found — docsindex will clone on first boot"
+fi
+
+# ---------------------------------------------------------------------------
 # Install first-boot scripts from /tmp/cubeos-firstboot/
 # ---------------------------------------------------------------------------
 echo "[04] Installing first-boot scripts..."
@@ -275,8 +294,6 @@ cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
 10.42.24.1 pihole.cubeos.cube
 10.42.24.1 hal.cubeos.cube
 10.42.24.1 dozzle.cubeos.cube
-10.42.24.1 ollama.cubeos.cube
-10.42.24.1 chromadb.cubeos.cube
 10.42.24.1 registry.cubeos.cube
 10.42.24.1 docs.cubeos.cube
 10.42.24.1 terminal.cubeos.cube

@@ -1,26 +1,22 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v9 - Alpha.13)
+# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v10 - Alpha.14)
 # =============================================================================
 # Sourced by both cubeos-first-boot.sh and cubeos-normal-boot.sh.
 # Contains all shared functions, constants, and configuration arrays.
 #
 # SINGLE SOURCE OF TRUTH for:
-#   - NPM proxy rules (11 rules)
-#   - Pi-hole custom DNS entries
+#   - NPM proxy rules (9 rules)
+#   - Pi-hole custom DNS entries (9 entries)
 #   - Log formatting (ASCII markers)
 #   - Common helpers (wait_for, container_running, etc.)
 #   - WiFi AP configuration
 #   - Watchdog management
 #
-# v9 — ALPHA.13:
-#   - Initial creation: extracted from both boot scripts
-#   - 11 NPM proxy rules (was 6 in first-boot)
-#   - ASCII-only log markers (OK:/WARN:/FAIL:)
-#   - 30s default timeout for wait_for()
-#   - container_running() check-only helper
-#   - Country code from cfg80211 (not hardcoded)
-#   - Watchdog --no-block start
+# v10 — ALPHA.14:
+#   - Removed Ollama + ChromaDB (9 proxy rules, 9 DNS entries, 4 Swarm stacks)
+#   - deploy-stacks sources defaults.env for version wiring (B59)
+#   - configure_wifi_ap() reads country code from defaults.env (B55)
 # =============================================================================
 
 # ── Constants ────────────────────────────────────────────────────────
@@ -35,7 +31,7 @@ CACHE_DIR="/var/cache/cubeos-images"
 SETUP_FLAG="/cubeos/data/.setup_complete"
 LOG_FILE="${LOG_FILE:-/var/log/cubeos-boot.log}"
 
-# ── NPM Proxy Rules (Single Source of Truth — 11 rules) ─────────────
+# ── NPM Proxy Rules (Single Source of Truth — 9 rules) ──────────────
 # Format: "domain:port"
 # Used by: first-boot NPM seeding, API NPM bootstrap, boot verification
 CORE_PROXY_RULES=(
@@ -47,8 +43,6 @@ CORE_PROXY_RULES=(
     "registry.cubeos.cube:5000"
     "hal.cubeos.cube:6005"
     "dozzle.cubeos.cube:6012"
-    "ollama.cubeos.cube:6030"
-    "chromadb.cubeos.cube:6031"
     "terminal.cubeos.cube:6009"
 )
 
@@ -61,15 +55,13 @@ CORE_DNS_HOSTS=(
     "pihole.cubeos.cube"
     "hal.cubeos.cube"
     "dozzle.cubeos.cube"
-    "ollama.cubeos.cube"
-    "chromadb.cubeos.cube"
     "registry.cubeos.cube"
     "docs.cubeos.cube"
     "terminal.cubeos.cube"
 )
 
 # ── Swarm Stacks ─────────────────────────────────────────────────────
-SWARM_STACKS="cubeos-api cubeos-dashboard registry cubeos-docsindex ollama chromadb"
+SWARM_STACKS="cubeos-api cubeos-dashboard registry cubeos-docsindex"
 
 # ── Compose Services ─────────────────────────────────────────────────
 COMPOSE_SERVICES="pihole npm cubeos-hal"
@@ -154,6 +146,8 @@ deploy_stack() {
 # ── WiFi AP Configuration ────────────────────────────────────────────
 configure_wifi_ap() {
     source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
+    # Read country code from defaults.env (B55: avoid hardcoded US fallback)
+    source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
     rfkill unblock wifi 2>/dev/null || true
 
     # Get country code from config (cfg80211 handles kernel-level regulatory domain)

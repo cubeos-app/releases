@@ -1,16 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-deploy-stacks.sh — Deploy/redeploy Swarm stacks (v4 - Alpha.6)
+# cubeos-deploy-stacks.sh — Deploy/redeploy Swarm stacks (v5 - Alpha.14)
 # =============================================================================
 # Manual recovery helper for when first boot partially failed.
 # Ensures IP, Swarm, overlay network, then deploys ALL stacks.
 #
-# v4 — ALPHA.6 FIXES:
-#   1. Network name: cubeos-network (was cubeos)
-#   2. Overlay subnet: 10.42.25.0/24 (was 172.20.0.0/24)
-#   3. Deploys ALL stacks (was only api + dashboard)
-#   4. No Docker secrets — API uses env_file
-#   5. Swarm init captures stderr
+# v5 — ALPHA.14:
+#   - Sources defaults.env for version wiring (B59 fix)
+#   - Removed ollama/chromadb from STACKS (4 stacks)
+#   - 7 services total (3 compose + 4 swarm)
 #
 # Usage: cubeos-deploy-stacks.sh
 # =============================================================================
@@ -22,9 +20,12 @@ NETWORK_NAME="cubeos-network"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
 
-echo "=== CubeOS Stack Recovery (alpha.6) ==="
+echo "=== CubeOS Stack Recovery (alpha.14) ==="
 echo "$(date)"
 echo ""
+
+# ── Source defaults.env for version and config (B59 fix) ──────────────
+source /cubeos/config/defaults.env 2>/dev/null || true
 
 # ── Ensure wlan0 has our IP ──────────────────────────────────────────
 echo "[RECOVER] Ensuring wlan0 has ${GATEWAY_IP}..."
@@ -104,7 +105,7 @@ done
 echo ""
 echo "[RECOVER] Deploying Swarm stacks..."
 
-STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex ollama chromadb"
+STACKS="registry cubeos-api cubeos-dashboard cubeos-docsindex"
 
 for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"

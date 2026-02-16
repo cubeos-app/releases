@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Release Image Builder — v0.1.0-alpha.13
+# CubeOS Release Image Builder — v0.1.0-alpha.14
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
@@ -7,14 +7,13 @@
 # so this build only writes configuration, compose files, and firstboot scripts.
 # No apt-get, no package downloads — build time is ~3-5 minutes.
 #
-# ALPHA.13 CHANGES:
-#   - Boot script v9: shared cubeos-boot-lib.sh, 11 NPM proxy rules,
-#     ASCII markers, unified country code, watchdog --no-block
-#   - B43: hostapd systemd drop-in delays start until cubeos-init configures SSID
-#   - image_size bumped 14G → 18G (Ollama CUDA libs 5.2GB)
-#   - Ollama models (qwen2.5:0.5b, nomic-embed-text) baked into image
-#   - Pi-hole DNS synced to 11 entries (was 8)
-#   - Version bumps across all files
+# ALPHA.14 CHANGES:
+#   - Removed Ollama + ChromaDB (7 services, down from 9)
+#   - image_size 18G → 12G (no more CUDA libs + models)
+#   - Hostapd drop-in removed (B54 fix)
+#   - Pi-hole DNS/NPM proxy rules: 9 entries (was 11)
+#   - Docsindex runs in filesystem mode (no RAG)
+#   - Version wiring fixed (B59)
 #
 # ALPHA.8 CHANGES:
 #   - secrets.env permissions: 640 root:docker (was 600 root:root)
@@ -45,12 +44,12 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.13"
+  default = "0.1.0-alpha.14"
 }
 
 variable "image_size" {
   type    = string
-  default = "18G"
+  default = "12G"
 }
 
 variable "base_image_url" {
