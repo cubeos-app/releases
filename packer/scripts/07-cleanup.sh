@@ -21,16 +21,13 @@ rm -rf /tmp/cubeos-configs /tmp/cubeos-firstboot
 # APT cleanup
 # ---------------------------------------------------------------------------
 echo "[07] Cleaning APT cache..."
-# B03: Protect util-linux-extra from autoremove (hwclock required at runtime)
-apt-mark manual util-linux-extra 2>/dev/null || true
-apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y 2>&1 | tail -5
-# B03: Verify hwclock survived autoremove
-if command -v hwclock &>/dev/null; then
-    echo "[07]   hwclock: OK (survived autoremove)"
-else
-    echo "[07]   ERROR: hwclock removed by autoremove! Reinstalling..."
-    apt-get install -y --no-install-recommends util-linux-extra 2>&1 || true
-fi
+# B44: NO autoremove here. The golden base image already ran its own autoremove.
+# The release packer installs ZERO new packages, so there is nothing to autoremove.
+# Previous attempts (alpha.15-17) used apt-mark manual to protect util-linux-extra,
+# but apt-mark silently fails under QEMU aarch64 chroot emulation, and the
+# subsequent autoremove strips hwclock. The reinstall then also fails because
+# the base image already purged APT lists. Removing autoremove entirely is the
+# correct fix — it was never needed in the release packer.
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/archives/*.deb
@@ -109,5 +106,18 @@ echo "[07] Zeroing free space for compression (this takes a moment)..."
 dd if=/dev/zero of=/zero bs=1M 2>/dev/null || true
 rm -f /zero
 sync
+
+# ---------------------------------------------------------------------------
+# B44: Final hwclock verification (hard failure if missing)
+# ---------------------------------------------------------------------------
+echo "[07] Verifying critical binaries..."
+if command -v hwclock &>/dev/null; then
+    echo "[07]   hwclock: OK ($(command -v hwclock))"
+else
+    echo "[07]   FATAL: hwclock not found! Image will have broken RTC support."
+    echo "[07]   dpkg status: $(dpkg -l util-linux-extra 2>&1 | tail -1)"
+    echo "[07]   util-linux: $(dpkg -l util-linux 2>&1 | tail -1)"
+    exit 1
+fi
 
 echo "[07] Cleanup complete. Image is ready for compression."

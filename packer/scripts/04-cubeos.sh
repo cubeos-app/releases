@@ -18,35 +18,20 @@ set -euo pipefail
 echo "=== [04] CubeOS Setup (alpha.18) ==="
 
 # ---------------------------------------------------------------------------
-# B03: Ensure hwclock is available (util-linux-extra)
-# Root cause (alpha.15-17): apt-get autoremove in cleanup scripts strips this
-# package because it has no reverse dependencies. Fix: mark as manual install.
+# B44: Verify hwclock is present from the golden base image
+# The base image (01-ubuntu-base.sh) installs util-linux-extra.
+# If hwclock is missing, the base image must be rebuilt — there are no
+# APT lists available for runtime installation.
 # ---------------------------------------------------------------------------
-echo "[04] Verifying util-linux-extra (hwclock)..."
+echo "[04] Verifying hwclock (util-linux-extra from base image)..."
 if command -v hwclock &>/dev/null; then
-    echo "[04]   hwclock: OK (already installed)"
-    # Mark as manual to protect from autoremove in 07-cleanup.sh
-    apt-mark manual util-linux-extra 2>/dev/null || true
+    echo "[04]   hwclock: OK ($(command -v hwclock))"
 else
-    echo "[04]   hwclock not found — installing util-linux-extra..."
-    apt-get update -qq || echo "[04]   WARN: apt-get update failed (may be in chroot)"
-    if apt-get install -y --no-install-recommends util-linux-extra; then
-        echo "[04]   OK: util-linux-extra installed"
-        # Protect from autoremove
-        apt-mark manual util-linux-extra 2>/dev/null || true
-    else
-        echo "[04]   FAIL: apt-get install util-linux-extra failed!"
-        echo "[04]   Trying dpkg direct install as fallback..."
-        # In ARM chroot, package may need different approach
-        apt-get install -y util-linux-extra 2>&1 || echo "[04]   FAIL: all install methods failed"
-    fi
-    # Final verification — don't suppress this
-    if command -v hwclock &>/dev/null; then
-        echo "[04]   VERIFIED: hwclock is now available at $(command -v hwclock)"
-    else
-        echo "[04]   ERROR: hwclock STILL not available after install attempts!"
-        echo "[04]   dpkg status: $(dpkg -l util-linux-extra 2>&1 | tail -1)"
-    fi
+    echo "[04]   FATAL: hwclock not found!"
+    echo "[04]   The golden base image is missing util-linux-extra."
+    echo "[04]   Rebuild the base image (base-image/scripts/01-ubuntu-base.sh)."
+    echo "[04]   dpkg status: $(dpkg -l util-linux-extra 2>&1 | tail -1)"
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
