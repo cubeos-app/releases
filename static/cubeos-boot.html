@@ -231,6 +231,14 @@ body{
     // Try reaching the API health endpoint through the NPM proxy
     fetch('/api/v1/health', { cache: 'no-store' })
       .then(function(r) {
+        // B34: API returns 428 when wizard hasn't completed yet.
+        // Response.ok is false for 4xx, so handle 428 explicitly.
+        if (r.status === 428) {
+          redirecting = true;
+          statusEl.textContent = 'Connected';
+          window.location.href = '/setup';
+          return null;
+        }
         if (!r.ok) return null;
         return r.json();
       })
