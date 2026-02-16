@@ -142,49 +142,54 @@ build-image:
 
       mkdir -p docker-images
 
-      echo "[1/7] Pi-hole..."
+      echo "[1/8] Pi-hole..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
 
-      echo "[2/7] Nginx Proxy Manager..."
+      echo "[2/8] Nginx Proxy Manager..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
 
-      echo "[3/7] CubeOS API..."
+      echo "[3/8] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
 
-      echo "[4/7] CubeOS HAL..."
+      echo "[4/8] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
 
-      echo "[5/7] CubeOS Dashboard..."
+      echo "[5/8] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
-      echo "[6/7] CubeOS DocsIndex..."
+      echo "[6/8] CubeOS DocsIndex..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
         docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
 
-      echo "[7/7] Docker Registry..."
+      echo "[7/8] Docker Registry..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/library/registry:2 \
         docker-archive:docker-images/registry.tar:library/registry:2
 
+      echo "[8/8] Dozzle..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/amir20/dozzle:latest \
+        docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+
       echo ""
       ls -lh docker-images/
       du -sh docker-images/
-      echo "Docker images: OK (7 images)"
+      echo "Docker images: OK (8 images)"
     - |
       set -e
       echo ""

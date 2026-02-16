@@ -21,17 +21,17 @@ echo "=== [04] CubeOS Setup (alpha.17) ==="
 # B03: Ensure hwclock is available (util-linux-extra)
 # Golden base should include it, but verify + install if missing.
 # ---------------------------------------------------------------------------
-if ! command -v hwclock &>/dev/null; then
-    echo "[04] hwclock not found — installing util-linux-extra..."
-    apt-get update -qq
-    apt-get install -y --no-install-recommends util-linux-extra
-    if command -v hwclock &>/dev/null; then
-        echo "[04]   OK: hwclock now available ($(hwclock --version 2>/dev/null || echo 'installed'))"
-    else
-        echo "[04]   WARN: hwclock still not available after install — RTC sync will fail"
-    fi
-else
+if command -v hwclock &>/dev/null; then
     echo "[04] hwclock: OK (already installed)"
+else
+    echo "[04] hwclock not found — attempting install (may fail in chroot)..."
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y --no-install-recommends util-linux-extra 2>/dev/null || true
+    if command -v hwclock &>/dev/null; then
+        echo "[04]   OK: hwclock now available"
+    else
+        echo "[04]   WARN: hwclock not available — will retry at first boot if needed"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
