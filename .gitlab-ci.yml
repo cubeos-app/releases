@@ -465,7 +465,10 @@ create-gitlab-release:
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
 
 # =============================================================================
-# Create GitHub Release (mirror — tag push only, link-only due to GitHub 2GB asset limit)
+# Create GitHub Release (mirror — tag push only, with binary upload)
+# =============================================================================
+# Alpha.14+: Image is ~1.4G (under GitHub's 2GB asset limit), so we upload
+# the image directly as a release asset for easy downloads.
 # =============================================================================
 create-github-release:
   stage: release
@@ -484,18 +487,18 @@ create-github-release:
 
       IMAGE_FILE="${IMAGE_NAME}.img.xz"
       CHECKSUM_FILE="${IMAGE_NAME}.img.xz.sha256"
-      DOWNLOAD_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}"
-      CHECKSUM_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}"
 
-      # --- Step 1: Fetch checksum from Package Registry ---
+      # --- Step 1: Download image + checksum from GitLab Package Registry ---
       echo "============================================================"
-      echo "  Step 1: Fetch checksum from GitLab Package Registry"
+      echo "  Step 1: Download from GitLab Package Registry"
       echo "============================================================"
+
+      echo "Downloading ${CHECKSUM_FILE}..."
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            -o "${CHECKSUM_FILE}" \
            --connect-timeout 30 \
            --retry 3 \
-           "${CHECKSUM_URL}"
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}"
 
       CHECKSUM=$(cut -d' ' -f1 "${CHECKSUM_FILE}")
       echo "SHA256: ${CHECKSUM}"
@@ -506,12 +509,29 @@ create-github-release:
         exit 1
       fi
 
-      # --- Step 2: Create GitHub Release (link-only, no binary upload) ---
-      # GitHub has a hard 2GB limit on release assets. CubeOS images exceed
-      # this, so we link to the GitLab Package Registry instead.
+      echo "Downloading ${IMAGE_FILE} (~1.4G)..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${IMAGE_FILE}" \
+           --connect-timeout 30 \
+           --max-time 3600 \
+           --retry 3 \
+           --retry-delay 60 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}"
+
+      echo "Downloaded: $(du -h ${IMAGE_FILE} | cut -f1)"
+
+      # Verify checksum
+      echo "Verifying checksum..."
+      echo "${CHECKSUM}  ${IMAGE_FILE}" | sha256sum -c - || {
+        echo "ERROR: Checksum mismatch!"
+        exit 1
+      }
+
+      # --- Step 2: Create GitHub Release ---
       echo "============================================================"
       echo "  Step 2: Create GitHub Release"
       echo "============================================================"
+
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
       Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
@@ -520,15 +540,13 @@ create-github-release:
 
       | File | Link |
       |------|------|
-      | \`${IMAGE_FILE}\` | [Download from GitLab](${DOWNLOAD_URL}) |
-      | SHA256 Checksum | [${CHECKSUM_FILE}](${CHECKSUM_URL}) |
+      | \`${IMAGE_FILE}\` | [Download from GitLab](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}) |
+      | SHA256 Checksum | [${CHECKSUM_FILE}](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}) |
 
       **SHA256:** \`${CHECKSUM}\`
 
-      > **Note:** Image exceeds GitHub's 2GB asset limit — hosted on GitLab Package Registry.
-
       ### Quick Start
-      1. Download \`${IMAGE_FILE}\` from the link above
+      1. Download \`${IMAGE_FILE}\` from Assets below
       2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) → Use custom
       3. Boot the Pi — connect to the CubeOS WiFi AP
       4. Open http://cubeos.cube and complete setup wizard
@@ -556,15 +574,18 @@ create-github-release:
 
       if [ "$HTTP_CODE" = "201" ]; then
         RELEASE_ID=$(echo "$RESP_BODY" | jq -r '.id')
+        UPLOAD_URL=$(echo "$RESP_BODY" | jq -r '.upload_url' | sed 's/{?name,label}//')
         echo "  Release created (ID: ${RELEASE_ID})"
       elif [ "$HTTP_CODE" = "422" ]; then
-        echo "  Release already exists — updating..."
+        echo "  Release already exists — fetching existing release..."
         EXISTING=$(curl -s \
           -H "Authorization: token ${GHCR_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
           "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CI_COMMIT_TAG}")
         RELEASE_ID=$(echo "$EXISTING" | jq -r '.id')
+        UPLOAD_URL=$(echo "$EXISTING" | jq -r '.upload_url' | sed 's/{?name,label}//')
 
+        # Update release body
         curl -s -X PATCH \
           -H "Authorization: token ${GHCR_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
@@ -574,6 +595,18 @@ create-github-release:
             '{body: $body}'
           )" > /dev/null
 
+        # Delete existing assets (re-upload fresh)
+        echo "  Deleting old assets..."
+        ASSETS=$(curl -s \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets")
+        echo "$ASSETS" | jq -r '.[].id' | while read ASSET_ID; do
+          curl -s -X DELETE \
+            -H "Authorization: token ${GHCR_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}" || true
+        done
+
         echo "  Updated existing release (ID: ${RELEASE_ID})"
       else
         echo "  ERROR: Unexpected response."
@@ -581,9 +614,48 @@ create-github-release:
         exit 1
       fi
 
+      # --- Step 3: Upload image as release asset ---
+      echo "============================================================"
+      echo "  Step 3: Upload image to GitHub Release"
+      echo "============================================================"
+      echo "Uploading ${IMAGE_FILE} ($(du -h ${IMAGE_FILE} | cut -f1))..."
+      UPLOAD_RESP=$(curl -s -w "\n%{http_code}" \
+        --max-time 3600 \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: application/x-xz" \
+        "${UPLOAD_URL}?name=${IMAGE_FILE}" \
+        --data-binary "@${IMAGE_FILE}")
+
+      UPLOAD_CODE=$(echo "$UPLOAD_RESP" | tail -1)
+      UPLOAD_BODY=$(echo "$UPLOAD_RESP" | sed '$d')
+      if [ "$UPLOAD_CODE" = "201" ]; then
+        echo "  Image uploaded: $(echo "$UPLOAD_BODY" | jq -r '.browser_download_url')"
+      else
+        echo "  ERROR uploading image (HTTP ${UPLOAD_CODE})"
+        echo "$UPLOAD_BODY" | jq . 2>/dev/null || echo "$UPLOAD_BODY"
+        exit 1
+      fi
+
+      # --- Step 4: Upload checksum as release asset ---
+      echo "Uploading ${CHECKSUM_FILE}..."
+      CHKSUM_RESP=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: text/plain" \
+        "${UPLOAD_URL}?name=${CHECKSUM_FILE}" \
+        --data-binary "@${CHECKSUM_FILE}")
+
+      CHKSUM_CODE=$(echo "$CHKSUM_RESP" | tail -1)
+      if [ "$CHKSUM_CODE" = "201" ]; then
+        echo "  Checksum uploaded."
+      else
+        echo "  WARN: Checksum upload failed (HTTP ${CHKSUM_CODE}) — non-fatal."
+      fi
+
       echo "============================================================"
       echo "  GitHub Release complete!"
       echo "  https://github.com/${GITHUB_REPO}/releases/tag/${CI_COMMIT_TAG}"
       echo "============================================================"
   allow_failure: true
-  timeout: 10m
+  timeout: 60m
