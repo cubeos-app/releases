@@ -45,6 +45,18 @@ BOOT_START=$(date +%s)
 # v8/v9: Truncate log at start of each boot (prevents unbounded growth)
 : > "$LOG_FILE"
 
+# Alpha.17: Boot metadata for boot page (cubeos-boot.html)
+cat > /var/log/cubeos-boot-meta.json << EOF
+{
+  "boot_type": "normal",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "version": "${CUBEOS_VERSION:-unknown}"
+}
+EOF
+
+# Alpha.17: Predictable symlink for nginx log serving
+ln -sf "$LOG_FILE" /var/log/cubeos-current-boot.log
+
 # =============================================================================
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 

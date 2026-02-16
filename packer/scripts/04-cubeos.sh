@@ -55,6 +55,7 @@ done
 mkdir -p /cubeos/coreapps/scripts
 mkdir -p /cubeos/data/watchdog
 mkdir -p /cubeos/alerts
+mkdir -p /cubeos/static
 
 # Correct ownership
 chown -R root:root /cubeos
@@ -289,6 +290,17 @@ else
     else
         echo "[04]   WARN: git not available — docsindex will clone on first boot"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Install static web assets from /tmp/cubeos-static/
+# ---------------------------------------------------------------------------
+echo "[04] Installing static web assets..."
+
+if [ -d /tmp/cubeos-static ]; then
+    cp -r /tmp/cubeos-static/* /cubeos/static/ 2>/dev/null || true
+    STATIC_COUNT=$(find /cubeos/static -type f 2>/dev/null | wc -l)
+    echo "[04]   Installed ${STATIC_COUNT} static files to /cubeos/static/"
 fi
 
 # ---------------------------------------------------------------------------

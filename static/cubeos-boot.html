@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CubeOS</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  background:#0f172a;
+  color:#e2e8f0;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.container{
+  text-align:center;
+  padding:2rem 1.5rem;
+  width:100%;
+  max-width:520px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  max-height:100vh;
+}
+.logo{
+  margin-bottom:0.75rem;
+  color:#60a5fa;
+}
+.title{
+  font-size:1.5rem;
+  font-weight:600;
+  color:#f1f5f9;
+  letter-spacing:0.05em;
+  margin-bottom:1.5rem;
+}
+.spinner{
+  width:32px;
+  height:32px;
+  border:3px solid #1e293b;
+  border-top-color:#60a5fa;
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+  margin:0 auto 1rem;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status{
+  font-size:1rem;
+  color:#94a3b8;
+  margin-bottom:0.25rem;
+}
+.badge{
+  display:inline-block;
+  font-size:0.7rem;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+  padding:0.2rem 0.6rem;
+  border-radius:9999px;
+  margin-top:0.5rem;
+  margin-bottom:1rem;
+}
+.badge-first{
+  background:rgba(59,130,246,0.15);
+  color:#60a5fa;
+  border:1px solid rgba(59,130,246,0.3);
+}
+.badge-normal{
+  background:rgba(34,197,94,0.15);
+  color:#4ade80;
+  border:1px solid rgba(34,197,94,0.3);
+}
+.log-panel{
+  width:100%;
+  background:#020617;
+  border:1px solid #1e293b;
+  border-radius:0.5rem;
+  padding:0.75rem;
+  margin-bottom:1rem;
+  text-align:left;
+  overflow-y:auto;
+  max-height:40vh;
+  min-height:120px;
+  flex-shrink:1;
+}
+.log-panel pre{
+  font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+  font-size:0.72rem;
+  line-height:1.5;
+  color:#64748b;
+  white-space:pre-wrap;
+  word-break:break-all;
+}
+.log-panel .log-ok{color:#4ade80}
+.log-panel .log-warn{color:#facc15}
+.log-panel .log-fail{color:#f87171}
+.log-panel .log-step{color:#60a5fa;font-weight:600}
+.elapsed{
+  font-size:0.75rem;
+  color:#475569;
+}
+.recovery{
+  margin-top:1rem;
+  padding:0.75rem 1rem;
+  border:1px solid #3730a3;
+  border-radius:0.5rem;
+  background:rgba(30,27,75,0.5);
+  font-size:0.8rem;
+  color:#a5b4fc;
+}
+.recovery code{
+  display:block;
+  margin-top:0.5rem;
+  background:rgba(15,23,42,0.8);
+  padding:0.25rem 0.5rem;
+  border-radius:0.25rem;
+  font-size:0.75rem;
+  color:#cbd5e1;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- CubeOS Logo (cube SVG) -->
+  <svg class="logo" width="48" height="48" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+    <line x1="12" y1="22.08" x2="12" y2="12"/>
+  </svg>
+  <h1 class="title">CubeOS</h1>
+
+  <div class="spinner"></div>
+  <p class="status" id="status">Provisioning system...</p>
+  <span class="badge badge-first" id="badge" style="display:none">First Boot</span>
+
+  <!-- Boot log panel -->
+  <div class="log-panel" id="logPanel">
+    <pre id="logContent">Waiting for boot log...</pre>
+  </div>
+
+  <p class="elapsed" id="elapsed"></p>
+
+  <div class="recovery" id="recovery" style="display:none">
+    <p>The system is taking longer than expected to start.</p>
+    <p style="margin-top:0.35rem;font-size:0.75rem;color:#94a3b8">SSH into the device and check:</p>
+    <code>docker service ls</code>
+  </div>
+</div>
+
+<script>
+(function() {
+  var startTime = Date.now();
+  var logEl = document.getElementById('logContent');
+  var logPanel = document.getElementById('logPanel');
+  var statusEl = document.getElementById('status');
+  var badgeEl = document.getElementById('badge');
+  var elapsedEl = document.getElementById('elapsed');
+  var recoveryEl = document.getElementById('recovery');
+  var lastLogLength = 0;
+  var bootType = null;
+  var redirecting = false;
+
+  // Phase detection: if the page was served as a 502 response,
+  // the dashboard proxy rule exists but upstream is down.
+  // We detect this by checking if the page URL path is NOT /cubeos-boot.html
+  // (i.e. the user navigated to cubeos.cube and got a 502 fallback)
+  var is502 = (window.location.pathname === '/' || window.location.pathname === '');
+
+  function updateStatus() {
+    if (redirecting) return;
+    if (is502) {
+      statusEl.textContent = 'Starting services...';
+    } else {
+      statusEl.textContent = 'Provisioning system...';
+    }
+  }
+
+  function colorize(text) {
+    return text.split('\n').map(function(line) {
+      if (/\bOK:/.test(line))       return '<span class="log-ok">' + esc(line) + '</span>';
+      if (/\bWARN:/.test(line))     return '<span class="log-warn">' + esc(line) + '</span>';
+      if (/\bFAIL:/.test(line))     return '<span class="log-fail">' + esc(line) + '</span>';
+      if (/\bStep \d/.test(line))   return '<span class="log-step">' + esc(line) + '</span>';
+      return esc(line);
+    }).join('\n');
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+  }
+
+  function fetchLog() {
+    fetch('/cubeos-log', { cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.text() : ''; })
+      .then(function(text) {
+        if (text && text.length > 0) {
+          logEl.innerHTML = colorize(text);
+          // Auto-scroll to bottom
+          logPanel.scrollTop = logPanel.scrollHeight;
+          lastLogLength = text.length;
+        }
+      })
+      .catch(function() {});
+  }
+
+  function fetchMeta() {
+    fetch('/cubeos-log-meta', { cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data) return;
+        bootType = data.boot_type;
+        badgeEl.style.display = 'inline-block';
+        if (bootType === 'first') {
+          badgeEl.textContent = 'First Boot';
+          badgeEl.className = 'badge badge-first';
+        } else {
+          badgeEl.textContent = 'Normal Boot';
+          badgeEl.className = 'badge badge-normal';
+        }
+      })
+      .catch(function() {});
+  }
+
+  function checkHealth() {
+    if (redirecting) return;
+    // Try reaching the API health endpoint through the NPM proxy
+    fetch('/api/v1/health', { cache: 'no-store' })
+      .then(function(r) {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(function(data) {
+        if (!data) return;
+        // API is healthy — check setup status
+        return fetch('/api/v1/setup/status', { cache: 'no-store' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(setup) {
+            if (redirecting) return;
+            redirecting = true;
+            statusEl.textContent = 'Connected';
+            if (setup && setup.is_complete === true) {
+              window.location.href = '/login';
+            } else {
+              window.location.href = '/setup';
+            }
+          });
+      })
+      .catch(function() {});
+  }
+
+  function updateElapsed() {
+    var secs = Math.floor((Date.now() - startTime) / 1000);
+    var mins = Math.floor(secs / 60);
+    var s = secs % 60;
+    elapsedEl.textContent = mins > 0
+      ? 'Waiting ' + mins + 'm ' + s + 's'
+      : 'Waiting ' + s + 's';
+    if (secs >= 180) {
+      recoveryEl.style.display = 'block';
+    }
+  }
+
+  updateStatus();
+
+  // Poll every 2 seconds
+  setInterval(function() {
+    fetchLog();
+    fetchMeta();
+    checkHealth();
+    updateElapsed();
+  }, 2000);
+
+  // Immediate first calls
+  fetchLog();
+  fetchMeta();
+  checkHealth();
+  updateElapsed();
+})();
+</script>
+</body>
+</html>

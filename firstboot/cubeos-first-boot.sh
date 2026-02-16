@@ -45,6 +45,18 @@ BOOT_START=$(date +%s)
 # v9: Truncate log at start
 : > "$LOG_FILE"
 
+# Alpha.17: Boot metadata for boot page (cubeos-boot.html)
+cat > /var/log/cubeos-boot-meta.json << EOF
+{
+  "boot_type": "first",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "version": "${CUBEOS_VERSION:-unknown}"
+}
+EOF
+
+# Alpha.17: Predictable symlink for nginx log serving
+ln -sf "$LOG_FILE" /var/log/cubeos-current-boot.log
+
 # ── Dead Man's Switch ────────────────────────────────────────────────
 STALL_TIMEOUT=180
 MAX_BOOT_TIME=900
@@ -159,6 +171,13 @@ print(json.load(sys.stdin).get('token', ''))
         local domain="${entry%%:*}"
         local port="${entry##*:}"
         log "  NPM: Proxy ${domain} -> :${port}"
+
+        # Alpha.17: cubeos.cube gets 502 error page config (serves boot page when dashboard is down)
+        local adv_config=""
+        if [ "$domain" = "cubeos.cube" ]; then
+            adv_config="proxy_intercept_errors on;\nerror_page 502 503 504 /cubeos-boot.html;"
+        fi
+
         curl -sf -X POST "${NPM_API}/nginx/proxy-hosts" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${TOKEN}" \
@@ -171,11 +190,31 @@ print(json.load(sys.stdin).get('token', ''))
                 \"allow_websocket_upgrade\": true,
                 \"access_list_id\": 0,
                 \"certificate_id\": 0,
-                \"advanced_config\": \"\",
+                \"advanced_config\": \"${adv_config}\",
                 \"meta\": {\"dns_challenge\": false},
                 \"locations\": []
             }" 2>/dev/null || log_warn "  Failed: ${domain}"
     done
+
+    # Step 5: Set default site to CubeOS boot page
+    # This replaces the NPM "Congratulations" page with our branded boot page.
+    # Uses NPM's "html" default site mode with inline content.
+    if [ -f "/cubeos/static/cubeos-boot.html" ]; then
+        local BOOT_HTML_JSON
+        BOOT_HTML_JSON=$(python3 -c "
+import sys, json
+with open('/cubeos/static/cubeos-boot.html') as f:
+    print(json.dumps(f.read()))
+" 2>/dev/null)
+        if [ -n "$BOOT_HTML_JSON" ]; then
+            curl -sf -X PUT "${NPM_API}/settings/default-site" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -d "{\"value\":\"html\",\"meta\":{\"html\":${BOOT_HTML_JSON}}}" \
+                2>/dev/null && log_ok "NPM default site set to CubeOS boot page" \
+                || log_warn "NPM default site setting failed"
+        fi
+    fi
 
     # Step 5: Store NPM password in secrets.env
     if [ -f "${CONFIG_DIR}/secrets.env" ]; then
@@ -365,6 +404,39 @@ log_step "Step 7/9: Deploying NPM + HAL..."
 echo "7/9" > "$PROGRESS"
 
 ensure_dns_resolver
+
+# Alpha.17: Pre-create NPM custom nginx config for boot page + log endpoints
+# These location blocks are injected into every proxy host's server block,
+# allowing /cubeos-log and /cubeos-boot.html to be served directly by nginx
+# (exact-match locations take priority over the proxy_pass).
+NPM_DATA="${COREAPPS_DIR}/npm/appdata/data"
+mkdir -p "${NPM_DATA}/nginx/custom"
+cat > "${NPM_DATA}/nginx/custom/server_proxy.conf" << 'NGINX'
+# CubeOS boot page and log serving endpoints (Alpha.17)
+# Injected into all proxy host server blocks via NPM custom include.
+# Exact-match locations override the upstream proxy_pass.
+
+location = /cubeos-boot.html {
+    alias /data/custom-pages/cubeos-boot.html;
+    default_type text/html;
+    add_header Cache-Control "no-cache, no-store";
+}
+
+location = /cubeos-log {
+    alias /var/log/host/cubeos-current-boot.log;
+    default_type text/plain;
+    add_header Cache-Control "no-cache, no-store";
+    add_header Access-Control-Allow-Origin *;
+}
+
+location = /cubeos-log-meta {
+    alias /var/log/host/cubeos-boot-meta.json;
+    default_type application/json;
+    add_header Cache-Control "no-cache, no-store";
+    add_header Access-Control-Allow-Origin *;
+}
+NGINX
+log_ok "NPM custom nginx config created (boot page + log endpoints)"
 
 if docker image inspect "jc21/nginx-proxy-manager:latest" &>/dev/null; then
     log_ok "NPM image present (pre-loaded)"

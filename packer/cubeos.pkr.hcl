@@ -44,7 +44,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.16"
+  default = "0.1.0-alpha.17"
 }
 
 variable "image_size" {
@@ -119,6 +119,11 @@ build {
   provisioner "file" {
     source      = "firstboot/"
     destination = "/tmp/cubeos-firstboot/"
+  }
+
+  provisioner "file" {
+    source      = "static/"
+    destination = "/tmp/cubeos-static/"
   }
 
   provisioner "file" {
