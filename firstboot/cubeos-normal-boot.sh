@@ -86,6 +86,7 @@ fi
 
 # ── Compose services ──────────────────────────────────────────────────
 # Check-only loop — skip docker compose up if container is already running.
+# HAL must be running before Swarm stacks (API depends on it).
 log "Checking compose services..."
 for svc_dir in $COMPOSE_SERVICES; do
     CONTAINER="cubeos-${svc_dir}"
@@ -101,6 +102,14 @@ for svc_dir in $COMPOSE_SERVICES; do
     fi
 done
 
+# Explicit HAL verification (T09: restart policy may not trigger after clean shutdown)
+if ! container_running "cubeos-hal"; then
+    log "HAL still not running after compose check -- forcing start..."
+    DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
+        -f "${COREAPPS_DIR}/cubeos-hal/appconfig/docker-compose.yml" \
+        up -d --pull never 2>/dev/null || log_warn "HAL force-start failed"
+fi
+
 # Pi-hole health via DNS check (more reliable, tests actual functionality)
 wait_for "Pi-hole DNS" "dig cubeos.cube @127.0.0.1 +short +time=2 +tries=1" 30 1 || true
 
@@ -115,6 +124,10 @@ configure_wifi_ap
 # ── Swarm stacks ──────────────────────────────────────────────────────
 if docker info 2>/dev/null | grep -q "Swarm: active"; then
     log "Verifying Swarm stacks..."
+
+    # T07: Ensure overlay network exists before checking stacks
+    # Network can be GC'd if no services reference it after reboot
+    ensure_overlay_network
 
     for stack in $SWARM_STACKS; do
         if docker stack ls 2>/dev/null | grep -q "^${stack} "; then

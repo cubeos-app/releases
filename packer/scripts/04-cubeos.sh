@@ -127,17 +127,17 @@ OPENVPN_PORT=6021
 TOR_PORT=6022
 
 # ===================
-# AI/ML Ports (6030-6039)
+# AI/ML Ports (6030-6039) — disabled until AI stack re-enabled
 # ===================
-OLLAMA_PORT=6030
-CHROMADB_PORT=6031
+# OLLAMA_PORT=6030
+# CHROMADB_PORT=6031
 DOCS_INDEXER_PORT=6032
 
 # ===================
-# AI Service Endpoints
+# AI Service Endpoints — disabled until AI stack re-enabled
 # ===================
-OLLAMA_HOST=10.42.24.1
-CHROMADB_HOST=10.42.24.1
+# OLLAMA_HOST=10.42.24.1
+# CHROMADB_HOST=10.42.24.1
 
 # ===================
 # User Apps (6100-6999)
@@ -247,14 +247,31 @@ rm -rf "$BUNDLE_SRC"
 if [ -d "/cubeos/coreapps/docs" ] && [ "$(ls -A /cubeos/coreapps/docs 2>/dev/null)" ]; then
     echo "[04] Pre-populating /cubeos/docs from coreapps bundle..."
     cp -r /cubeos/coreapps/docs/* /cubeos/docs/ 2>/dev/null || true
-    echo "[04]   Docs pre-populated for offline filesystem mode"
+    DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
+    echo "[04]   Copied ${DOCS_COUNT} markdown files from bundle"
 elif [ -d "/tmp/cubeos-docs" ]; then
     echo "[04] Pre-populating /cubeos/docs from Packer provisioner..."
     cp -r /tmp/cubeos-docs/* /cubeos/docs/ 2>/dev/null || true
     rm -rf /tmp/cubeos-docs
-    echo "[04]   Docs pre-populated for offline filesystem mode"
+    DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
+    echo "[04]   Copied ${DOCS_COUNT} markdown files from provisioner"
 else
-    echo "[04]   No docs bundle found — docsindex will clone on first boot"
+    echo "[04] No docs bundle found — attempting git clone (network available during build)..."
+    if command -v git &>/dev/null; then
+        git clone --depth=1 https://github.com/cubeos-app/docs.git /tmp/cubeos-docs-clone 2>/dev/null || true
+        if [ -d "/tmp/cubeos-docs-clone" ]; then
+            find /tmp/cubeos-docs-clone -name '*.md' -exec cp {} /cubeos/docs/ \; 2>/dev/null || true
+            rm -rf /tmp/cubeos-docs-clone
+        fi
+        DOCS_COUNT=$(find /cubeos/docs -name '*.md' 2>/dev/null | wc -l)
+        if [ "$DOCS_COUNT" -gt 0 ]; then
+            echo "[04]   Cloned ${DOCS_COUNT} markdown files from GitHub"
+        else
+            echo "[04]   WARN: Git clone produced no .md files — docsindex will retry on first boot"
+        fi
+    else
+        echo "[04]   WARN: git not available — docsindex will clone on first boot"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -158,8 +158,12 @@ configure_wifi_ap() {
 
     if systemctl start hostapd 2>/dev/null; then
         sleep 3
+        # Read live SSID from hostapd.conf (wizard may have changed it)
+        local LIVE_SSID
+        LIVE_SSID=$(grep '^ssid=' /etc/hostapd/hostapd.conf 2>/dev/null | cut -d= -f2)
+        local DISPLAY_SSID="${LIVE_SSID:-${CUBEOS_AP_SSID:-CubeOS-Setup}}"
         if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
-            log_ok "WiFi AP broadcasting: ${CUBEOS_AP_SSID:-CubeOS-Setup} (country: $COUNTRY_CODE)"
+            log_ok "WiFi AP broadcasting: ${DISPLAY_SSID} (country: $COUNTRY_CODE)"
             return 0
         else
             log_warn "WiFi AP not broadcasting -- restarting hostapd..."
@@ -168,7 +172,7 @@ configure_wifi_ap() {
             systemctl restart hostapd 2>/dev/null || true
             sleep 2
             if iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
-                log_ok "WiFi AP recovered after restart: ${CUBEOS_AP_SSID:-CubeOS-Setup}"
+                log_ok "WiFi AP recovered after restart: ${DISPLAY_SSID}"
                 return 0
             else
                 log_warn "WiFi AP STILL not broadcasting -- manual intervention needed"
