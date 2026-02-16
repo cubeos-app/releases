@@ -411,6 +411,9 @@ ensure_dns_resolver
 # (exact-match locations take priority over the proxy_pass).
 NPM_DATA="${COREAPPS_DIR}/npm/appdata/data"
 mkdir -p "${NPM_DATA}/nginx/custom"
+# B35: Pre-create default_www so the volume mount overlay has a valid parent directory.
+# This ensures the "Congratulations" page is never shown, even during NPM initialization.
+mkdir -p "${NPM_DATA}/nginx/default_www"
 cat > "${NPM_DATA}/nginx/custom/server_proxy.conf" << 'NGINX'
 # CubeOS boot page and log serving endpoints (Alpha.17)
 # Injected into all proxy host server blocks via NPM custom include.
