@@ -302,6 +302,114 @@ systemctl enable cubeos-rfkill-unblock.service 2>/dev/null || true
 rfkill unblock wifi 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# networkd-dispatcher — auto-detect eth0 carrier for seamless ONLINE_ETH
+# ---------------------------------------------------------------------------
+# When eth0 becomes routable (cable plugged + DHCP acquired) and the system
+# is in OFFLINE mode, automatically enable NAT so AP clients get internet
+# without needing a manual mode switch. The reverse: when eth0 loses carrier,
+# disable NAT (return to effective OFFLINE).
+#
+# This is runtime-only — it does NOT change the persisted mode in SQLite.
+# The user can still set explicit modes via the dashboard for permanent changes.
+#
+# networkd-dispatcher is pre-installed on Ubuntu 24.04 Server.
+# Scripts receive $IFACE and $AdministrativeState / $OperationalState.
+# ---------------------------------------------------------------------------
+echo "[02] Installing networkd-dispatcher auto-online scripts..."
+
+# Ensure networkd-dispatcher is installed and directories exist
+apt-get install -y networkd-dispatcher 2>/dev/null || true
+mkdir -p /etc/networkd-dispatcher/routable.d
+mkdir -p /etc/networkd-dispatcher/no-carrier.d
+mkdir -p /etc/networkd-dispatcher/off.d
+
+cat > /etc/networkd-dispatcher/routable.d/50-cubeos-eth-online << 'ETH_ONLINE'
+#!/bin/bash
+# =============================================================================
+# Auto-enable NAT when eth0 becomes routable (has DHCP IP).
+# Only activates if current mode is OFFLINE (don't interfere with explicit modes).
+# Runtime-only — does not change persisted mode in SQLite.
+# =============================================================================
+[ "$IFACE" = "eth0" ] || exit 0
+
+DATA_DIR="/cubeos/data"
+DB_PATH="${DATA_DIR}/cubeos.db"
+
+# Read current mode from SQLite
+MODE=""
+if [ -f "$DB_PATH" ]; then
+    MODE=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('${DB_PATH}')
+    row = conn.execute('SELECT mode FROM network_config WHERE id = 1').fetchone()
+    print(row[0] if row else '')
+    conn.close()
+except: pass
+" 2>/dev/null) || true
+fi
+
+# Only auto-enable NAT for OFFLINE mode (or if mode is unset/first-boot)
+case "${MODE:-offline}" in
+    offline|"")
+        logger -t cubeos-net "eth0 routable in OFFLINE mode — auto-enabling NAT"
+        /usr/local/lib/cubeos/nat-enable.sh eth0 2>/dev/null || true
+        ;;
+    *)
+        # Mode is already set to something explicit — don't interfere
+        ;;
+esac
+ETH_ONLINE
+
+cat > /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline << 'ETH_OFFLINE'
+#!/bin/bash
+# =============================================================================
+# Auto-disable NAT when eth0 loses carrier (cable unplugged).
+# Only deactivates if current mode is OFFLINE (auto-online was runtime-only).
+# =============================================================================
+[ "$IFACE" = "eth0" ] || exit 0
+
+DATA_DIR="/cubeos/data"
+DB_PATH="${DATA_DIR}/cubeos.db"
+
+MODE=""
+if [ -f "$DB_PATH" ]; then
+    MODE=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('${DB_PATH}')
+    row = conn.execute('SELECT mode FROM network_config WHERE id = 1').fetchone()
+    print(row[0] if row else '')
+    conn.close()
+except: pass
+" 2>/dev/null) || true
+fi
+
+# Only auto-disable NAT for OFFLINE mode (runtime auto-online was temporary)
+case "${MODE:-offline}" in
+    offline|"")
+        logger -t cubeos-net "eth0 lost carrier in OFFLINE mode — disabling NAT"
+        /usr/local/lib/cubeos/nat-disable.sh 2>/dev/null || true
+        ;;
+    *)
+        # Explicit mode set — don't touch NAT
+        ;;
+esac
+ETH_OFFLINE
+
+# Copy the no-carrier script to off.d as well (interface fully down)
+cp /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline \
+   /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
+
+chmod +x /etc/networkd-dispatcher/routable.d/50-cubeos-eth-online
+chmod +x /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline
+chmod +x /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
+
+# Ensure networkd-dispatcher is enabled
+systemctl enable networkd-dispatcher 2>/dev/null || true
+echo "[02]   networkd-dispatcher auto-online scripts installed"
+
+# ---------------------------------------------------------------------------
 # Cloud-init — configure for Raspberry Pi Imager support
 # ---------------------------------------------------------------------------
 # CRITICAL: Must set default_user to cubeos, otherwise Ubuntu cloud-init

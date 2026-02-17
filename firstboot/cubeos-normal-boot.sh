@@ -129,9 +129,14 @@ wait_for "Pi-hole DNS" "dig cubeos.cube @127.0.0.1 +short +time=2 +tries=1" 30 1
 ensure_dns_resolver
 
 # ── WiFi AP ───────────────────────────────────────────────────────────
-log "Starting WiFi Access Point..."
-source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
-configure_wifi_ap
+# Server modes (SERVER_ETH, SERVER_WIFI) don't run an AP — skip hostapd.
+if is_server_mode; then
+    log "Server mode detected -- skipping WiFi AP (no hostapd)"
+else
+    log "Starting WiFi Access Point..."
+    source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
+    configure_wifi_ap
+fi
 
 # ── Swarm stacks ──────────────────────────────────────────────────────
 if docker info 2>/dev/null | grep -q "Swarm: active"; then
