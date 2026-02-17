@@ -414,11 +414,13 @@ build-image:
         # ── Step 3: Start temp registry:2 against mounted storage ──────
         # The registry container runs on x86_64 but stores ARM64 manifests
         # — this is fine because registry:2 storage is arch-agnostic.
+        # Uses --network host to avoid port-mapping issues in CI (dind).
         echo "Starting temporary registry:2..."
         docker run -d --name cubeos-temp-registry \
-          -p 5099:5000 \
+          --network host \
           -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
           -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+          -e REGISTRY_HTTP_ADDR=:5099 \
           registry:2
 
         # Wait for registry to be ready
