@@ -173,9 +173,10 @@ print(json.load(sys.stdin).get('token', ''))
         log "  NPM: Proxy ${domain} -> :${port}"
 
         # Alpha.17: cubeos.cube gets 502 error page config (serves boot page when dashboard is down)
+        # B58: proxy_buffering off required for WebSocket passthrough via NPM
         local adv_config=""
         if [ "$domain" = "cubeos.cube" ]; then
-            adv_config="proxy_intercept_errors on;\nerror_page 502 503 504 /cubeos-boot.html;"
+            adv_config="proxy_intercept_errors on;\nerror_page 502 503 504 =503 /cubeos-boot-error.html;\nlocation = /cubeos-boot-error.html {\n    root /data/custom-pages;\n    rewrite ^ /cubeos-boot.html break;\n    internal;\n}\nproxy_buffering off;"
         fi
 
         curl -sf -X POST "${NPM_API}/nginx/proxy-hosts" \

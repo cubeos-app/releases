@@ -22,7 +22,7 @@ variable "ubuntu_version" {
 
 variable "image_size" {
   type    = string
-  default = "8G"
+  default = "10G"
 }
 
 # Ubuntu 24.04.3 Server for Raspberry Pi (arm64)

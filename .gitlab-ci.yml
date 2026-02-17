@@ -411,6 +411,22 @@ build-image:
         # ── Step 2: Ensure registry data directory exists ──────────────
         mkdir -p /mnt/cubeos-image/cubeos/data/registry
 
+        # ── Step 2.5: Ensure registry:2 available on CI Docker ─────────
+        # B56: Phase 1b loaded registry.tar into the mounted image's dockerd
+        # (via custom socket). Phase 1c uses the CI host's Docker to run the
+        # temp registry container — it needs registry:2 locally.
+        if ! docker image inspect registry:2 &>/dev/null; then
+            echo "  Loading registry:2 into CI Docker (B56 fix)..."
+            docker load < docker-images/registry.tar 2>&1 || {
+                echo "ERROR: Failed to load registry:2 — cannot populate local registry"
+                sync
+                umount /mnt/cubeos-image
+                losetup -d "$LOOPDEV"
+                exit 1
+            }
+        fi
+        echo "  registry:2 available on CI Docker: OK"
+
         # ── Step 3: Start temp registry:2 against mounted storage ──────
         # The registry container runs on x86_64 but stores ARM64 manifests
         # — this is fine because registry:2 storage is arch-agnostic.
@@ -492,14 +508,28 @@ build-image:
         echo ""
         echo "Registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
 
+        # B56: Fail build if any curated image failed to push — silent failures
+        # previously caused kiwix to show 0/1 replicas on boot.
+        if [ "$PUSH_FAILED" -gt 0 ]; then
+            echo "ERROR: ${PUSH_FAILED} curated images failed to push to registry!"
+            echo "Kiwix and other curated apps will not work on the built image."
+            docker stop cubeos-temp-registry 2>/dev/null || true
+            docker rm cubeos-temp-registry 2>/dev/null || true
+            sync
+            umount /mnt/cubeos-image
+            losetup -d "$LOOPDEV"
+            exit 1
+        fi
+
         # ── Step 5: Validate registry contents ─────────────────────────
         echo ""
         echo "Validating registry contents..."
         CATALOG=$(curl -sf "${REGISTRY_URL}/v2/_catalog" 2>/dev/null || echo '{"repositories":[]}')
         echo "  Catalog: ${CATALOG}"
 
-        # Verify each expected image
+        # Verify each expected image has a valid manifest with config digest
         VALID=0
+        INVALID=0
         while IFS= read -r line; do
           [[ "$line" =~ ^[[:space:]]*# ]] && continue
           [[ -z "${line// }" ]] && continue
@@ -508,20 +538,44 @@ build-image:
           TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
           REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
-          # Check manifest exists via HEAD request
-          HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+          # B56: Verify manifest exists AND has a config digest (proves the image
+          # layers are actually stored, not just an empty manifest stub)
+          MANIFEST_RESP=$(curl -sf \
             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "${REGISTRY_URL}/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "000")
+            "${REGISTRY_URL}/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "")
 
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "  VALID: ${REPO_NAME}:${TAG}"
-            VALID=$((VALID + 1))
+          if [ -n "$MANIFEST_RESP" ]; then
+            CONFIG_DIGEST=$(echo "$MANIFEST_RESP" | python3 -c "
+import sys, json
+try:
+    m = json.load(sys.stdin)
+    print(m.get('config', {}).get('digest', ''))
+except: print('')
+" 2>/dev/null)
+
+            if [ -n "$CONFIG_DIGEST" ]; then
+              echo "  VALID: ${REPO_NAME}:${TAG} (config: ${CONFIG_DIGEST:0:19}...)"
+              VALID=$((VALID + 1))
+            else
+              echo "  INVALID: ${REPO_NAME}:${TAG} (no config digest in manifest)"
+              INVALID=$((INVALID + 1))
+            fi
           else
-            echo "  INVALID: ${REPO_NAME}:${TAG} (HTTP ${HTTP_CODE})"
+            echo "  INVALID: ${REPO_NAME}:${TAG} (manifest not found)"
+            INVALID=$((INVALID + 1))
           fi
         done < skopeo/curated-apps.txt
 
         echo "  Validated: ${VALID} images"
+        if [ "$INVALID" -gt 0 ]; then
+          echo "ERROR: ${INVALID} curated images failed validation!"
+          docker stop cubeos-temp-registry 2>/dev/null || true
+          docker rm cubeos-temp-registry 2>/dev/null || true
+          sync
+          umount /mnt/cubeos-image
+          losetup -d "$LOOPDEV"
+          exit 1
+        fi
 
         # ── Step 6: Stop temp registry ─────────────────────────────────
         echo "Stopping temp registry..."
