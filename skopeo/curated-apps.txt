@@ -18,7 +18,7 @@
 # =============================================================================
 
 # Kiwix — offline Wikipedia / content library
-docker.io/kiwix/kiwix-serve|3.8.1|kiwix-serve.tar
+ghcr.io/kiwix/kiwix-serve|3.8.1|kiwix-serve.tar
 
 # ttyd — web-based terminal
 docker.io/tsl0922/ttyd|latest|ttyd.tar
