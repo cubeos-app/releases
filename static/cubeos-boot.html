@@ -163,6 +163,15 @@ body{
   var bootType = null;
   var redirecting = false;
 
+  // B35: If the user reached this page via a typo hostname (e.g. mew.cube),
+  // redirect to the actual dashboard. During real boot, users arrive via
+  // cubeos.cube or 10.42.24.1, so this only catches post-setup typos.
+  var h = window.location.hostname;
+  if (h !== 'cubeos.cube' && h !== '10.42.24.1' && h !== 'localhost') {
+    window.location.href = 'http://cubeos.cube';
+    return;
+  }
+
   // Phase detection: if the page was served as a 502 response,
   // the dashboard proxy rule exists but upstream is down.
   // We detect this by checking if the page URL path is NOT /cubeos-boot.html
