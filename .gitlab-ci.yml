@@ -207,7 +207,7 @@ build-image:
 
       # --- ZIM content for Kiwix (configurable) ---
       ZIM_ENABLED="${ZIM_ENABLED:-true}"
-      ZIM_URL="${ZIM_URL:-https://download.kiwix.org/zim/wikipedia/wikipedia_en_100_maxi_2024-06.zim}"
+      ZIM_URL="${ZIM_URL:-https://download.kiwix.org/zim/wikipedia/wikipedia_en_100_maxi_2026-01.zim}"
 
       if [ "$ZIM_ENABLED" = "true" ]; then
         mkdir -p zim-content
@@ -452,8 +452,8 @@ build-image:
           FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
           TARBALL="curated-images/${FILENAME}"
 
-          # Strip docker.io/ prefix for the repo name in our local registry
-          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||')
+          # Strip registry host prefix for the repo name in our local registry
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
           if [ ! -f "$TARBALL" ]; then
             echo "  SKIP: ${TARBALL} not found"
@@ -493,7 +493,7 @@ build-image:
 
           SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
           TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
-          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||')
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
           # Check manifest exists via HEAD request
           HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \

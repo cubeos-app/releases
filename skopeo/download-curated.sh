@@ -63,8 +63,8 @@ while IFS= read -r line; do
         continue
     fi
 
-    # Build the repo name (strip docker.io/ prefix for archive tag)
-    REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||')
+    # Build the repo name (strip registry host prefix for archive tag)
+    REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
     echo "[${DOWNLOADED}/${TOTAL}] Downloading ${REPO_NAME}:${TAG}..."
     echo "         → ${OUTPUT_DIR}/${FILENAME}"
