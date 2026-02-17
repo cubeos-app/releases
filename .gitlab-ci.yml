@@ -545,7 +545,8 @@ build-image:
             "${REGISTRY_URL}/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "")
 
           if [ -n "$MANIFEST_RESP" ]; then
-            CONFIG_DIGEST=$(echo "$MANIFEST_RESP" | python3 -c "import sys,json;m=json.load(sys.stdin);print(m.get('config',{}).get('digest',''))" 2>/dev/null)
+            # Extract config digest without python3 (not available on CI host)
+            CONFIG_DIGEST=$(echo "$MANIFEST_RESP" | grep -o '"digest"[[:space:]]*:[[:space:]]*"sha256:[a-f0-9]*"' | head -1 | grep -o 'sha256:[a-f0-9]*' || echo "")
 
             if [ -n "$CONFIG_DIGEST" ]; then
               echo "  VALID: ${REPO_NAME}:${TAG} (config: ${CONFIG_DIGEST:0:19}...)"
