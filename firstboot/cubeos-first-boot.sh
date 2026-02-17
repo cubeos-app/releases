@@ -196,25 +196,10 @@ print(json.load(sys.stdin).get('token', ''))
             }" 2>/dev/null || log_warn "  Failed: ${domain}"
     done
 
-    # Step 5: Set default site to CubeOS boot page
-    # This replaces the NPM "Congratulations" page with our branded boot page.
-    # Uses NPM's "html" default site mode with inline content.
-    if [ -f "/cubeos/static/cubeos-boot.html" ]; then
-        local BOOT_HTML_JSON
-        BOOT_HTML_JSON=$(python3 -c "
-import sys, json
-with open('/cubeos/static/cubeos-boot.html') as f:
-    print(json.dumps(f.read()))
-" 2>/dev/null)
-        if [ -n "$BOOT_HTML_JSON" ]; then
-            curl -sf -X PUT "${NPM_API}/settings/default-site" \
-                -H "Content-Type: application/json" \
-                -H "Authorization: Bearer ${TOKEN}" \
-                -d "{\"value\":\"html\",\"meta\":{\"html\":${BOOT_HTML_JSON}}}" \
-                2>/dev/null && log_ok "NPM default site set to CubeOS boot page" \
-                || log_warn "NPM default site setting failed"
-        fi
-    fi
+    # B35: Default site is now handled by a volume mount in docker-compose.yml:
+    #   /cubeos/static/cubeos-boot.html:/var/www/html/index.html:ro
+    # This replaces NPM's "Congratulations" page at the source — no API call needed.
+    # NPM stays in default "congratulations" mode, which serves from /var/www/html/.
 
     # Step 5: Store NPM password in secrets.env
     if [ -f "${CONFIG_DIR}/secrets.env" ]; then
