@@ -85,7 +85,7 @@ build-image:
         "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
         /tmp/coreapps-src
 
-      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle"
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix"
 
       mkdir -p coreapps-bundle
       for svc in $SERVICES; do
@@ -190,6 +190,39 @@ build-image:
       ls -lh docker-images/
       du -sh docker-images/
       echo "Docker images: OK (8 images)"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0b2: Download curated app images + ZIM content"
+      echo "============================================================"
+
+      # --- Curated app images (for local registry) ---
+      chmod +x skopeo/download-curated.sh
+      ./skopeo/download-curated.sh curated-images || {
+        echo "WARN: Some curated images failed to download (non-fatal)"
+      }
+      echo ""
+      ls -lh curated-images/ 2>/dev/null || echo "  (no curated images)"
+
+      # --- ZIM content for Kiwix (configurable) ---
+      ZIM_ENABLED="${ZIM_ENABLED:-true}"
+      ZIM_URL="${ZIM_URL:-https://download.kiwix.org/zim/wikipedia/wikipedia_en_100_maxi_2024-06.zim}"
+
+      if [ "$ZIM_ENABLED" = "true" ]; then
+        mkdir -p zim-content
+        ZIM_FILENAME=$(basename "$ZIM_URL")
+        echo "Downloading ZIM: ${ZIM_FILENAME}..."
+        if wget -q --show-progress -O "zim-content/${ZIM_FILENAME}" "$ZIM_URL"; then
+          echo "  ZIM OK: $(du -h "zim-content/${ZIM_FILENAME}" | cut -f1)"
+        else
+          echo "  WARN: ZIM download failed (non-fatal — Kiwix will show empty library)"
+          rm -f "zim-content/${ZIM_FILENAME}"
+        fi
+      else
+        echo "ZIM download disabled (ZIM_ENABLED=false)"
+      fi
+      echo "Phase 0b2: OK"
     - |
       set -e
       echo ""
@@ -346,6 +379,173 @@ build-image:
 
       echo "Docker pre-load complete: ${LOADED} images baked into ${IMAGE_NAME}.img"
       echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1c: Pre-populate local registry + ZIM content"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      # Skip if no curated images were downloaded
+      CURATED_COUNT=$(ls curated-images/*.tar 2>/dev/null | wc -l)
+      if [ "$CURATED_COUNT" -eq 0 ]; then
+        echo "No curated images found — skipping Phase 1c"
+      else
+        # ── Step 1: Mount the built image ──────────────────────────────
+        LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+        echo "Loop device: $LOOPDEV"
+        sleep 2
+
+        ROOT_PART="${LOOPDEV}p2"
+        if [ ! -b "$ROOT_PART" ]; then
+          echo "ERROR: Root partition ${ROOT_PART} not found"
+          losetup -d "$LOOPDEV"
+          exit 1
+        fi
+
+        mkdir -p /mnt/cubeos-image
+        mount "$ROOT_PART" /mnt/cubeos-image
+        echo "Mounted root partition at /mnt/cubeos-image"
+
+        # ── Step 2: Ensure registry data directory exists ──────────────
+        mkdir -p /mnt/cubeos-image/cubeos/data/registry
+
+        # ── Step 3: Start temp registry:2 against mounted storage ──────
+        # The registry container runs on x86_64 but stores ARM64 manifests
+        # — this is fine because registry:2 storage is arch-agnostic.
+        echo "Starting temporary registry:2..."
+        docker run -d --name cubeos-temp-registry \
+          -p 5099:5000 \
+          -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
+          -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+          registry:2
+
+        # Wait for registry to be ready
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:5099/v2/ &>/dev/null; then
+            echo "  Temp registry ready (${i}s)"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "ERROR: Temp registry failed to start"
+            docker logs cubeos-temp-registry 2>&1 | tail -10
+            docker rm -f cubeos-temp-registry 2>/dev/null || true
+            umount /mnt/cubeos-image
+            losetup -d "$LOOPDEV"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # ── Step 4: Push curated images into registry ──────────────────
+        PUSHED=0
+        PUSH_FAILED=0
+
+        # Read manifest to get repo:tag mapping for each tarball
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
+          TARBALL="curated-images/${FILENAME}"
+
+          # Strip docker.io/ prefix for the repo name in our local registry
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||')
+
+          if [ ! -f "$TARBALL" ]; then
+            echo "  SKIP: ${TARBALL} not found"
+            PUSH_FAILED=$((PUSH_FAILED + 1))
+            continue
+          fi
+
+          echo "  Pushing ${REPO_NAME}:${TAG} → localhost:5099..."
+          if skopeo copy \
+            --override-arch arm64 \
+            --override-os linux \
+            --dest-tls-verify=false \
+            "docker-archive:${TARBALL}" \
+            "docker://localhost:5099/${REPO_NAME}:${TAG}" 2>&1; then
+            echo "    OK"
+            PUSHED=$((PUSHED + 1))
+          else
+            echo "    FAILED"
+            PUSH_FAILED=$((PUSH_FAILED + 1))
+          fi
+        done < skopeo/curated-apps.txt
+
+        echo ""
+        echo "Registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
+
+        # ── Step 5: Validate registry contents ─────────────────────────
+        echo ""
+        echo "Validating registry contents..."
+        CATALOG=$(curl -sf http://localhost:5099/v2/_catalog 2>/dev/null || echo '{"repositories":[]}')
+        echo "  Catalog: ${CATALOG}"
+
+        # Verify each expected image
+        VALID=0
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||')
+
+          # Check manifest exists via HEAD request
+          HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "http://localhost:5099/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "000")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "  VALID: ${REPO_NAME}:${TAG}"
+            VALID=$((VALID + 1))
+          else
+            echo "  INVALID: ${REPO_NAME}:${TAG} (HTTP ${HTTP_CODE})"
+          fi
+        done < skopeo/curated-apps.txt
+
+        echo "  Validated: ${VALID} images"
+
+        # ── Step 6: Stop temp registry ─────────────────────────────────
+        echo "Stopping temp registry..."
+        docker stop cubeos-temp-registry 2>/dev/null || true
+        docker rm cubeos-temp-registry 2>/dev/null || true
+
+        # Verify registry storage on disk
+        REGISTRY_SIZE=$(du -sh /mnt/cubeos-image/cubeos/data/registry/ 2>/dev/null | cut -f1)
+        echo "  Registry storage on disk: ${REGISTRY_SIZE}"
+
+        # ── Step 7: Copy ZIM content into image ───────────────────────
+        if [ -d "zim-content" ] && ls zim-content/*.zim &>/dev/null; then
+          echo ""
+          echo "Copying ZIM files into image..."
+          mkdir -p /mnt/cubeos-image/cubeos/data/kiwix
+          cp zim-content/*.zim /mnt/cubeos-image/cubeos/data/kiwix/
+          # Kiwix container runs as UID 1001 — ensure it can read the files
+          chown -R 1001:1001 /mnt/cubeos-image/cubeos/data/kiwix/
+          ZIM_SIZE=$(du -sh /mnt/cubeos-image/cubeos/data/kiwix/ | cut -f1)
+          echo "  ZIM content: ${ZIM_SIZE}"
+        else
+          echo ""
+          echo "No ZIM files to copy (Kiwix will show empty library)"
+          mkdir -p /mnt/cubeos-image/cubeos/data/kiwix
+          chown -R 1001:1001 /mnt/cubeos-image/cubeos/data/kiwix/
+        fi
+
+        # ── Step 8: Unmount ────────────────────────────────────────────
+        sync
+        umount /mnt/cubeos-image
+        losetup -d "$LOOPDEV"
+        rmdir /mnt/cubeos-image 2>/dev/null || true
+
+        echo ""
+        echo "Phase 1c: OK — ${PUSHED} images in registry, ZIM content copied"
+        echo "Phase 1c: OK ($(date -u +%H:%M:%S))"
+      fi
     - |
       set -e
       echo ""

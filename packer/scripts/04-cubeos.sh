@@ -52,7 +52,7 @@ mkdir -p /cubeos/config/vpn/{wireguard,openvpn}
 # Create coreapps directories for ALL services (matching Pi 5)
 COREAPPS=(
     pihole npm cubeos-api cubeos-hal cubeos-dashboard
-    dozzle registry
+    dozzle registry kiwix
     cubeos-docsindex cubeos-filebrowser
     wireguard openvpn tor
     diagnostics reset terminal backup watchdog
@@ -388,6 +388,7 @@ cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
 10.42.24.1 registry.cubeos.cube
 10.42.24.1 docs.cubeos.cube
 10.42.24.1 terminal.cubeos.cube
+10.42.24.1 kiwix.cubeos.cube
 DNS
 
 # ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ echo "[RECOVER] ${NETWORK_NAME} overlay ready."
 
 # ── Ensure compose services ─────────────────────────────────────────
 echo "[RECOVER] Ensuring compose services..."
-for svc_dir in pihole npm cubeos-hal; do
+for svc_dir in pihole npm cubeos-hal terminal; do
     COMPOSE_FILE="${COREAPPS_DIR}/${svc_dir}/appconfig/docker-compose.yml"
     if [ -f "$COMPOSE_FILE" ]; then
         DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose -f "$COMPOSE_FILE" up -d --pull never 2>/dev/null && \
@@ -105,7 +105,7 @@ done
 echo ""
 echo "[RECOVER] Deploying Swarm stacks..."
 
-STACKS="registry cubeos-api cubeos-docsindex cubeos-dashboard"
+STACKS="registry cubeos-api cubeos-docsindex cubeos-dashboard kiwix"
 
 for stack in $STACKS; do
     COMPOSE_FILE="${COREAPPS_DIR}/${stack}/appconfig/docker-compose.yml"

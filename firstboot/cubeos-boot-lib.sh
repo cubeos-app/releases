@@ -6,8 +6,8 @@
 # Contains all shared functions, constants, and configuration arrays.
 #
 # SINGLE SOURCE OF TRUTH for:
-#   - NPM proxy rules (9 rules)
-#   - Pi-hole custom DNS entries (9 entries)
+#   - NPM proxy rules (10 rules)
+#   - Pi-hole custom DNS entries (10 entries)
 #   - Log formatting (ASCII markers)
 #   - Common helpers (wait_for, container_running, etc.)
 #   - WiFi AP configuration
@@ -38,7 +38,7 @@ SETUP_FLAG="/cubeos/data/.setup_complete"
 PROVISIONED_FLAG="/cubeos/data/.provisioned"
 LOG_FILE="${LOG_FILE:-/var/log/cubeos-boot.log}"
 
-# ── NPM Proxy Rules (Single Source of Truth — 9 rules) ──────────────
+# ── NPM Proxy Rules (Single Source of Truth — 10 rules) ──────────────
 # Format: "domain:port"
 # Used by: first-boot NPM seeding, API NPM bootstrap, boot verification
 CORE_PROXY_RULES=(
@@ -50,7 +50,8 @@ CORE_PROXY_RULES=(
     "registry.cubeos.cube:5000"
     "hal.cubeos.cube:6005"
     "dozzle.cubeos.cube:6012"
-    "terminal.cubeos.cube:6009"
+    "terminal.cubeos.cube:6042"
+    "kiwix.cubeos.cube:6043"
 )
 
 # ── Pi-hole Custom DNS Entries (Single Source of Truth) ──────────────
@@ -65,18 +66,20 @@ CORE_DNS_HOSTS=(
     "registry.cubeos.cube"
     "docs.cubeos.cube"
     "terminal.cubeos.cube"
+    "kiwix.cubeos.cube"
 )
 
 # ── Swarm Stacks ─────────────────────────────────────────────────────
 # B08: Split into pre-API and post-API stacks.
 # Dashboard deploys AFTER API health check to prevent 502/wizard flash.
+# Kiwix is optional/non-critical — deploys after core stacks.
 SWARM_STACKS_PRE_API="cubeos-api registry cubeos-docsindex dozzle"
-SWARM_STACKS_POST_API="cubeos-dashboard"
+SWARM_STACKS_POST_API="cubeos-dashboard kiwix"
 # Combined list for recovery/normal boot where ordering is less critical
-SWARM_STACKS="registry cubeos-api cubeos-docsindex dozzle cubeos-dashboard"
+SWARM_STACKS="registry cubeos-api cubeos-docsindex dozzle cubeos-dashboard kiwix"
 
 # ── Compose Services ─────────────────────────────────────────────────
-COMPOSE_SERVICES="pihole npm cubeos-hal"
+COMPOSE_SERVICES="pihole npm cubeos-hal terminal"
 
 # ── Logging (ASCII-only markers) ─────────────────────────────────────
 log() {

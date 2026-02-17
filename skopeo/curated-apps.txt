@@ -1,0 +1,24 @@
+# =============================================================================
+# curated-apps.txt — Images to pre-load into the local Docker registry
+# =============================================================================
+# These images are downloaded during CI and pushed into the registry:2
+# filesystem inside the built disk image. On first boot, the registry serves
+# them immediately — no internet required.
+#
+# Format: source_image|tag|output_filename
+#   source_image   — full registry path (used by skopeo)
+#   tag            — exact tag to pull (no :latest unless intended)
+#   output_filename — tarball name in curated-images/ directory
+#
+# To add a new curated app:
+#   1. Add a line here
+#   2. Create coreapps/{app}/appconfig/docker-compose.yml with
+#      image: localhost:5000/{repo}:{tag}
+#   3. Re-run CI pipeline
+# =============================================================================
+
+# Kiwix — offline Wikipedia / content library
+docker.io/kiwix/kiwix-serve|3.8.1|kiwix-serve.tar
+
+# ttyd — web-based terminal
+docker.io/tsl0922/ttyd|latest|ttyd.tar
