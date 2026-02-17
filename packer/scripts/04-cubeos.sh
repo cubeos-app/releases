@@ -18,23 +18,17 @@ set -euo pipefail
 echo "=== [04] CubeOS Setup (alpha.18) ==="
 
 # ---------------------------------------------------------------------------
-# B44: Ensure hwclock is present (util-linux-extra)
-# The base image should include this, but install if missing rather than
-# hard-failing — apt works fine in the packer QEMU chroot.
+# B44: Check for hwclock (util-linux-extra)
+# The base image should include this. If missing, warn and continue —
+# the packer chroot has no DNS so apt-get won't work here.
+# hwclock is only needed at runtime for RTC sync, not for image build.
 # ---------------------------------------------------------------------------
 echo "[04] Verifying hwclock (util-linux-extra)..."
 if command -v hwclock &>/dev/null; then
     echo "[04]   hwclock: OK ($(command -v hwclock))"
 else
-    echo "[04]   hwclock not found — installing util-linux-extra..."
-    apt-get update -qq 2>&1 | tail -3
-    apt-get install -y --no-install-recommends util-linux-extra 2>&1 | tail -5
-    if command -v hwclock &>/dev/null; then
-        echo "[04]   hwclock: OK (installed)"
-    else
-        echo "[04]   FATAL: hwclock still not available after install attempt"
-        exit 1
-    fi
+    echo "[04]   WARNING: hwclock not found (util-linux-extra missing from base image)"
+    echo "[04]   RTC sync will not work at runtime. Rebuild base image to fix."
 fi
 
 # ---------------------------------------------------------------------------
