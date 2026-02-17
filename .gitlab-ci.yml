@@ -414,18 +414,29 @@ build-image:
         # ── Step 3: Start temp registry:2 against mounted storage ──────
         # The registry container runs on x86_64 but stores ARM64 manifests
         # — this is fine because registry:2 storage is arch-agnostic.
-        # Uses --network host to avoid port-mapping issues in CI (dind).
+        # B01: Use bridge networking with -p port mapping (NOT --network host).
+        # --network host binds to the Docker HOST namespace, but the CI job
+        # container has a separate namespace — curl localhost:5099 never reaches it.
         echo "Starting temporary registry:2..."
         docker run -d --name cubeos-temp-registry \
-          --network host \
+          -p 5099:5099 \
           -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
           -e REGISTRY_STORAGE_DELETE_ENABLED=true \
           -e REGISTRY_HTTP_ADDR=:5099 \
           registry:2
 
+        sleep 2
+        # Discover the registry URL — try container IP first, fall back to localhost
+        REGISTRY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cubeos-temp-registry 2>/dev/null || echo "")
+        if [ -z "$REGISTRY_IP" ]; then
+          REGISTRY_IP="127.0.0.1"
+        fi
+        REGISTRY_URL="http://${REGISTRY_IP}:5099"
+        echo "  Registry URL: ${REGISTRY_URL}"
+
         # Wait for registry to be ready
         for i in $(seq 1 30); do
-          if curl -sf http://localhost:5099/v2/ &>/dev/null; then
+          if curl -sf "${REGISTRY_URL}/v2/" &>/dev/null; then
             echo "  Temp registry ready (${i}s)"
             break
           fi
@@ -463,13 +474,13 @@ build-image:
             continue
           fi
 
-          echo "  Pushing ${REPO_NAME}:${TAG} → localhost:5099..."
+          echo "  Pushing ${REPO_NAME}:${TAG} → ${REGISTRY_IP}:5099..."
           if skopeo copy \
             --override-arch arm64 \
             --override-os linux \
             --dest-tls-verify=false \
             "docker-archive:${TARBALL}" \
-            "docker://localhost:5099/${REPO_NAME}:${TAG}" 2>&1; then
+            "docker://${REGISTRY_IP}:5099/${REPO_NAME}:${TAG}" 2>&1; then
             echo "    OK"
             PUSHED=$((PUSHED + 1))
           else
@@ -484,7 +495,7 @@ build-image:
         # ── Step 5: Validate registry contents ─────────────────────────
         echo ""
         echo "Validating registry contents..."
-        CATALOG=$(curl -sf http://localhost:5099/v2/_catalog 2>/dev/null || echo '{"repositories":[]}')
+        CATALOG=$(curl -sf "${REGISTRY_URL}/v2/_catalog" 2>/dev/null || echo '{"repositories":[]}')
         echo "  Catalog: ${CATALOG}"
 
         # Verify each expected image
@@ -500,7 +511,7 @@ build-image:
           # Check manifest exists via HEAD request
           HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "http://localhost:5099/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "000")
+            "${REGISTRY_URL}/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "000")
 
           if [ "$HTTP_CODE" = "200" ]; then
             echo "  VALID: ${REPO_NAME}:${TAG}"

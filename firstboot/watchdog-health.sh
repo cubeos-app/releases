@@ -33,9 +33,9 @@ log() {
     echo "${TS} [WATCHDOG] $*" >> "$LOG_FILE"
 }
 
-log_ok() { log "  ✓ $*"; }
-log_warn() { log "  ⚠ $*"; }
-log_fix() { log "  🔧 $*"; }
+log_ok() { log "  OK: $*"; }
+log_warn() { log "  WARN: $*"; }
+log_fix() { log "  FIX: $*"; }
 
 ISSUES=0
 FIXES=0
@@ -175,8 +175,8 @@ check_stack "registry"
 check_stack "cubeos-api"       "curl -sf --max-time 5 http://127.0.0.1:6010/health"
 check_stack "cubeos-dashboard" "curl -sf --max-time 5 http://127.0.0.1:6011/"
 check_stack "cubeos-docsindex" "curl -sf --max-time 5 http://127.0.0.1:6032/health"
-check_stack "ollama"
-check_stack "chromadb"
+check_stack "dozzle"
+check_stack "kiwix"
 
 # ── hostapd ───────────────────────────────────────────────────────────
 if ! systemctl is-active --quiet hostapd 2>/dev/null; then

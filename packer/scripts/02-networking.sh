@@ -366,11 +366,11 @@ systemctl enable cloud-init 2>/dev/null || true
 # ---------------------------------------------------------------------------
 echo "[02] Enabling SSH password authentication..."
 mkdir -p /etc/ssh/sshd_config.d
-echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-cubeos.conf
+echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/01-cubeos.conf
 # Cloud-init creates 50-cloud-init.conf with PasswordAuthentication no.
-# OpenSSH uses first-match-wins in sshd_config.d/, so 50-* beats 99-*.
-# Delete it now, and again in first-boot (cloud-init may regenerate it).
+# OpenSSH uses first-match-wins in sshd_config.d/, so 01-* ensures we win
+# even if cloud-init regenerates 50-cloud-init.conf on boot.
 rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
-echo "[02]   SSH password auth enabled (via sshd_config.d/99-cubeos.conf)"
+echo "[02]   SSH password auth enabled (via sshd_config.d/01-cubeos.conf)"
 
 echo "[02] Network configuration complete."
