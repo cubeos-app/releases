@@ -18,20 +18,23 @@ set -euo pipefail
 echo "=== [04] CubeOS Setup (alpha.18) ==="
 
 # ---------------------------------------------------------------------------
-# B44: Verify hwclock is present from the golden base image
-# The base image (01-ubuntu-base.sh) installs util-linux-extra.
-# If hwclock is missing, the base image must be rebuilt — there are no
-# APT lists available for runtime installation.
+# B44: Ensure hwclock is present (util-linux-extra)
+# The base image should include this, but install if missing rather than
+# hard-failing — apt works fine in the packer QEMU chroot.
 # ---------------------------------------------------------------------------
-echo "[04] Verifying hwclock (util-linux-extra from base image)..."
+echo "[04] Verifying hwclock (util-linux-extra)..."
 if command -v hwclock &>/dev/null; then
     echo "[04]   hwclock: OK ($(command -v hwclock))"
 else
-    echo "[04]   FATAL: hwclock not found!"
-    echo "[04]   The golden base image is missing util-linux-extra."
-    echo "[04]   Rebuild the base image (base-image/scripts/01-ubuntu-base.sh)."
-    echo "[04]   dpkg status: $(dpkg -l util-linux-extra 2>&1 | tail -1)"
-    exit 1
+    echo "[04]   hwclock not found — installing util-linux-extra..."
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y --no-install-recommends util-linux-extra 2>&1 | tail -5
+    if command -v hwclock &>/dev/null; then
+        echo "[04]   hwclock: OK (installed)"
+    else
+        echo "[04]   FATAL: hwclock still not available after install attempt"
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
