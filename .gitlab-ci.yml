@@ -434,6 +434,7 @@ build-image:
         # --network host binds to the Docker HOST namespace, but the CI job
         # container has a separate namespace — curl localhost:5099 never reaches it.
         echo "Starting temporary registry:2..."
+        docker rm -f cubeos-temp-registry 2>/dev/null || true
         docker run -d --name cubeos-temp-registry \
           -p 5099:5099 \
           -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
@@ -686,6 +687,10 @@ build-image:
       - "${IMAGE_NAME}.img.xz.sha256"
       - "${IMAGE_NAME}.img.xz.md5"
     expire_in: 30 days
+  after_script:
+    - docker rm -f cubeos-temp-registry 2>/dev/null || true
+    - umount /mnt/cubeos-image 2>/dev/null || true
+    - losetup -D 2>/dev/null || true
   timeout: 60m
 
 # =============================================================================
