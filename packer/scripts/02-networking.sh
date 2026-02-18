@@ -69,13 +69,18 @@ rm -f /etc/netplan/99-default.yaml
 
 cat > /etc/netplan/01-cubeos.yaml << 'NETPLAN'
 # =============================================================================
-# CubeOS Network Configuration (Netplan / systemd-networkd)
+# CubeOS Network Configuration — Default: OFFLINE Mode
 # =============================================================================
+# Default netplan baked into the image. Matches OFFLINE mode where both
+# wlan0 (AP) and eth0 (wired clients) serve the 10.42.24.0/24 subnet.
+#
 # wlan0: Static IP for Access Point mode (managed by hostapd)
 #        MUST be under 'ethernets' — NOT 'wifis' — to prevent Netplan
 #        from spawning wpa_supplicant which conflicts with hostapd.
-# eth0:  DHCP client for upstream internet (ONLINE_ETH mode)
-# wlan1: Reserved for USB WiFi dongle client (ONLINE_WIFI mode)
+# eth0:  Static IP for wired client access (OFFLINE = no upstream DHCP)
+#
+# On first mode switch, write_netplan_for_mode() in cubeos-boot-lib.sh
+# overwrites this file with the mode-specific template.
 
 network:
   version: 2
@@ -83,14 +88,10 @@ network:
 
   ethernets:
     eth0:
-      dhcp4: true
-      dhcp-identifier: mac
+      addresses:
+        - 10.42.24.1/24
+      link-local: []
       optional: true
-      dhcp4-overrides:
-        use-dns: false
-      nameservers:
-        addresses:
-          - 10.42.24.1
 
     # wlan0 is intentionally here, not under 'wifis:'
     # hostapd handles all radio/association; we just need the IP.
@@ -102,7 +103,7 @@ network:
 NETPLAN
 
 chmod 600 /etc/netplan/01-cubeos.yaml
-echo "[02]   Netplan configured (wlan0=10.42.24.1, eth0=DHCP+Pi-hole DNS)"
+echo "[02]   Netplan configured (OFFLINE default: wlan0=10.42.24.1, eth0=10.42.24.1)"
 
 # ---------------------------------------------------------------------------
 # systemd-resolved — disable stub listener + point to Pi-hole
@@ -302,112 +303,49 @@ systemctl enable cubeos-rfkill-unblock.service 2>/dev/null || true
 rfkill unblock wifi 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# networkd-dispatcher — auto-detect eth0 carrier for seamless ONLINE_ETH
+# T05 (Network Modes Batch 1): networkd-dispatcher auto-detection REMOVED
 # ---------------------------------------------------------------------------
-# When eth0 becomes routable (cable plugged + DHCP acquired) and the system
-# is in OFFLINE mode, automatically enable NAT so AP clients get internet
-# without needing a manual mode switch. The reverse: when eth0 loses carrier,
-# disable NAT (return to effective OFFLINE).
-#
-# This is runtime-only — it does NOT change the persisted mode in SQLite.
-# The user can still set explicit modes via the dashboard for permanent changes.
-#
-# networkd-dispatcher is pre-installed on Ubuntu 24.04 Server.
-# Scripts receive $IFACE and $AdministrativeState / $OperationalState.
+# Previously, networkd-dispatcher scripts auto-enabled NAT when eth0 became
+# routable in OFFLINE mode. This is removed because:
+#   - It created implicit mode changes (OFFLINE silently gained internet)
+#   - It conflicted with the explicit 5-mode model
+#   - The API now manages mode transitions with full Pi-hole DHCP + netplan
+# The explicit mode-switch flow (dashboard/console → API → netplan + DHCP)
+# replaces this auto-detection entirely.
 # ---------------------------------------------------------------------------
-echo "[02] Installing networkd-dispatcher auto-online scripts..."
+echo "[02] networkd-dispatcher auto-online scripts: REMOVED (explicit mode-switch only)"
 
-# Ensure networkd-dispatcher is installed and directories exist
-apt-get install -y networkd-dispatcher 2>/dev/null || true
-mkdir -p /etc/networkd-dispatcher/routable.d
-mkdir -p /etc/networkd-dispatcher/no-carrier.d
-mkdir -p /etc/networkd-dispatcher/off.d
+# Clean up any existing scripts from previous builds
+rm -f /etc/networkd-dispatcher/routable.d/50-cubeos-eth-online
+rm -f /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline
+rm -f /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
 
-cat > /etc/networkd-dispatcher/routable.d/50-cubeos-eth-online << 'ETH_ONLINE'
-#!/bin/bash
+# ---------------------------------------------------------------------------
+# T03 (Network Modes Batch 1): udev rule for USB WiFi dongle → wlan1
+# ---------------------------------------------------------------------------
+# Ensures any USB WiFi adapter is consistently named 'wlan1' regardless of
+# chipset. This is critical for ONLINE_WIFI mode where wlan0 is the AP and
+# wlan1 is the upstream WiFi client via USB dongle.
+#
+# Rule matches: any USB wireless device (type 1 = ARPHRD_ETHER on wireless).
+# The built-in WiFi (wlan0) is on the platform bus, not USB, so this rule
+# won't match it.
+# ---------------------------------------------------------------------------
+echo "[02] Installing udev rule for USB WiFi → wlan1..."
+
+cat > /etc/udev/rules.d/70-cubeos-usb-wifi.rules << 'UDEV_WIFI'
 # =============================================================================
-# Auto-enable NAT when eth0 becomes routable (has DHCP IP).
-# Only activates if current mode is OFFLINE (don't interfere with explicit modes).
-# Runtime-only — does not change persisted mode in SQLite.
+# CubeOS: Force USB WiFi adapters to wlan1
 # =============================================================================
-[ "$IFACE" = "eth0" ] || exit 0
-
-DATA_DIR="/cubeos/data"
-DB_PATH="${DATA_DIR}/cubeos.db"
-
-# Read current mode from SQLite
-MODE=""
-if [ -f "$DB_PATH" ]; then
-    MODE=$(python3 -c "
-import sqlite3
-try:
-    conn = sqlite3.connect('${DB_PATH}')
-    row = conn.execute('SELECT mode FROM network_config WHERE id = 1').fetchone()
-    print(row[0] if row else '')
-    conn.close()
-except: pass
-" 2>/dev/null) || true
-fi
-
-# Only auto-enable NAT for OFFLINE mode (or if mode is unset/first-boot)
-case "${MODE:-offline}" in
-    offline|"")
-        logger -t cubeos-net "eth0 routable in OFFLINE mode — auto-enabling NAT"
-        /usr/local/lib/cubeos/nat-enable.sh eth0 2>/dev/null || true
-        ;;
-    *)
-        # Mode is already set to something explicit — don't interfere
-        ;;
-esac
-ETH_ONLINE
-
-cat > /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline << 'ETH_OFFLINE'
-#!/bin/bash
+# Any USB wireless NIC gets named wlan1. The built-in WiFi (platform bus) is
+# wlan0 and managed by hostapd as the AP interface.
+# This ensures ONLINE_WIFI mode can reliably reference wlan1 as the upstream
+# WiFi client interface.
 # =============================================================================
-# Auto-disable NAT when eth0 loses carrier (cable unplugged).
-# Only deactivates if current mode is OFFLINE (auto-online was runtime-only).
-# =============================================================================
-[ "$IFACE" = "eth0" ] || exit 0
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ATTR{type}=="1", KERNEL=="wl*", NAME="wlan1"
+UDEV_WIFI
 
-DATA_DIR="/cubeos/data"
-DB_PATH="${DATA_DIR}/cubeos.db"
-
-MODE=""
-if [ -f "$DB_PATH" ]; then
-    MODE=$(python3 -c "
-import sqlite3
-try:
-    conn = sqlite3.connect('${DB_PATH}')
-    row = conn.execute('SELECT mode FROM network_config WHERE id = 1').fetchone()
-    print(row[0] if row else '')
-    conn.close()
-except: pass
-" 2>/dev/null) || true
-fi
-
-# Only auto-disable NAT for OFFLINE mode (runtime auto-online was temporary)
-case "${MODE:-offline}" in
-    offline|"")
-        logger -t cubeos-net "eth0 lost carrier in OFFLINE mode — disabling NAT"
-        /usr/local/lib/cubeos/nat-disable.sh 2>/dev/null || true
-        ;;
-    *)
-        # Explicit mode set — don't touch NAT
-        ;;
-esac
-ETH_OFFLINE
-
-# Copy the no-carrier script to off.d as well (interface fully down)
-cp /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline \
-   /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
-
-chmod +x /etc/networkd-dispatcher/routable.d/50-cubeos-eth-online
-chmod +x /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline
-chmod +x /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
-
-# Ensure networkd-dispatcher is enabled
-systemctl enable networkd-dispatcher 2>/dev/null || true
-echo "[02]   networkd-dispatcher auto-online scripts installed"
+echo "[02]   udev rule installed: /etc/udev/rules.d/70-cubeos-usb-wifi.rules"
 
 # ---------------------------------------------------------------------------
 # B61 FIX: Create cubeos user EXPLICITLY (no cloud-init dependency)
