@@ -29,7 +29,8 @@ for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            v4l-utils pps-tools modemmanager libqmi-utils libmbim-utils \
            usb-modeswitch usb-modeswitch-data gpsd gpsd-clients chrony \
            picocom smartmontools ethtool avahi-daemon wireguard-tools \
-           zram-tools exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher; do
+           zram-tools exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher \
+           libpam-modules libpam-runtime openssh-server fail2ban; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
 

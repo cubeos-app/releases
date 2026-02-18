@@ -27,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.20"
+  CUBEOS_VERSION: "0.1.0-alpha.21"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "2.0.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -199,9 +199,17 @@ build-image:
 
       # --- Curated app images (for local registry) ---
       chmod +x skopeo/download-curated.sh
-      ./skopeo/download-curated.sh curated-images || {
-        echo "WARN: Some curated images failed to download (non-fatal)"
-      }
+      # B56: Curated downloads MUST succeed. If kiwix-serve or ttyd fail to
+      # download, Phase 1c silently skips ("No curated images found") and the
+      # image ships with broken services showing 0/1 replicas.
+      ./skopeo/download-curated.sh curated-images
+      CURATED_EXIT=$?
+      if [ "$CURATED_EXIT" -ne 0 ]; then
+        echo "ERROR: Curated image download failed (exit $CURATED_EXIT)"
+        echo "Cannot build image with broken curated apps."
+        echo "Check network connectivity and GHCR credentials."
+        exit 1
+      fi
       echo ""
       ls -lh curated-images/ 2>/dev/null || echo "  (no curated images)"
 

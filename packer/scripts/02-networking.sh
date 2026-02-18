@@ -410,17 +410,86 @@ systemctl enable networkd-dispatcher 2>/dev/null || true
 echo "[02]   networkd-dispatcher auto-online scripts installed"
 
 # ---------------------------------------------------------------------------
+# B61 FIX: Create cubeos user EXPLICITLY (no cloud-init dependency)
+# ---------------------------------------------------------------------------
+# The stock Ubuntu ARM64 image ships with the 'ubuntu' user created by
+# cloud-init. Previous releases relied on cloud-init's 99-cubeos.cfg to
+# rename/create the cubeos user and set its password at boot time. This
+# failed catastrophically when cloud-init-local.service failed (machine-id
+# issue after cloud-init clean), leaving the system with NO usable login.
+#
+# Fix: Create the user and set its password directly during the Packer build.
+# This bakes a working login into the image itself. Cloud-init config below
+# is kept for Pi Imager support (SSH keys, hostname override) but is no
+# longer the ONLY path to a working user.
+# ---------------------------------------------------------------------------
+echo "[02] Creating cubeos user (B61 fix — no cloud-init dependency)..."
+
+# Create the i2c group if it doesn't exist (needed for UPS/sensor access)
+getent group i2c >/dev/null 2>&1 || groupadd -r i2c
+
+if id cubeos &>/dev/null; then
+    echo "[02]   cubeos user already exists"
+else
+    # Check if ubuntu user exists (stock Ubuntu image default)
+    if id ubuntu &>/dev/null; then
+        echo "[02]   Renaming ubuntu → cubeos..."
+        usermod -l cubeos -d /home/cubeos -m ubuntu 2>/dev/null || true
+        groupmod -n cubeos ubuntu 2>/dev/null || true
+    else
+        echo "[02]   Creating cubeos user from scratch..."
+        useradd -m -s /bin/bash -G sudo,adm cubeos
+    fi
+fi
+
+# Ensure all required groups (idempotent — no error if already member)
+for grp in sudo docker adm i2c; do
+    getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" cubeos 2>/dev/null || true
+done
+
+# Set password directly — THE critical B61 fix
+echo "cubeos:cubeos" | chpasswd
+echo "[02]   cubeos password set via chpasswd (B61 fix)"
+
+# Ensure passwordless sudo
+echo "cubeos ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cubeos
+chmod 440 /etc/sudoers.d/cubeos
+
+# Ensure home directory exists with correct ownership
+mkdir -p /home/cubeos
+chown cubeos:cubeos /home/cubeos
+chmod 750 /home/cubeos
+
+# Remove lock_passwd flag if set (cloud-init sometimes locks the password)
+passwd -u cubeos 2>/dev/null || true
+
+echo "[02]   cubeos user ready (groups: $(id -nG cubeos 2>/dev/null))"
+
+# ---------------------------------------------------------------------------
+# PAM: Remove deprecated pam_lastlog.so reference (Ubuntu 24.04)
+# ---------------------------------------------------------------------------
+# pam_lastlog was removed from libpam-modules in 24.04. The reference in
+# /etc/pam.d/login generates a "cannot open shared object" warning on every
+# login, which is confusing and may interfere with SSH auth debugging.
+# ---------------------------------------------------------------------------
+if grep -q "pam_lastlog" /etc/pam.d/login 2>/dev/null; then
+    sed -i '/pam_lastlog/d' /etc/pam.d/login
+    echo "[02]   Removed deprecated pam_lastlog from /etc/pam.d/login"
+fi
+
+# ---------------------------------------------------------------------------
 # Cloud-init — configure for Raspberry Pi Imager support
 # ---------------------------------------------------------------------------
-# CRITICAL: Must set default_user to cubeos, otherwise Ubuntu cloud-init
-# creates 'ubuntu' user and ignores the cubeos user from golden base.
-# Must set hostname to cubeos, otherwise it stays 'ubuntu'.
+# Cloud-init is now a SECONDARY mechanism. The cubeos user and password are
+# already set above. Cloud-init handles: hostname customization, SSH key
+# injection from Pi Imager, and partition expansion (growpart).
+# If cloud-init fails entirely, the system still boots with a working login.
 # ---------------------------------------------------------------------------
 echo "[02] Configuring cloud-init..."
 mkdir -p /etc/cloud/cloud.cfg.d
 
 cat > /etc/cloud/cloud.cfg.d/99-cubeos.cfg << 'CLOUDINIT'
-# CubeOS cloud-init config
+# CubeOS cloud-init config (SECONDARY — user already created by 02-networking.sh)
 # Supports Raspberry Pi Imager customization (hostname, SSH keys)
 datasource_list: [NoCloud]
 datasource:
@@ -469,8 +538,10 @@ systemctl enable cloud-init 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # SSH — enable password authentication for initial access
 # ---------------------------------------------------------------------------
-# Cloud-init defaults to publickey-only. Users need password auth to connect
-# via ssh cubeos@10.42.24.1 on first setup. They can add keys later.
+# B61: The cubeos user and password are set above. This ensures sshd accepts
+# password auth so users can SSH in immediately after first boot.
+# Cloud-init's 50-cloud-init.conf defaults to PasswordAuthentication no.
+# Our 01-cubeos.conf loads first (first-match-wins in sshd_config.d/).
 # ---------------------------------------------------------------------------
 echo "[02] Enabling SSH password authentication..."
 mkdir -p /etc/ssh/sshd_config.d

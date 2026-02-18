@@ -57,6 +57,26 @@ EOF
 # Alpha.17: Predictable symlink for nginx log serving
 ln -sf "$(basename "$LOG_FILE")" /var/log/cubeos-current-boot.log
 
+# ── B61 Safety Net: Ensure cubeos user has a working password ─────
+# The cubeos user and password are set at image build time by
+# 02-networking.sh. This is a belt-and-suspenders check in case
+# something went wrong (e.g., cloud-init clean reset the password,
+# or the image was modified post-build).
+if id cubeos &>/dev/null; then
+    # Check if password is set ('P' = password set, 'L' = locked, 'NP' = no password)
+    PW_STATUS=$(passwd -S cubeos 2>/dev/null | awk '{print $2}')
+    if [ "$PW_STATUS" != "P" ]; then
+        echo "cubeos:cubeos" | chpasswd 2>/dev/null || true
+        passwd -u cubeos 2>/dev/null || true
+        echo "$(date '+%Y-%m-%d %H:%M:%S') WARN: Reset cubeos password (was: $PW_STATUS)" >> "$LOG_FILE"
+    fi
+else
+    # This should never happen — user is created at build time
+    useradd -m -s /bin/bash -G sudo,docker,adm cubeos 2>/dev/null || true
+    echo "cubeos:cubeos" | chpasswd 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') WARN: Created cubeos user (missing from image!)" >> "$LOG_FILE"
+fi
+
 # ── Dead Man's Switch ────────────────────────────────────────────────
 STALL_TIMEOUT=180
 MAX_BOOT_TIME=900

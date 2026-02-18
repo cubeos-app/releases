@@ -57,6 +57,16 @@ EOF
 # Alpha.17: Predictable symlink for nginx log serving
 ln -sf "$(basename "$LOG_FILE")" /var/log/cubeos-current-boot.log
 
+# ── B61 Safety Net: Ensure cubeos user has a working password ─────
+if id cubeos &>/dev/null; then
+    PW_STATUS=$(passwd -S cubeos 2>/dev/null | awk '{print $2}')
+    if [ "$PW_STATUS" != "P" ]; then
+        echo "cubeos:cubeos" | chpasswd 2>/dev/null || true
+        passwd -u cubeos 2>/dev/null || true
+        echo "$(date '+%Y-%m-%d %H:%M:%S') WARN: Reset cubeos password (was: $PW_STATUS)" >> "$LOG_FILE"
+    fi
+fi
+
 # =============================================================================
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 

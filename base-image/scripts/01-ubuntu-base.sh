@@ -474,6 +474,18 @@ systemctl disable ModemManager 2>/dev/null || true
 echo "[BASE]   ModemManager: disabled (HAL manages lifecycle)"
 
 # ---------------------------------------------------------------------------
+# smartmontools: disable auto-start (SD cards don't support SMART)
+# ---------------------------------------------------------------------------
+# smartd fails on boot with "No devices found to scan" because SD cards
+# and eMMC don't support SMART. The package is installed for users who
+# attach USB/SATA drives via HAT, but the daemon shouldn't auto-start.
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling smartmontools auto-start..."
+systemctl disable smartd 2>/dev/null || true
+systemctl disable smartmontools 2>/dev/null || true
+echo "[BASE]   smartd: disabled (enable manually for external drives)"
+
+# ---------------------------------------------------------------------------
 # avahi-daemon: disable for now (boot scripts enable if needed)
 # ---------------------------------------------------------------------------
 echo "[BASE] Disabling avahi-daemon auto-start..."

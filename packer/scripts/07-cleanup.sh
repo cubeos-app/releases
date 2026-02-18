@@ -95,9 +95,20 @@ rm -f /var/lib/dbus/machine-id
 # ---------------------------------------------------------------------------
 # Without this, cloud-init skips growpart (partition expansion), SSH key
 # injection from Pi Imager, and other first-boot modules.
+#
+# B61 NOTE: Cloud-init is no longer the SOLE path to a working user.
+# The cubeos user + password are set directly in 02-networking.sh.
+# If cloud-init fails completely on boot, SSH still works. Cloud-init
+# is kept for: growpart, hostname customization, Pi Imager SSH keys.
 # ---------------------------------------------------------------------------
 echo "[07] Cleaning cloud-init state..."
-cloud-init clean --logs --seed --machine-id 2>/dev/null || true
+# Clean instance state (force first-boot behavior) but DON'T pass --machine-id
+# (already handled above — passing both can cause conflicts)
+cloud-init clean --logs --seed 2>/dev/null || true
+
+# B61: Ensure the 50-cloud-init.conf SSH override is removed again
+# (cloud-init clean may have regenerated it)
+rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 
 # ---------------------------------------------------------------------------
 # Zero free space (dramatically improves xz compression ratio)
