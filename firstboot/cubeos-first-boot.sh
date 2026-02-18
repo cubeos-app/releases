@@ -385,6 +385,11 @@ wait_for "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 90 1 || log_warn "Pi-
 # Seed custom DNS — uses shared CORE_DNS_HOSTS array
 seed_pihole_dns
 
+# Configure Pi-hole DHCP for default OFFLINE mode (Batch 2)
+# Must run after Pi-hole is healthy — DHCP is disabled by default since
+# FTLCONF_dhcp_active was removed from env vars in Batch 1.
+configure_pihole_dhcp "offline"
+
 # =========================================================================
 # Step 6/9: WiFi AP
 # =========================================================================

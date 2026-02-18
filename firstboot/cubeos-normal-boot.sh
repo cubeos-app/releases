@@ -171,6 +171,12 @@ wait_for "API" "curl -sf http://127.0.0.1:6010/health" 30 || true
 # ── Network mode ──────────────────────────────────────────────────────
 apply_network_mode
 
+# Configure Pi-hole DHCP scope for the active network mode (Batch 2)
+# Must run after Pi-hole is healthy (checked above).
+# Uses pihole-FTL --config CLI since the CubeOS API may not be ready yet.
+# NET_MODE is set by apply_network_mode -> read_persisted_network_config.
+configure_pihole_dhcp "$NET_MODE"
+
 # ── Done ──────────────────────────────────────────────────────────────
 BOOT_END=$(date +%s)
 log ""
