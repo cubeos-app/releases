@@ -103,7 +103,7 @@ cat > /cubeos/config/defaults.env << DEFAULTS
 # System Settings
 # ===================
 CUBEOS_VERSION=${CUBEOS_VERSION}
-CUBEOS_COUNTRY_CODE=\${CUBEOS_COUNTRY_CODE:-US}
+CUBEOS_COUNTRY_CODE=\${CUBEOS_COUNTRY_CODE:-NL}
 TZ=UTC
 DOMAIN=cubeos.cube
 

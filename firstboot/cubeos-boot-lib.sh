@@ -166,7 +166,7 @@ configure_wifi_ap() {
     rfkill unblock wifi 2>/dev/null || true
 
     # Get country code from config (cfg80211 handles kernel-level regulatory domain)
-    local COUNTRY_CODE="${CUBEOS_COUNTRY_CODE:-US}"
+    local COUNTRY_CODE="${CUBEOS_COUNTRY_CODE:-NL}"
     log "Setting regulatory domain: $COUNTRY_CODE"
     iw reg set "$COUNTRY_CODE" 2>/dev/null || true
     sleep 2  # Give kernel time to apply regulatory domain
