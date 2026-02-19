@@ -13,3 +13,8 @@ packer_cache/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Session handover files (belong in project knowledge, not source control)
+*HANDOVER*.md
+*SESSION*.md
+ALPHA*_*.md
