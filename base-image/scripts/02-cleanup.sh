@@ -31,7 +31,7 @@ for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            picocom smartmontools ethtool avahi-daemon wireguard-tools \
            zram-tools exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher \
            libpam-modules libpam-runtime openssh-server fail2ban \
-           python3-pyasyncore python3-pyasynchat; do
+           python3-pyasyncore python3-pyasynchat isc-dhcp-client; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
 
@@ -53,7 +53,8 @@ echo "[BASE-CLEANUP] Verifying critical packages survived autoremove..."
 MISSING=0
 for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools" \
                "gpiodetect:gpiod" "lsusb:usbutils" "mmcli:modemmanager" \
-               "chronyd:chrony" "fail2ban-server:fail2ban"; do
+               "chronyd:chrony" "fail2ban-server:fail2ban" \
+               "dhclient:isc-dhcp-client"; do
     cmd="${cmd_pkg%%:*}"
     pkg="${cmd_pkg##*:}"
     if ! command -v "$cmd" &>/dev/null; then

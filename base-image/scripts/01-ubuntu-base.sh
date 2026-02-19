@@ -255,7 +255,8 @@ install_group "Networking" \
     tcpdump \
     ethtool \
     avahi-daemon \
-    networkd-dispatcher
+    networkd-dispatcher \
+    isc-dhcp-client
 
 # ===== GROUP 3: Security =====
 install_group "Security" \
@@ -601,7 +602,8 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
                   "gpiodetect:gpiod" "lsusb:usbutils" "gpsd:gpsd" "mmcli:modemmanager" \
                   "chronyd:chrony" "picocom:picocom" "jq:jq" "curl:curl" \
                   "usb_modeswitch:usb-modeswitch" "smartctl:smartmontools" \
-                  "wpa_supplicant:wpasupplicant" "fail2ban-server:fail2ban"; do
+                  "wpa_supplicant:wpasupplicant" "fail2ban-server:fail2ban" \
+                  "dhclient:isc-dhcp-client"; do
     cmd="${cmd_check%%:*}"
     pkg="${cmd_check##*:}"
     if command -v "$cmd" &>/dev/null; then
@@ -654,6 +656,7 @@ echo "    + Network:  wireguard-tools, ethtool, avahi-daemon"
 echo "    + B52 net:  wpasupplicant (SERVER_WIFI), networkd-dispatcher (auto-detect)"
 echo "    + B62 mem:  ZRAM configured at 100% RAM with lz4 (was 14% default)"
 echo "    + B65 sec:  fail2ban Python 3.12 asynchat/asyncore backports"
+echo "    + B87 net:  isc-dhcp-client (HAL DHCP endpoint, Android tethering)"
 echo "    + Tools:    sqlite3, picocom, nano, zram-tools"
 echo ""
 echo "  All packages installed. No configuration applied."
