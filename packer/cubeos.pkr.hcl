@@ -146,6 +146,7 @@ build {
       "packer/scripts/05-docker-preload.sh",
       "packer/scripts/08-pihole-seed.sh",
       "packer/scripts/06-firstboot-service.sh",
+      "packer/scripts/09-console-gui.sh",
       "packer/scripts/07-cleanup.sh",
     ]
   }
