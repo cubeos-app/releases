@@ -21,6 +21,12 @@
 #   - --no-install-recommends on non-essential groups
 #   - Disable man-db auto-update (saves ~10 min QEMU build time)
 #   - All critical packages protected with apt-mark manual
+#
+# v2.1 (alpha.22):
+#   - B62: ZRAM configured at 100% of RAM with lz4 (was default 14%)
+#   - B65: Added python3-pyasyncore + python3-pyasynchat for fail2ban
+#          (Python 3.12 removed asynchat/asyncore from stdlib)
+#   - Added fail2ban, asynchat/asyncore to protected packages list
 # =============================================================================
 set -euo pipefail
 
@@ -258,6 +264,18 @@ install_group "Security" \
     openssh-server \
     wireguard-tools
 
+# B65: fail2ban 1.0.2 on Python 3.12 crashes with "No module named asynchat".
+# Python 3.12 removed asynchat/asyncore from stdlib. These backport packages
+# provide the compatibility modules fail2ban needs.
+echo "[BASE] Installing Python 3.12 compatibility for fail2ban (B65)..."
+if apt-get install -y --no-install-recommends \
+    python3-pyasyncore python3-pyasynchat 2>/dev/null; then
+    echo "[BASE]   asynchat/asyncore backports: OK"
+else
+    echo "[BASE]   WARN: asynchat/asyncore backports not available — fail2ban may fail at runtime"
+    echo "[BASE]   Manual fix: pip install pyasyncore pyasynchat --break-system-packages"
+fi
+
 # ===== GROUP 4: Raspberry Pi Hardware =====
 install_group "Hardware / Pi" \
     i2c-tools \
@@ -331,6 +349,14 @@ install_group "Utilities" \
 install_group "SD Card optimization" \
     zram-tools
 
+# B62: Configure ZRAM for 100% of RAM (default is 14%, way too low)
+echo "[BASE] Configuring ZRAM (100% RAM, lz4)..."
+cat > /etc/default/zramswap <<'ZRAM'
+ALGO=lz4
+PERCENT=100
+ZRAM
+echo "[BASE]   ZRAM: 100% of RAM with lz4 compression"
+
 # ===== GROUP 11: Cloud-init =====
 install_group "Cloud-init" \
     cloud-init
@@ -401,6 +427,9 @@ PROTECTED_PACKAGES=(
     exfatprogs          # exFAT support
     ntfs-3g             # NTFS support
     bc                  # Calculator for scripts
+    fail2ban            # B65: SSH intrusion prevention
+    python3-pyasyncore  # B65: fail2ban asyncore compat (Python 3.12)
+    python3-pyasynchat  # B65: fail2ban asynchat compat (Python 3.12)
     wpasupplicant       # B52: SERVER_WIFI mode needs wpa_supplicant on host
     networkd-dispatcher # B52: auto eth0 carrier detection hooks
 )
@@ -545,7 +574,7 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
                   "gpiodetect:gpiod" "lsusb:usbutils" "gpsd:gpsd" "mmcli:modemmanager" \
                   "chronyd:chrony" "picocom:picocom" "jq:jq" "curl:curl" \
                   "usb_modeswitch:usb-modeswitch" "smartctl:smartmontools" \
-                  "wpa_supplicant:wpasupplicant"; do
+                  "wpa_supplicant:wpasupplicant" "fail2ban-server:fail2ban"; do
     cmd="${cmd_check%%:*}"
     pkg="${cmd_check##*:}"
     if command -v "$cmd" &>/dev/null; then
@@ -586,6 +615,8 @@ echo "    + Pi HW:    gpiod, v4l-utils, libraspberrypi-bin"
 echo "    + Storage:  ntfs-3g, exfatprogs, smartmontools"
 echo "    + Network:  wireguard-tools, ethtool, avahi-daemon"
 echo "    + B52 net:  wpasupplicant (SERVER_WIFI), networkd-dispatcher (auto-detect)"
+echo "    + B62 mem:  ZRAM configured at 100% RAM with lz4 (was 14% default)"
+echo "    + B65 sec:  fail2ban Python 3.12 asynchat/asyncore backports"
 echo "    + Tools:    sqlite3, picocom, nano, zram-tools"
 echo ""
 echo "  All packages installed. No configuration applied."

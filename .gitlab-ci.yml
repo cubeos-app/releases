@@ -27,9 +27,9 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.21"
+  CUBEOS_VERSION: "0.1.0-alpha.22"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
-  BASE_VERSION: "2.0.0"
+  BASE_VERSION: "2.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
   GITHUB_REPO: "cubeos-app/releases"
 
