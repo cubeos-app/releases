@@ -21,6 +21,15 @@ FIRSTBOOT_SRC="/tmp/cubeos-firstboot"
 
 echo "[06] Installing additional scripts..."
 
+# B89: Early netplan writer — prevents stale DHCP leases on mode switch
+if [ -f "${FIRSTBOOT_SRC}/cubeos-early-netplan.sh" ]; then
+    cp "${FIRSTBOOT_SRC}/cubeos-early-netplan.sh" /usr/local/lib/cubeos/cubeos-early-netplan.sh
+    chmod +x /usr/local/lib/cubeos/cubeos-early-netplan.sh
+    echo "[06]   Installed cubeos-early-netplan.sh → /usr/local/lib/cubeos/"
+else
+    echo "[06]   WARNING: cubeos-early-netplan.sh not found in ${FIRSTBOOT_SRC}"
+fi
+
 # Manual stack recovery helper
 if [ -f "${FIRSTBOOT_SRC}/cubeos-deploy-stacks.sh" ]; then
     cp "${FIRSTBOOT_SRC}/cubeos-deploy-stacks.sh" /usr/local/bin/cubeos-deploy-stacks.sh
@@ -155,9 +164,39 @@ WantedBy=timers.target
 BOOT_WD_TMR
 
 # ---------------------------------------------------------------------------
+# cubeos-early-netplan.service — write correct netplan before networkd starts
+# ---------------------------------------------------------------------------
+# B89: Prevents stale DHCP leases when user switches network modes.
+# Reads persisted mode from SQLite, writes the matching netplan YAML.
+# Runs BEFORE systemd-networkd so it picks up the correct config.
+# On fresh install (no DB), exits silently — baked-in OFFLINE netplan is used.
+# ---------------------------------------------------------------------------
+cat > /etc/systemd/system/cubeos-early-netplan.service << 'EARLY_NP_SVC'
+[Unit]
+Description=CubeOS Early Netplan Writer (B89)
+Documentation=https://github.com/cubeos-app
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-networkd.service systemd-networkd-wait-online.service
+ConditionPathExists=/cubeos/data/cubeos.db
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/cubeos/cubeos-early-netplan.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10
+
+[Install]
+WantedBy=sysinit.target
+EARLY_NP_SVC
+
+# ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------
 systemctl enable cubeos-init.service 2>/dev/null || true
+systemctl enable cubeos-early-netplan.service 2>/dev/null || true
 # Watchdog timer is started by first-boot script AFTER all services are deployed.
 # DO NOT enable here — it would run during first boot and waste I/O.
 # systemctl enable cubeos-watchdog.timer 2>/dev/null || true
@@ -166,4 +205,5 @@ systemctl enable cubeos-boot-watchdog.timer 2>/dev/null || true
 echo "[06] First-boot service installed (timeout=600s, dead man's switch built-in)."
 echo "[06] Watchdog: /cubeos/coreapps/scripts/watchdog-health.sh (starts at T+120s, every 60s)."
 echo "[06] Boot watchdog: kills cubeos-init if stuck >20 minutes."
+echo "[06] Early netplan: writes correct netplan before networkd (B89)."
 echo "[06] Recovery: /usr/local/bin/cubeos-deploy-stacks.sh"

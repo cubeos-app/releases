@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v12 - Alpha.22)
+# cubeos-boot-lib.sh — CubeOS Boot Shared Library (v13 - Alpha.23)
 # =============================================================================
 # Sourced by both cubeos-first-boot.sh and cubeos-normal-boot.sh.
 # Contains all shared functions, constants, and configuration arrays.
@@ -13,6 +13,10 @@
 #   - WiFi AP configuration
 #   - Watchdog management
 #   - Network mode (5 distinct netplan templates)
+#
+# v13 — ALPHA.23 (Batch 2):
+#   - B82: seed_pihole_dns() rewritten to use pihole-FTL --config dns.hosts
+#     (JSON array persisted to pihole.toml). custom.list kept as fallback.
 #
 # v12 — ALPHA.22 (Network Modes Batch 1):
 #   - T02: Split write_netplan_for_mode() from 3 cases into 5 distinct templates
@@ -315,14 +319,45 @@ ensure_overlay_network() {
 
 # ── Pi-hole DNS Seeding ──────────────────────────────────────────────
 seed_pihole_dns() {
+    # B82: Pi-hole v6 FTL regenerates custom.list from dns.hosts in pihole.toml.
+    # Writing custom.list directly is overwritten on FTL restart.
+    # Primary: use pihole-FTL --config dns.hosts (JSON array, persists to pihole.toml).
+    # Fallback: write custom.list for first-boot race (container may not be ready).
+
+    # Build JSON array: ["10.42.24.1 cubeos.cube","10.42.24.1 api.cubeos.cube",...]
+    local json_entries=""
+    for host in "${CORE_DNS_HOSTS[@]}"; do
+        [ -n "$json_entries" ] && json_entries="${json_entries},"
+        json_entries="${json_entries}\"${GATEWAY_IP} ${host}\""
+    done
+
+    # Primary: pihole-FTL --config dns.hosts (writes to pihole.toml)
+    local ftl_ok=false
+    if container_running cubeos-pihole; then
+        if docker exec cubeos-pihole pihole-FTL --config dns.hosts "[${json_entries}]" 2>/dev/null; then
+            ftl_ok=true
+        else
+            log_warn "pihole-FTL --config dns.hosts failed -- falling back to custom.list"
+        fi
+    else
+        log_warn "Pi-hole not running -- writing custom.list only (FTL config on next boot)"
+    fi
+
+    # Belt-and-suspenders: also write custom.list directly
     local PIHOLE_HOSTS="/cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list"
     mkdir -p "$(dirname "$PIHOLE_HOSTS")"
     : > "$PIHOLE_HOSTS"
     for host in "${CORE_DNS_HOSTS[@]}"; do
         echo "${GATEWAY_IP} ${host}" >> "$PIHOLE_HOSTS"
     done
-    docker exec cubeos-pihole pihole reloaddns 2>/dev/null || true
-    log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries)"
+
+    if [ "$ftl_ok" = true ]; then
+        log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries via dns.hosts + custom.list)"
+    else
+        # Trigger a reload so custom.list takes effect immediately
+        docker exec cubeos-pihole pihole reloaddns 2>/dev/null || true
+        log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries via custom.list fallback)"
+    fi
 }
 
 # ── Network Mode ─────────────────────────────────────────────────────

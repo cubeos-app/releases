@@ -135,6 +135,11 @@ fi
 # Pi-hole health via DNS check (more reliable, tests actual functionality)
 wait_for "Pi-hole DNS" "dig cubeos.cube @127.0.0.1 +short +time=2 +tries=1" 30 1 || true
 
+# B82: Re-seed DNS on every boot via pihole-FTL --config dns.hosts.
+# Pi-hole v6 stores dns.hosts in pihole.toml which persists across restarts,
+# but re-seeding ensures consistency if the container was recreated.
+seed_pihole_dns
+
 # ── DNS resolver fallback ─────────────────────────────────────────────
 ensure_dns_resolver
 
