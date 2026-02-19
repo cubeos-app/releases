@@ -30,7 +30,8 @@ for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            usb-modeswitch usb-modeswitch-data gpsd gpsd-clients chrony \
            picocom smartmontools ethtool avahi-daemon wireguard-tools \
            zram-tools exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher \
-           libpam-modules libpam-runtime openssh-server fail2ban; do
+           libpam-modules libpam-runtime openssh-server fail2ban \
+           python3-pyasyncore python3-pyasynchat; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
 
@@ -52,7 +53,7 @@ echo "[BASE-CLEANUP] Verifying critical packages survived autoremove..."
 MISSING=0
 for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools" \
                "gpiodetect:gpiod" "lsusb:usbutils" "mmcli:modemmanager" \
-               "chronyd:chrony"; do
+               "chronyd:chrony" "fail2ban-server:fail2ban"; do
     cmd="${cmd_pkg%%:*}"
     pkg="${cmd_pkg##*:}"
     if ! command -v "$cmd" &>/dev/null; then
@@ -63,6 +64,19 @@ for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools
         MISSING=$((MISSING + 1))
     fi
 done
+# B65: Verify asynchat/asyncore survived autoremove
+if ! python3 -c "import asynchat; import asyncore" 2>/dev/null; then
+    echo "[BASE-CLEANUP]   MISSING: asynchat/asyncore (fail2ban deps) — attempting reinstall..."
+    apt-get update -q >/dev/null 2>&1 || true
+    if ! apt-get install -y --no-install-recommends python3-pyasyncore python3-pyasynchat 2>/dev/null; then
+        python3 -m ensurepip --upgrade 2>/dev/null || true
+        python3 -m pip install pyasyncore pyasynchat --break-system-packages 2>/dev/null || true
+        python3 -m pip cache purge 2>/dev/null || true
+        rm -rf /root/.cache/pip 2>/dev/null || true
+    fi
+    apt-mark manual python3-pyasyncore python3-pyasynchat 2>/dev/null || true
+    MISSING=$((MISSING + 1))
+fi
 if [ "$MISSING" -gt 0 ]; then
     echo "[BASE-CLEANUP]   Reinstalled $MISSING packages stripped by autoremove"
     apt-get clean

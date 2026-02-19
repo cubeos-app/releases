@@ -27,7 +27,7 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.22"
+  CUBEOS_VERSION: "0.1.0-alpha.23"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
   BASE_VERSION: "2.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
@@ -202,16 +202,34 @@ build-image:
       # B56: Curated downloads MUST succeed. If kiwix-serve or ttyd fail to
       # download, Phase 1c silently skips ("No curated images found") and the
       # image ships with broken services showing 0/1 replicas.
+      # B66: Enable verbose mode for CI debugging. Use set +e to capture
+      # exit code without set -e killing the block prematurely.
+      export CURATED_VERBOSE=true
+      set +e
       ./skopeo/download-curated.sh curated-images
       CURATED_EXIT=$?
+      set -e
       if [ "$CURATED_EXIT" -ne 0 ]; then
         echo "ERROR: Curated image download failed (exit $CURATED_EXIT)"
         echo "Cannot build image with broken curated apps."
-        echo "Check network connectivity and GHCR credentials."
+        echo "Check network connectivity and image ARM64 manifests."
+        echo ""
+        echo "Debug: verify ARM64 manifests exist:"
+        echo "  skopeo inspect --raw docker://ghcr.io/kiwix/kiwix-serve:3.8.1 | jq '.manifests[].platform'"
+        echo "  skopeo inspect --raw docker://docker.io/tsl0922/ttyd:latest | jq '.manifests[].platform'"
         exit 1
       fi
       echo ""
+      echo "Curated tarballs:"
       ls -lh curated-images/ 2>/dev/null || echo "  (no curated images)"
+      # B66: Verify expected tarball count matches manifest entries
+      EXPECTED_COUNT=$(grep -v '^[[:space:]]*#' skopeo/curated-apps.txt | grep -v '^$' | wc -l)
+      ACTUAL_COUNT=$(ls curated-images/*.tar 2>/dev/null | wc -l)
+      echo "  Expected: ${EXPECTED_COUNT} tarballs, Got: ${ACTUAL_COUNT}"
+      if [ "$ACTUAL_COUNT" -lt "$EXPECTED_COUNT" ]; then
+        echo "ERROR: Missing curated tarballs (${ACTUAL_COUNT}/${EXPECTED_COUNT})"
+        exit 1
+      fi
 
       # --- ZIM content for Kiwix (configurable) ---
       ZIM_ENABLED="${ZIM_ENABLED:-true}"
@@ -353,8 +371,51 @@ build-image:
         fi
       done
 
+      # ── Step 3b: Load curated images + retag for localhost:5000 ─────
+      # B85: Compose services (terminal, future curated apps) use
+      # --pull never and reference images as localhost:5000/{repo}:{tag}.
+      # Phase 1c pushes these to the registry, but --pull never won't
+      # query the registry. We must also have them in Docker's local
+      # image cache with the localhost:5000/ prefix tag.
       echo ""
-      echo "Pre-load results: ${LOADED} loaded, ${FAILED} failed"
+      echo "  Loading curated images into Docker cache (B85 fix)..."
+      CURATED_LOADED=0
+      for tarball in curated-images/*.tar; do
+        [ -f "$tarball" ] || continue
+        NAME=$(basename "$tarball" .tar)
+        SIZE=$(du -h "$tarball" | cut -f1)
+        echo "  Loading curated: ${NAME} (${SIZE})..."
+
+        if $DOCKER_CMD load < "$tarball" 2>&1; then
+          echo "    Loaded"
+          CURATED_LOADED=$((CURATED_LOADED + 1))
+        else
+          echo "    FAILED (non-fatal — image will be in registry)"
+        fi
+      done
+
+      # Retag curated images with localhost:5000/ prefix
+      # (compose files reference localhost:5000/{repo}:{tag})
+      if [ "$CURATED_LOADED" -gt 0 ] && [ -f skopeo/curated-apps.txt ]; then
+        echo "  Retagging curated images for localhost:5000/..."
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+
+          if $DOCKER_CMD tag "${REPO_NAME}:${TAG}" "localhost:5000/${REPO_NAME}:${TAG}" 2>/dev/null; then
+            echo "    ${REPO_NAME}:${TAG} → localhost:5000/${REPO_NAME}:${TAG}"
+          else
+            echo "    WARN: Could not retag ${REPO_NAME}:${TAG} (image may not have loaded)"
+          fi
+        done < skopeo/curated-apps.txt
+      fi
+
+      echo ""
+      echo "Pre-load results: ${LOADED} core + ${CURATED_LOADED} curated loaded, ${FAILED} failed"
       $DOCKER_CMD images --format "  {{.Repository}}:{{.Tag}} ({{.Size}})"
 
       if [ "$FAILED" -gt 0 ]; then
@@ -385,7 +446,7 @@ build-image:
       losetup -d "$LOOPDEV"
       rmdir /mnt/cubeos-image 2>/dev/null || true
 
-      echo "Docker pre-load complete: ${LOADED} images baked into ${IMAGE_NAME}.img"
+      echo "Docker pre-load complete: ${LOADED} core + ${CURATED_LOADED} curated images baked into ${IMAGE_NAME}.img"
       echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
     - |
       set -e

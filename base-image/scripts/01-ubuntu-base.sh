@@ -267,13 +267,40 @@ install_group "Security" \
 # B65: fail2ban 1.0.2 on Python 3.12 crashes with "No module named asynchat".
 # Python 3.12 removed asynchat/asyncore from stdlib. These backport packages
 # provide the compatibility modules fail2ban needs.
+#
+# Strategy: Try apt first (fastest, no pip needed). If apt packages don't exist
+# in Ubuntu 24.04 ARM64 repos, fall back to pip install. Verify either way.
 echo "[BASE] Installing Python 3.12 compatibility for fail2ban (B65)..."
+B65_OK=false
 if apt-get install -y --no-install-recommends \
-    python3-pyasyncore python3-pyasynchat 2>/dev/null; then
-    echo "[BASE]   asynchat/asyncore backports: OK"
+    python3-pyasyncore python3-pyasynchat 2>&1 | tail -5; then
+    echo "[BASE]   asynchat/asyncore apt packages: installed"
+    B65_OK=true
 else
-    echo "[BASE]   WARN: asynchat/asyncore backports not available — fail2ban may fail at runtime"
-    echo "[BASE]   Manual fix: pip install pyasyncore pyasynchat --break-system-packages"
+    echo "[BASE]   apt packages not available — falling back to pip..."
+    # Bootstrap pip (not installed by default) and install from PyPI
+    python3 -m ensurepip --upgrade 2>&1 | tail -3 || true
+    if python3 -m pip install pyasyncore pyasynchat --break-system-packages 2>&1 | tail -5; then
+        echo "[BASE]   asynchat/asyncore pip packages: installed"
+        B65_OK=true
+    else
+        echo "[BASE]   WARN: pip install also failed"
+    fi
+    # Clean up pip cache (don't leave it in the base image)
+    python3 -m pip cache purge 2>/dev/null || true
+    rm -rf /root/.cache/pip 2>/dev/null || true
+fi
+
+# B65: Verify the modules can actually be imported (catches silent install failures)
+if python3 -c "import asynchat; import asyncore; print('asynchat+asyncore: importable')" 2>&1; then
+    echo "[BASE]   B65 verification: PASS"
+else
+    echo "[BASE]   B65 verification: FAIL — fail2ban will crash at runtime!"
+    echo "[BASE]   Debug: python3 -c 'import asynchat' on the built image"
+    if [ "$B65_OK" = false ]; then
+        echo "[BASE]   FATAL: No asynchat/asyncore available. fail2ban is broken."
+        # Don't exit — fail2ban is important but not worth killing the entire build
+    fi
 fi
 
 # ===== GROUP 4: Raspberry Pi Hardware =====
@@ -584,6 +611,16 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
         VERIFY_OK=false
     fi
 done
+
+# B65: Verify fail2ban can actually start (asynchat/asyncore present)
+echo ""
+echo "[BASE] Verifying fail2ban asynchat/asyncore (B65)..."
+if python3 -c "import asynchat; import asyncore" 2>/dev/null; then
+    echo "[BASE]   fail2ban Python deps: OK"
+else
+    echo "[BASE]   fail2ban Python deps: MISSING (asynchat/asyncore)"
+    VERIFY_OK=false
+fi
 
 if [ "$VERIFY_OK" = false ]; then
     echo "[BASE] WARNING: Some critical binaries are missing. Check package installation."
