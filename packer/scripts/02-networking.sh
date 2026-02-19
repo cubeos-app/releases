@@ -481,13 +481,22 @@ systemctl enable cloud-init 2>/dev/null || true
 # Cloud-init's 50-cloud-init.conf defaults to PasswordAuthentication no.
 # Our 01-cubeos.conf loads first (first-match-wins in sshd_config.d/).
 # ---------------------------------------------------------------------------
-echo "[02] Enabling SSH password authentication..."
+echo "[02] Enabling SSH password + pubkey authentication..."
 mkdir -p /etc/ssh/sshd_config.d
-echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/01-cubeos.conf
+cat > /etc/ssh/sshd_config.d/01-cubeos.conf <<'SSHEOF'
+PasswordAuthentication yes
+PubkeyAuthentication yes
+SSHEOF
 # Cloud-init creates 50-cloud-init.conf with PasswordAuthentication no.
 # OpenSSH uses first-match-wins in sshd_config.d/, so 01-* ensures we win
 # even if cloud-init regenerates 50-cloud-init.conf on boot.
 rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
-echo "[02]   SSH password auth enabled (via sshd_config.d/01-cubeos.conf)"
+echo "[02]   SSH password + pubkey auth enabled (via sshd_config.d/01-cubeos.conf)"
+
+# Prepare .ssh directory for post-flash key deployment (ssh-copy-id or Pi Imager)
+mkdir -p /home/cubeos/.ssh
+chmod 700 /home/cubeos/.ssh
+chown cubeos:cubeos /home/cubeos/.ssh
+echo "[02]   /home/cubeos/.ssh/ directory created (ready for authorized_keys)"
 
 echo "[02] Network configuration complete."
