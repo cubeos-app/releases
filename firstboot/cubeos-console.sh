@@ -8,6 +8,12 @@
 # Tasks: T21 (main TUI), T23 (SQLite helpers), T24 (apply_network_mode integration)
 # Batch: Network Modes Batch 5
 #
+# Alpha.23 Batch 5:
+#   B90: Removed set -euo pipefail, added explicit error handling + trap.
+#        Replaced python3 SQLite with sqlite3 CLI (removes python3 dependency).
+#   B91: Changed LOG_FILE from /dev/null to /var/log/cubeos-console.log.
+#        Added console_log() with timestamps. Added log rotation (1MB max).
+#
 # Features:
 #   1. Switch between all 5 network modes with WiFi/static IP prompts
 #   2. Configure static IP for the current mode's upstream interface
@@ -16,10 +22,14 @@
 #   5. Emergency reset to OFFLINE mode (safe default)
 #   6. Clean reboot
 #
-# Dependencies: whiptail (pre-installed on Ubuntu), python3, sqlite3 CLI
+# Dependencies: whiptail (pre-installed on Ubuntu), sqlite3 CLI
 # Sources cubeos-boot-lib.sh for apply_network_mode() and shared constants.
 # =============================================================================
-set -euo pipefail
+
+# B90: Only set -u (catch unset variables). Do NOT use -e (whiptail returns
+# non-zero on Cancel/Escape) or -o pipefail (causes spurious failures in
+# subshells gathering system info).
+set -u
 
 # ── Constants ────────────────────────────────────────────────────────────────
 readonly DB_PATH="/cubeos/data/cubeos.db"
@@ -28,12 +38,44 @@ readonly TITLE="CubeOS System Console"
 readonly WT_WIDTH=72
 readonly WT_HEIGHT=20
 readonly WT_LIST_HEIGHT=10
+readonly CONSOLE_LOG="/var/log/cubeos-console.log"
+readonly CONSOLE_LOG_MAX_BYTES=1048576  # 1MB
+
+# ── B91: Console Logging ────────────────────────────────────────────────────
+
+# Rotate log if over 1MB — truncate to last 500 lines.
+rotate_console_log() {
+    if [ -f "$CONSOLE_LOG" ]; then
+        local size
+        size=$(stat -c%s "$CONSOLE_LOG" 2>/dev/null || echo 0)
+        if [ "$size" -gt "$CONSOLE_LOG_MAX_BYTES" ]; then
+            local tmp
+            tmp=$(tail -500 "$CONSOLE_LOG")
+            echo "$tmp" > "$CONSOLE_LOG"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') LOG_ROTATED: truncated to last 500 lines" >> "$CONSOLE_LOG"
+        fi
+    fi
+}
+
+# Log a timestamped message to the console log file.
+console_log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') CONSOLE: $*" >> "$CONSOLE_LOG" 2>/dev/null || true
+}
+
+# Log an error to the console log file.
+console_log_error() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') CONSOLE ERROR: $*" >> "$CONSOLE_LOG" 2>/dev/null || true
+}
+
+# Initialize logging — rotate if needed, write session start marker.
+rotate_console_log
+console_log "Session started (PID=$$, TTY=$(tty 2>/dev/null || echo unknown))"
 
 # ── Source boot-lib for apply_network_mode() and helpers ─────────────────────
 if [ -f "$BOOT_LIB" ]; then
-    # Redirect log output to /dev/null when sourced from console
-    # (boot-lib writes to LOG_FILE which may not exist in interactive use)
-    export LOG_FILE="/dev/null"
+    # B91: Direct boot-lib log output to the console log file (not /dev/null).
+    # boot-lib's log() writes to LOG_FILE and stderr.
+    export LOG_FILE="$CONSOLE_LOG"
     # shellcheck source=/usr/local/bin/cubeos-boot-lib.sh
     source "$BOOT_LIB"
 else
@@ -42,9 +84,30 @@ else
     exit 1
 fi
 
-# ── SQLite Helpers (T23) ─────────────────────────────────────────────────────
-# Read/write to SQLite using python3 -c one-liners (matches boot-lib pattern).
-# These functions provide safe, shell-escaped access to the network_config table.
+# ── B90: Unexpected Exit Trap ───────────────────────────────────────────────
+# If the script exits unexpectedly (signal, unset variable with set -u),
+# show an error dialog so the user isn't left staring at a blank screen.
+# Normal exits (menu "Exit to Shell", reboot) set CLEAN_EXIT=1 first.
+
+CLEAN_EXIT=0
+
+cleanup_trap() {
+    local exit_code=$?
+    if [ "$CLEAN_EXIT" -eq 0 ] && [ "$exit_code" -ne 0 ]; then
+        console_log_error "Unexpected exit (code=$exit_code)"
+        # Try to show error dialog — may fail if whiptail is the problem
+        whiptail --title "CubeOS Console — Error" --msgbox \
+            "The console exited unexpectedly (code: ${exit_code}).\n\nCheck ${CONSOLE_LOG} for details.\n\nType 'sudo cubeos-console' to restart." \
+            12 "$WT_WIDTH" 2>/dev/null || true
+    fi
+    console_log "Session ended (exit_code=$exit_code, clean=$CLEAN_EXIT)"
+}
+
+trap cleanup_trap EXIT
+
+# ── SQLite Helpers (T23 — B90 rewrite: sqlite3 CLI) ────────────────────────
+# Read/write to SQLite using the sqlite3 CLI (no python3 dependency).
+# These functions provide safe access to the network_config table.
 
 # Read current network configuration from SQLite.
 # Sets globals: CON_MODE, CON_SSID, CON_PASSWORD, CON_USE_STATIC,
@@ -65,26 +128,39 @@ db_read_network_config() {
         return 0
     fi
 
-    eval "$(python3 -c "
-import sqlite3
-try:
-    conn = sqlite3.connect('${DB_PATH}')
-    row = conn.execute('SELECT mode, wifi_ssid, wifi_password, use_static_ip, static_ip_address, static_ip_netmask, static_ip_gateway, static_dns_primary, static_dns_secondary FROM network_config WHERE id = 1').fetchone()
-    if row:
-        print(f'CON_MODE={row[0]}')
-        ssid = (row[1] or '').replace(\"'\", \"'\\\"'\\\"'\")
-        pw = (row[2] or '').replace(\"'\", \"'\\\"'\\\"'\")
-        print(f\"CON_SSID='{ssid}'\")
-        print(f\"CON_PASSWORD='{pw}'\")
-        print(f'CON_USE_STATIC={1 if row[3] else 0}')
-        print(f\"CON_STATIC_IP='{row[4] or ''}'\")
-        print(f\"CON_STATIC_NETMASK='{row[5] or '255.255.255.0'}'\")
-        print(f\"CON_STATIC_GATEWAY='{row[6] or ''}'\")
-        print(f\"CON_STATIC_DNS1='{row[7] or ''}'\")
-        print(f\"CON_STATIC_DNS2='{row[8] or ''}'\")
-    conn.close()
-except: pass
-" 2>/dev/null)" || true
+    # B90: Use sqlite3 CLI with | separator. Each field on one line.
+    local db_output
+    db_output=$(sqlite3 -separator '|' "$DB_PATH" \
+        "SELECT mode, wifi_ssid, wifi_password, use_static_ip, static_ip_address, static_ip_netmask, static_ip_gateway, static_dns_primary, static_dns_secondary FROM network_config WHERE id = 1;" 2>/dev/null) || {
+        console_log_error "db_read_network_config: sqlite3 query failed"
+        CON_MODE="offline"
+        return 0
+    }
+
+    if [ -z "$db_output" ]; then
+        CON_MODE="offline"
+        return 0
+    fi
+
+    # Parse pipe-separated fields using IFS
+    local IFS='|'
+    # shellcheck disable=SC2086
+    set -- $db_output
+    CON_MODE="${1:-offline}"
+    CON_SSID="${2:-}"
+    CON_PASSWORD="${3:-}"
+    CON_USE_STATIC="${4:-0}"
+    CON_STATIC_IP="${5:-}"
+    CON_STATIC_NETMASK="${6:-255.255.255.0}"
+    CON_STATIC_GATEWAY="${7:-}"
+    CON_STATIC_DNS1="${8:-}"
+    CON_STATIC_DNS2="${9:-}"
+
+    # Normalize use_static_ip (SQLite may return 0/1 or true/false)
+    case "$CON_USE_STATIC" in
+        1|true|TRUE) CON_USE_STATIC="1" ;;
+        *) CON_USE_STATIC="0" ;;
+    esac
 
     CON_MODE="${CON_MODE:-offline}"
 }
@@ -96,17 +172,22 @@ db_write_mode() {
     local ssid="${2:-}"
     local password="${3:-}"
 
-    [ ! -f "$DB_PATH" ] && return 1
+    if [ ! -f "$DB_PATH" ]; then
+        console_log_error "db_write_mode: database not found"
+        return 1
+    fi
 
-    python3 -c "
-import sqlite3
-conn = sqlite3.connect('${DB_PATH}')
-conn.execute('''UPDATE network_config
-    SET mode = ?, wifi_ssid = ?, wifi_password = ?
-    WHERE id = 1''', ('${mode}', '''${ssid}''', '''${password}'''))
-conn.commit()
-conn.close()
-" 2>/dev/null
+    # B90: Use sqlite3 CLI with parameterized-style escaping.
+    # Single quotes in values are escaped by doubling them (SQL standard).
+    local esc_ssid="${ssid//\'/\'\'}"
+    local esc_password="${password//\'/\'\'}"
+
+    sqlite3 "$DB_PATH" \
+        "UPDATE network_config SET mode = '${mode}', wifi_ssid = '${esc_ssid}', wifi_password = '${esc_password}' WHERE id = 1;" 2>/dev/null || {
+        console_log_error "db_write_mode: sqlite3 update failed (mode=${mode})"
+        return 1
+    }
+    console_log "db_write_mode: mode=${mode}, ssid=${ssid:+(set)}"
 }
 
 # Write static IP configuration to SQLite.
@@ -119,18 +200,17 @@ db_write_static_ip() {
     local dns1="${5:-}"
     local dns2="${6:-}"
 
-    [ ! -f "$DB_PATH" ] && return 1
+    if [ ! -f "$DB_PATH" ]; then
+        console_log_error "db_write_static_ip: database not found"
+        return 1
+    fi
 
-    python3 -c "
-import sqlite3
-conn = sqlite3.connect('${DB_PATH}')
-conn.execute('''UPDATE network_config
-    SET use_static_ip = ?, static_ip_address = ?, static_ip_netmask = ?,
-        static_ip_gateway = ?, static_dns_primary = ?, static_dns_secondary = ?
-    WHERE id = 1''', (${use_static}, '${ip}', '${netmask}', '${gateway}', '${dns1}', '${dns2}'))
-conn.commit()
-conn.close()
-" 2>/dev/null
+    sqlite3 "$DB_PATH" \
+        "UPDATE network_config SET use_static_ip = ${use_static}, static_ip_address = '${ip}', static_ip_netmask = '${netmask}', static_ip_gateway = '${gateway}', static_dns_primary = '${dns1}', static_dns_secondary = '${dns2}' WHERE id = 1;" 2>/dev/null || {
+        console_log_error "db_write_static_ip: sqlite3 update failed"
+        return 1
+    }
+    console_log "db_write_static_ip: use_static=${use_static}, ip=${ip}"
 }
 
 # Write WiFi credentials only (no mode change).
@@ -139,33 +219,35 @@ db_write_wifi_creds() {
     local ssid="$1"
     local password="$2"
 
-    [ ! -f "$DB_PATH" ] && return 1
+    if [ ! -f "$DB_PATH" ]; then
+        console_log_error "db_write_wifi_creds: database not found"
+        return 1
+    fi
 
-    python3 -c "
-import sqlite3
-conn = sqlite3.connect('${DB_PATH}')
-conn.execute('''UPDATE network_config
-    SET wifi_ssid = ?, wifi_password = ?
-    WHERE id = 1''', ('''${ssid}''', '''${password}'''))
-conn.commit()
-conn.close()
-" 2>/dev/null
+    local esc_ssid="${ssid//\'/\'\'}"
+    local esc_password="${password//\'/\'\'}"
+
+    sqlite3 "$DB_PATH" \
+        "UPDATE network_config SET wifi_ssid = '${esc_ssid}', wifi_password = '${esc_password}' WHERE id = 1;" 2>/dev/null || {
+        console_log_error "db_write_wifi_creds: sqlite3 update failed"
+        return 1
+    }
+    console_log "db_write_wifi_creds: ssid=${ssid}"
 }
 
 # Clear static IP overrides (reset to DHCP).
 db_clear_static_ip() {
-    [ ! -f "$DB_PATH" ] && return 1
+    if [ ! -f "$DB_PATH" ]; then
+        console_log_error "db_clear_static_ip: database not found"
+        return 1
+    fi
 
-    python3 -c "
-import sqlite3
-conn = sqlite3.connect('${DB_PATH}')
-conn.execute('''UPDATE network_config
-    SET use_static_ip = 0, static_ip_address = '', static_ip_netmask = '255.255.255.0',
-        static_ip_gateway = '', static_dns_primary = '', static_dns_secondary = ''
-    WHERE id = 1''')
-conn.commit()
-conn.close()
-" 2>/dev/null
+    sqlite3 "$DB_PATH" \
+        "UPDATE network_config SET use_static_ip = 0, static_ip_address = '', static_ip_netmask = '255.255.255.0', static_ip_gateway = '', static_dns_primary = '', static_dns_secondary = '' WHERE id = 1;" 2>/dev/null || {
+        console_log_error "db_clear_static_ip: sqlite3 update failed"
+        return 1
+    }
+    console_log "db_clear_static_ip: reset to DHCP"
 }
 
 
@@ -223,14 +305,20 @@ get_interface_ip() {
 apply_changes() {
     local mode="$1"
 
+    console_log "apply_changes: starting mode=${mode}"
+
     # Show a progress message while applying (whiptail gauge)
     {
         echo 10
         # apply_network_mode reads from DB and writes netplan + applies
-        apply_network_mode 2>/dev/null || true
+        if ! apply_network_mode 2>>"$CONSOLE_LOG"; then
+            console_log_error "apply_changes: apply_network_mode failed"
+        fi
         echo 50
         # Configure Pi-hole DHCP scope for the new mode
-        configure_pihole_dhcp "$mode" 2>/dev/null || true
+        if ! configure_pihole_dhcp "$mode" 2>>"$CONSOLE_LOG"; then
+            console_log_error "apply_changes: configure_pihole_dhcp failed"
+        fi
         echo 80
         # For AP modes, restart hostapd to pick up any changes
         case "$mode" in
@@ -241,6 +329,8 @@ apply_changes() {
         echo 100
     } | whiptail --title "$TITLE" --gauge "Applying network configuration..." 8 $WT_WIDTH 0
 
+    console_log "apply_changes: completed mode=${mode}"
+
     whiptail --title "$TITLE" --msgbox \
         "Network configuration applied.\n\nMode: $(mode_label "$mode")\n\nChanges take full effect immediately.\nA reboot is recommended for best stability." \
         12 $WT_WIDTH
@@ -250,7 +340,12 @@ apply_changes() {
 # ── Menu 1: Network Mode ────────────────────────────────────────────────────
 
 menu_network_mode() {
-    db_read_network_config
+    console_log "menu: Network Mode"
+
+    if ! db_read_network_config; then
+        whiptail --title "$TITLE" --msgbox "Failed to read network configuration.\nCheck ${CONSOLE_LOG} for details." 10 $WT_WIDTH
+        return 0
+    fi
 
     local current
     current=$(mode_label "$CON_MODE")
@@ -264,11 +359,13 @@ menu_network_mode() {
         "online_wifi"  "Online via WiFi — AP + NAT via USB dongle" \
         "server_eth"   "Server via Ethernet — no AP, eth0 client" \
         "server_wifi"  "Server via WiFi — no AP, wlan0 client" \
-        3>&1 1>&2 2>&3) || return 0
+        3>&1 1>&2 2>&3) || { console_log "menu: Network Mode cancelled"; return 0; }
 
     local new_mode="$choice"
     local ssid=""
     local password=""
+
+    console_log "menu: Network Mode selected=${new_mode}"
 
     # WiFi modes require SSID + password
     if [ "$new_mode" = "online_wifi" ] || [ "$new_mode" = "server_wifi" ]; then
@@ -330,7 +427,10 @@ menu_network_mode() {
     whiptail --title "$TITLE — Confirm" --yesno "$confirm_msg" 18 $WT_WIDTH || return 0
 
     # Write mode + credentials to DB
-    db_write_mode "$new_mode" "$ssid" "$password"
+    if ! db_write_mode "$new_mode" "$ssid" "$password"; then
+        whiptail --title "$TITLE" --msgbox "Failed to save network mode.\nCheck ${CONSOLE_LOG} for details." 10 $WT_WIDTH
+        return 0
+    fi
 
     # Apply changes via boot-lib (T24)
     apply_changes "$new_mode"
@@ -340,7 +440,12 @@ menu_network_mode() {
 # ── Menu 2: Static IP Configuration ─────────────────────────────────────────
 
 menu_static_ip() {
-    db_read_network_config
+    console_log "menu: Static IP"
+
+    if ! db_read_network_config; then
+        whiptail --title "$TITLE" --msgbox "Failed to read network configuration." 8 $WT_WIDTH
+        return 0
+    fi
 
     if [ "$CON_MODE" = "offline" ]; then
         whiptail --title "$TITLE" --msgbox \
@@ -381,6 +486,7 @@ menu_static_ip() {
                 "Apply static IP configuration?\n\nThis will reconfigure the upstream interface." \
                 10 $WT_WIDTH || return 0
 
+            console_log "menu: Static IP applying"
             apply_changes "$CON_MODE"
             ;;
         dhcp)
@@ -390,6 +496,7 @@ menu_static_ip() {
                 "Switch to DHCP?\n\nThe upstream interface will request an IP automatically." \
                 10 $WT_WIDTH || return 0
 
+            console_log "menu: Static IP switching to DHCP"
             apply_changes "$CON_MODE"
             ;;
     esac
@@ -460,7 +567,10 @@ prompt_static_ip() {
     fi
 
     # Write to DB
-    db_write_static_ip 1 "$ip" "$netmask" "$gateway" "$dns1" "$dns2"
+    if ! db_write_static_ip 1 "$ip" "$netmask" "$gateway" "$dns1" "$dns2"; then
+        whiptail --title "$TITLE" --msgbox "Failed to save static IP configuration." 8 $WT_WIDTH
+        return 1
+    fi
     return 0
 }
 
@@ -468,6 +578,7 @@ prompt_static_ip() {
 # ── Menu 3: WiFi Credentials ────────────────────────────────────────────────
 
 menu_wifi_creds() {
+    console_log "menu: WiFi Credentials"
     db_read_network_config
 
     local masked_pw="(not set)"
@@ -508,7 +619,10 @@ menu_wifi_creds() {
         10 $WT_WIDTH \
         3>&1 1>&2 2>&3) || return 0
 
-    db_write_wifi_creds "$ssid" "$password"
+    if ! db_write_wifi_creds "$ssid" "$password"; then
+        whiptail --title "$TITLE" --msgbox "Failed to save WiFi credentials." 8 $WT_WIDTH
+        return 0
+    fi
 
     whiptail --title "$TITLE" --msgbox \
         "WiFi credentials saved.\n\n  SSID: ${ssid}\n\nCredentials will be used on next WiFi mode switch or reboot." \
@@ -519,9 +633,10 @@ menu_wifi_creds() {
 # ── Menu 4: System Status ───────────────────────────────────────────────────
 
 menu_system_status() {
+    console_log "menu: System Status"
     db_read_network_config
 
-    # Gather system info
+    # B90: Each command wrapped individually — failures show "N/A" instead of crashing
     local mode_str
     mode_str=$(mode_label "$CON_MODE")
     local uptime_str
@@ -539,28 +654,28 @@ menu_system_status() {
         internet="Yes"
     fi
 
-    # Docker status
+    # Docker status — B90: each subcommand guarded
     local docker_status="Not running"
-    local swarm_services=0
-    local running_containers=0
+    local swarm_services="0"
+    local running_containers="0"
     if systemctl is-active docker &>/dev/null; then
         docker_status="Running"
-        swarm_services=$(docker service ls --format '{{.Name}}' 2>/dev/null | wc -l)
-        running_containers=$(docker ps -q 2>/dev/null | wc -l)
+        swarm_services=$(docker service ls --format '{{.Name}}' 2>/dev/null | wc -l || echo "0")
+        running_containers=$(docker ps -q 2>/dev/null | wc -l || echo "0")
     fi
 
-    # Memory + Disk
+    # Memory + Disk — B90: guard against missing commands
     local mem_info
-    mem_info=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s / %s (%.0f%%)", $3, $2, $3/$2*100}')
+    mem_info=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s / %s (%.0f%%)", $3, $2, $3/$2*100}' || echo "N/A")
     local disk_info
-    disk_info=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s (%s)", $3, $2, $5}')
+    disk_info=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s (%s)", $3, $2, $5}' || echo "N/A")
 
     # CPU temperature
     local cpu_temp="N/A"
     if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
         local raw_temp
-        raw_temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-        if [ -n "$raw_temp" ]; then
+        raw_temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "")
+        if [ -n "$raw_temp" ] && [ "$raw_temp" -gt 0 ] 2>/dev/null; then
             cpu_temp="$(echo "scale=1; $raw_temp / 1000" | bc 2>/dev/null || echo "$((raw_temp / 1000))")C"
         fi
     fi
@@ -591,12 +706,19 @@ menu_system_status() {
 # ── Menu 5: Reset to Offline ────────────────────────────────────────────────
 
 menu_reset_offline() {
+    console_log "menu: Reset to Offline"
+
     whiptail --title "$TITLE — Reset to Offline" --yesno \
         "EMERGENCY RESET\n\nThis will:\n\n  - Switch to OFFLINE mode (AP only)\n  - Clear static IP overrides\n  - Restart WiFi access point\n  - Disable NAT/forwarding\n\nThe CubeOS AP will be available immediately after reset.\nConnect via WiFi to http://cubeos.cube\n\nProceed?" \
         18 $WT_WIDTH || return 0
 
+    console_log "menu: Reset to Offline CONFIRMED — applying"
+
     # Write OFFLINE to DB, clear static IP and WiFi state
-    db_write_mode "offline" "" ""
+    if ! db_write_mode "offline" "" ""; then
+        whiptail --title "$TITLE" --msgbox "Failed to write offline mode to database." 10 $WT_WIDTH
+        return 0
+    fi
     db_clear_static_ip
 
     # Apply via boot-lib (T24)
@@ -606,10 +728,14 @@ menu_reset_offline() {
         systemctl stop hostapd 2>/dev/null || true
         echo 20
         # Apply network mode (writes OFFLINE netplan, disables NAT)
-        apply_network_mode 2>/dev/null || true
+        if ! apply_network_mode 2>>"$CONSOLE_LOG"; then
+            console_log_error "reset_offline: apply_network_mode failed"
+        fi
         echo 50
         # Configure Pi-hole for OFFLINE (DHCP on all interfaces)
-        configure_pihole_dhcp "offline" 2>/dev/null || true
+        if ! configure_pihole_dhcp "offline" 2>>"$CONSOLE_LOG"; then
+            console_log_error "reset_offline: configure_pihole_dhcp failed"
+        fi
         echo 70
         # Restart hostapd with AP configuration
         systemctl start hostapd 2>/dev/null || true
@@ -618,6 +744,8 @@ menu_reset_offline() {
         iptables -t nat -F POSTROUTING 2>/dev/null || true
         echo 100
     } | whiptail --title "$TITLE" --gauge "Resetting to OFFLINE mode..." 8 $WT_WIDTH 0
+
+    console_log "menu: Reset to Offline completed"
 
     whiptail --title "$TITLE" --msgbox \
         "Reset to OFFLINE complete.\n\nThe WiFi access point should now be available.\nConnect to the CubeOS WiFi network and open\nhttp://cubeos.cube in your browser." \
@@ -628,10 +756,14 @@ menu_reset_offline() {
 # ── Menu 6: Reboot ──────────────────────────────────────────────────────────
 
 menu_reboot() {
+    console_log "menu: Reboot"
+
     whiptail --title "$TITLE — Reboot" --yesno \
         "Reboot the system?\n\nAll services will restart. This takes about 30-60 seconds." \
         10 $WT_WIDTH || return 0
 
+    console_log "menu: Reboot CONFIRMED"
+    CLEAN_EXIT=1
     echo "CubeOS is rebooting..."
     sync
     systemctl reboot
@@ -670,7 +802,11 @@ main_menu() {
             "5" "Reset to Offline (Safe Mode)" \
             "6" "Reboot" \
             "7" "Exit to Shell" \
-            3>&1 1>&2 2>&3) || break  # ESC/Cancel exits
+            3>&1 1>&2 2>&3) || {
+            # B90: ESC/Cancel in main menu = exit gracefully (not crash)
+            console_log "menu: Main menu cancelled (ESC/Cancel)"
+            break
+        }
 
         case "$choice" in
             1) menu_network_mode ;;
@@ -679,7 +815,7 @@ main_menu() {
             4) menu_system_status ;;
             5) menu_reset_offline ;;
             6) menu_reboot ;;
-            7) break ;;
+            7) console_log "menu: Exit to Shell"; break ;;
         esac
     done
 }
@@ -700,13 +836,16 @@ if ! command -v whiptail &>/dev/null; then
     exit 1
 fi
 
-# Check for python3 (needed for SQLite access)
-if ! command -v python3 &>/dev/null; then
-    echo "ERROR: python3 not found. Cannot access database."
+# B90: Check for sqlite3 CLI (replaces python3 dependency)
+if ! command -v sqlite3 &>/dev/null; then
+    echo "ERROR: sqlite3 not found. Cannot access database."
+    echo "Install with: apt-get install sqlite3"
     exit 1
 fi
 
 clear
+CLEAN_EXIT=0
 main_menu
+CLEAN_EXIT=1
 clear
 echo "Exited CubeOS Console. Type 'cubeos-console' to return."
