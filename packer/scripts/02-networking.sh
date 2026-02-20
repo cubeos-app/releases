@@ -247,6 +247,14 @@ iptables -t nat -F POSTROUTING 2>/dev/null || true
 # Masquerade outgoing traffic from AP subnet
 iptables -t nat -A POSTROUTING -s ${SUBNET} -o ${UPSTREAM} -j MASQUERADE
 
+# B107: Masquerade outgoing traffic from Docker Swarm containers (docker_gwbridge)
+# Without this, containers on overlay networks cannot reach the internet
+DOCKER_GW_SUBNET=$(docker network inspect docker_gwbridge --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null || echo "172.16.1.0/24")
+if [ -n "${DOCKER_GW_SUBNET}" ]; then
+  iptables -t nat -A POSTROUTING -s ${DOCKER_GW_SUBNET} -o ${UPSTREAM} -j MASQUERADE
+  echo "[NAT] Docker Swarm NAT: ${DOCKER_GW_SUBNET} via ${UPSTREAM}"
+fi
+
 # Allow forwarding between interfaces
 iptables -A FORWARD -i ${AP_IFACE} -o ${UPSTREAM} -j ACCEPT
 iptables -A FORWARD -i ${UPSTREAM} -o ${AP_IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT
