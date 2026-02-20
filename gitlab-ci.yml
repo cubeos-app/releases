@@ -1,0 +1,1049 @@
+# =============================================================================
+# CubeOS Release Image Pipeline
+# =============================================================================
+# Builds a flashable ARM64 image from the pre-built golden base image.
+#
+# WORKFLOW (build once, release later):
+#   1. Push to main  → build-image runs (~20 min), uploads to Package Registry
+#   2. Verify green  → test the image if needed
+#   3. Tag (git tag v0.1.0-alpha.10 && git push --tags)
+#      → release jobs run (~2 min), create GitLab + GitHub releases
+#      → NO rebuild — release jobs download the already-built image
+#
+# SINGLE JOB BUILD: Everything runs in one container to avoid transferring
+# 1.5GB+ of Docker image tarballs as CI artifacts between stages.
+#
+# PREREQUISITES:
+#   1. Golden base image in Package Registry (cubeos-base/1.1.0)
+#   2. CI variables: GHCR_USER, GHCR_TOKEN (for private GHCR images)
+#   3. CI variable: GHCR_TOKEN (used for both GHCR pushes and GitHub API releases)
+#   4. Token access: releases project allowed to access coreapps project
+#
+# TIME: ~20 minutes (build) + ~2 minutes (release on tag)
+# =============================================================================
+
+stages:
+  - build
+  - release
+
+variables:
+  CUBEOS_VERSION: "0.1.0-alpha.23"
+  IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
+  BASE_VERSION: "2.1.0"
+  BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
+  GITHUB_REPO: "cubeos-app/releases"
+
+# =============================================================================
+# Build Release Image
+# =============================================================================
+build-image:
+  stage: build
+  image:
+    name: mkaczanowski/packer-builder-arm:latest
+    entrypoint: [""]
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - |
+      set -e
+      echo "============================================================"
+      echo "  CubeOS Release Pipeline — Phase 0: Setup"
+      echo "============================================================"
+
+      # Validate CI variables
+      if [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
+        echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
+        echo "Set them in: Settings > CI/CD > Variables"
+        exit 1
+      fi
+      echo "GHCR auth: ${GHCR_USER}"
+
+      # QEMU binfmt
+      mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
+      if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        echo "ERROR: QEMU aarch64 binfmt not registered on host!"
+        exit 1
+      fi
+      echo "QEMU aarch64 binfmt: OK"
+
+      # Install tools
+      echo "Installing tools..."
+      apt-get update -q 2>&1 | tail -3
+      apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git zstd 2>&1 | tail -5
+      echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0a: Clone coreapps repo (single source of truth)"
+      echo "============================================================"
+
+      git clone --depth 1 \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
+        /tmp/coreapps-src
+
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix"
+
+      mkdir -p coreapps-bundle
+      for svc in $SERVICES; do
+        if [ -d "/tmp/coreapps-src/${svc}/appconfig" ]; then
+          mkdir -p "coreapps-bundle/${svc}"
+          cp -r "/tmp/coreapps-src/${svc}/appconfig" "coreapps-bundle/${svc}/"
+          echo "  + ${svc}/appconfig"
+        else
+          echo "  - ${svc} (not found or no appconfig)"
+        fi
+      done
+
+      if [ -d "/tmp/coreapps-src/scripts" ]; then
+        cp -r /tmp/coreapps-src/scripts coreapps-bundle/
+        chmod +x coreapps-bundle/scripts/*.sh 2>/dev/null || true
+        echo "  + scripts/"
+      fi
+
+      echo ""
+      echo "Coreapps bundle:"
+      find coreapps-bundle -type f | sort
+      rm -rf /tmp/coreapps-src
+      echo "Coreapps bundle: OK"
+
+      # Clone docs repo for offline filesystem mode (T05)
+      # B05: Try GitHub first, then GitLab, then mark as unavailable (04-cubeos.sh has fallback)
+      echo ""
+      echo "  Cloning docs repo for offline access..."
+      DOCS_CLONED=false
+      git clone --depth=1 https://github.com/cubeos-app/docs.git /tmp/cubeos-docs-src 2>&1 | tail -3 && \
+        DOCS_CLONED=true && echo "  + docs repo cloned from GitHub" || \
+        echo "  - GitHub docs clone failed, trying GitLab..."
+      if [ "$DOCS_CLONED" = "false" ]; then
+        git clone --depth=1 \
+          "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/docs.git" \
+          /tmp/cubeos-docs-src 2>&1 | tail -3 && \
+          DOCS_CLONED=true && echo "  + docs repo cloned from GitLab" || \
+          echo "  - GitLab docs clone also failed (non-fatal, 04-cubeos.sh has placeholder fallback)"
+      fi
+      if [ -d /tmp/cubeos-docs-src ]; then
+        mkdir -p coreapps-bundle/docs
+        # Copy .md files only (exclude .git and other artifacts)
+        find /tmp/cubeos-docs-src -maxdepth 2 -name '*.md' -exec cp {} coreapps-bundle/docs/ \; 2>/dev/null || true
+        rm -rf /tmp/cubeos-docs-src
+        DOCS_COUNT=$(find coreapps-bundle/docs -name '*.md' 2>/dev/null | wc -l)
+        echo "  + ${DOCS_COUNT} docs bundled into coreapps-bundle/docs/"
+      fi
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0b: Download ARM64 Docker images"
+      echo "============================================================"
+
+      mkdir -p docker-images
+
+      echo "[1/8] Pi-hole..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/pihole/pihole:latest \
+        docker-archive:docker-images/pihole.tar:pihole/pihole:latest
+
+      echo "[2/8] Nginx Proxy Manager..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/jc21/nginx-proxy-manager:latest \
+        docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
+
+      echo "[3/8] CubeOS API..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/api:latest \
+        docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
+
+      echo "[4/8] CubeOS HAL..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/hal:latest \
+        docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
+
+      echo "[5/8] CubeOS Dashboard..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/dashboard:latest \
+        docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
+
+      echo "[6/8] CubeOS DocsIndex..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
+        docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
+
+      echo "[7/8] Docker Registry..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/library/registry:2 \
+        docker-archive:docker-images/registry.tar:library/registry:2
+
+      echo "[8/8] Dozzle..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/amir20/dozzle:latest \
+        docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+
+      echo ""
+      ls -lh docker-images/
+      du -sh docker-images/
+      echo "Docker images: OK (8 images)"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0b2: Download curated app images + ZIM content"
+      echo "============================================================"
+
+      # --- Curated app images (for local registry) ---
+      chmod +x skopeo/download-curated.sh
+      # B56: Curated downloads MUST succeed. If kiwix-serve or ttyd fail to
+      # download, Phase 1c silently skips ("No curated images found") and the
+      # image ships with broken services showing 0/1 replicas.
+      # B66: Enable verbose mode for CI debugging. Use set +e to capture
+      # exit code without set -e killing the block prematurely.
+      export CURATED_VERBOSE=true
+      set +e
+      ./skopeo/download-curated.sh curated-images
+      CURATED_EXIT=$?
+      set -e
+      if [ "$CURATED_EXIT" -ne 0 ]; then
+        echo "ERROR: Curated image download failed (exit $CURATED_EXIT)"
+        echo "Cannot build image with broken curated apps."
+        echo "Check network connectivity and image ARM64 manifests."
+        echo ""
+        echo "Debug: verify ARM64 manifests exist:"
+        echo "  skopeo inspect --raw docker://ghcr.io/kiwix/kiwix-serve:3.8.1 | jq '.manifests[].platform'"
+        echo "  skopeo inspect --raw docker://docker.io/tsl0922/ttyd:latest | jq '.manifests[].platform'"
+        exit 1
+      fi
+      echo ""
+      echo "Curated tarballs:"
+      ls -lh curated-images/ 2>/dev/null || echo "  (no curated images)"
+      # B66: Verify expected tarball count matches manifest entries
+      EXPECTED_COUNT=$(grep -v '^[[:space:]]*#' skopeo/curated-apps.txt | grep -v '^$' | wc -l)
+      ACTUAL_COUNT=$(ls curated-images/*.tar 2>/dev/null | wc -l)
+      echo "  Expected: ${EXPECTED_COUNT} tarballs, Got: ${ACTUAL_COUNT}"
+      if [ "$ACTUAL_COUNT" -lt "$EXPECTED_COUNT" ]; then
+        echo "ERROR: Missing curated tarballs (${ACTUAL_COUNT}/${EXPECTED_COUNT})"
+        exit 1
+      fi
+
+      # --- ZIM content for Kiwix (configurable) ---
+      ZIM_ENABLED="${ZIM_ENABLED:-true}"
+      ZIM_URL="${ZIM_URL:-https://download.kiwix.org/zim/wikipedia/wikipedia_en_100_maxi_2026-01.zim}"
+
+      if [ "$ZIM_ENABLED" = "true" ]; then
+        mkdir -p zim-content
+        ZIM_FILENAME=$(basename "$ZIM_URL")
+        echo "Downloading ZIM: ${ZIM_FILENAME}..."
+        if wget -q --show-progress -O "zim-content/${ZIM_FILENAME}" "$ZIM_URL"; then
+          echo "  ZIM OK: $(du -h "zim-content/${ZIM_FILENAME}" | cut -f1)"
+        else
+          echo "  WARN: ZIM download failed (non-fatal — Kiwix will show empty library)"
+          rm -f "zim-content/${ZIM_FILENAME}"
+        fi
+      else
+        echo "ZIM download disabled (ZIM_ENABLED=false)"
+      fi
+      echo "Phase 0b2: OK"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 0c: Download golden base image"
+      echo "============================================================"
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o cubeos-base.img.xz \
+           --connect-timeout 30 \
+           --max-time 3600 \
+           --retry 3 \
+           --retry-delay 10 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
+      ls -lh cubeos-base.img.xz
+      echo "Base image: OK"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1: Packer build"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      chmod +x packer/scripts/*.sh firstboot/*.sh
+
+      packer build \
+        -var "version=${CUBEOS_VERSION}" \
+        -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
+        -var "base_image_checksum_type=none" \
+        packer/cubeos.pkr.hcl
+
+      ls -lh ${IMAGE_NAME}.img
+      echo "Packer build: OK ($(date -u +%H:%M:%S))"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1b: Pre-load Docker images into image"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      # ── Step 1: Mount the built image ──────────────────────────────
+      LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+      echo "Loop device: $LOOPDEV"
+      sleep 2
+
+      ROOT_PART="${LOOPDEV}p2"
+      if [ ! -b "$ROOT_PART" ]; then
+        echo "ERROR: Root partition ${ROOT_PART} not found"
+        losetup -d "$LOOPDEV"
+        exit 1
+      fi
+
+      mkdir -p /mnt/cubeos-image
+      mount "$ROOT_PART" /mnt/cubeos-image
+      echo "Mounted root partition at /mnt/cubeos-image"
+
+      # Ensure /var/lib/docker exists on the image
+      mkdir -p /mnt/cubeos-image/var/lib/docker
+
+      # ── Step 2: Start temporary dockerd ────────────────────────────
+      # Key flags for isolation from any existing daemon:
+      #   --data-root     → writes to the MOUNTED IMAGE, not the CI host
+      #   -H              → separate socket to avoid conflicts
+      #   --pidfile       → separate PID file
+      #   --exec-root     → separate runtime state
+      #   --iptables=false --bridge=none → no host networking changes
+      #   --containerd=""  → don't connect to containerd (avoid socket conflicts)
+      echo "Starting temporary dockerd with --data-root /mnt/cubeos-image/var/lib/docker..."
+
+      dockerd \
+        --data-root /mnt/cubeos-image/var/lib/docker \
+        --storage-driver overlay2 \
+        -H unix:///tmp/cubeos-preload.sock \
+        --pidfile /tmp/cubeos-preload.pid \
+        --exec-root /tmp/cubeos-preload-exec \
+        --iptables=false \
+        --bridge=none \
+        --containerd="" \
+        &>/tmp/dockerd-preload.log &
+      DOCKERD_PID=$!
+
+      echo "Waiting for dockerd (PID: $DOCKERD_PID)..."
+      for i in $(seq 1 60); do
+        if docker -H unix:///tmp/cubeos-preload.sock info &>/dev/null; then
+          echo "  dockerd ready (${i}s)"
+          break
+        fi
+        if [ "$i" -eq 60 ]; then
+          echo "ERROR: dockerd failed to start. Log:"
+          tail -30 /tmp/dockerd-preload.log
+          kill "$DOCKERD_PID" 2>/dev/null || true
+          umount /mnt/cubeos-image 2>/dev/null || true
+          losetup -d "$LOOPDEV" 2>/dev/null || true
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # ── Step 3: Load ARM64 tarballs ────────────────────────────────
+      DOCKER_CMD="docker -H unix:///tmp/cubeos-preload.sock"
+      LOADED=0
+      FAILED=0
+
+      for tarball in docker-images/*.tar; do
+        [ -f "$tarball" ] || continue
+        NAME=$(basename "$tarball" .tar)
+        SIZE=$(du -h "$tarball" | cut -f1)
+        echo "  Loading: ${NAME} (${SIZE})..."
+        LOAD_START=$(date +%s)
+
+        if $DOCKER_CMD load < "$tarball" 2>&1; then
+          LOAD_END=$(date +%s)
+          echo "    OK ($(( LOAD_END - LOAD_START ))s)"
+          LOADED=$((LOADED + 1))
+        else
+          echo "    FAILED"
+          FAILED=$((FAILED + 1))
+        fi
+      done
+
+      # ── Step 3b: Load curated images + retag for localhost:5000 ─────
+      # B85: Compose services (terminal, future curated apps) use
+      # --pull never and reference images as localhost:5000/{repo}:{tag}.
+      # Phase 1c pushes these to the registry, but --pull never won't
+      # query the registry. We must also have them in Docker's local
+      # image cache with the localhost:5000/ prefix tag.
+      echo ""
+      echo "  Loading curated images into Docker cache (B85 fix)..."
+      CURATED_LOADED=0
+      for tarball in curated-images/*.tar; do
+        [ -f "$tarball" ] || continue
+        NAME=$(basename "$tarball" .tar)
+        SIZE=$(du -h "$tarball" | cut -f1)
+        echo "  Loading curated: ${NAME} (${SIZE})..."
+
+        if $DOCKER_CMD load < "$tarball" 2>&1; then
+          echo "    Loaded"
+          CURATED_LOADED=$((CURATED_LOADED + 1))
+        else
+          echo "    FAILED (non-fatal — image will be in registry)"
+        fi
+      done
+
+      # Retag curated images with localhost:5000/ prefix
+      # (compose files reference localhost:5000/{repo}:{tag})
+      if [ "$CURATED_LOADED" -gt 0 ] && [ -f skopeo/curated-apps.txt ]; then
+        echo "  Retagging curated images for localhost:5000/..."
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+
+          if $DOCKER_CMD tag "${REPO_NAME}:${TAG}" "localhost:5000/${REPO_NAME}:${TAG}" 2>/dev/null; then
+            echo "    ${REPO_NAME}:${TAG} → localhost:5000/${REPO_NAME}:${TAG}"
+          else
+            echo "    WARN: Could not retag ${REPO_NAME}:${TAG} (image may not have loaded)"
+          fi
+        done < skopeo/curated-apps.txt
+      fi
+
+      echo ""
+      echo "Pre-load results: ${LOADED} core + ${CURATED_LOADED} curated loaded, ${FAILED} failed"
+      $DOCKER_CMD images --format "  {{.Repository}}:{{.Tag}} ({{.Size}})"
+
+      if [ "$FAILED" -gt 0 ]; then
+        echo "WARNING: ${FAILED} images failed to load!"
+        tail -20 /tmp/dockerd-preload.log
+      fi
+
+      # ── Step 4: Graceful shutdown ──────────────────────────────────
+      # CRITICAL: Must use SIGTERM (not SIGKILL) to flush metadata to disk.
+      # overlay2 metadata databases must be written out cleanly or the
+      # Pi's dockerd will see a corrupted store on first boot.
+      echo "Shutting down temporary dockerd..."
+      kill -SIGTERM "$DOCKERD_PID"
+      wait "$DOCKERD_PID" 2>/dev/null || true
+      echo "  dockerd shut down cleanly"
+
+      # ── Step 5: Cleanup ────────────────────────────────────────────
+      # Remove the tarball cache from the image — no longer needed
+      rm -rf /mnt/cubeos-image/var/cache/cubeos-images
+      echo "  Removed tarball cache from image (images are in overlay2 now)"
+
+      # Verify overlay2 data exists
+      echo "  Docker storage size: $(du -sh /mnt/cubeos-image/var/lib/docker/ | cut -f1)"
+      ls /mnt/cubeos-image/var/lib/docker/overlay2/ | wc -l | xargs -I{} echo "  overlay2 layers: {}"
+
+      sync
+      umount /mnt/cubeos-image
+      losetup -d "$LOOPDEV"
+      rmdir /mnt/cubeos-image 2>/dev/null || true
+
+      echo "Docker pre-load complete: ${LOADED} core + ${CURATED_LOADED} curated images baked into ${IMAGE_NAME}.img"
+      echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 1c: Pre-populate local registry + ZIM content"
+      echo "  Started: $(date -u +%H:%M:%S)"
+      echo "============================================================"
+
+      # Skip if no curated images were downloaded
+      CURATED_COUNT=$(ls curated-images/*.tar 2>/dev/null | wc -l)
+      if [ "$CURATED_COUNT" -eq 0 ]; then
+        echo "No curated images found — skipping Phase 1c"
+      else
+        # ── Step 1: Mount the built image ──────────────────────────────
+        LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+        echo "Loop device: $LOOPDEV"
+        sleep 2
+
+        ROOT_PART="${LOOPDEV}p2"
+        if [ ! -b "$ROOT_PART" ]; then
+          echo "ERROR: Root partition ${ROOT_PART} not found"
+          losetup -d "$LOOPDEV"
+          exit 1
+        fi
+
+        mkdir -p /mnt/cubeos-image
+        mount "$ROOT_PART" /mnt/cubeos-image
+        echo "Mounted root partition at /mnt/cubeos-image"
+
+        # ── Step 2: Ensure registry data directory exists ──────────────
+        mkdir -p /mnt/cubeos-image/cubeos/data/registry
+
+        # ── Step 2.5: Ensure registry:2 available on CI Docker ─────────
+        # B56: Phase 1b loaded registry.tar into the mounted image's dockerd
+        # (via custom socket). Phase 1c uses the CI host's Docker to run the
+        # temp registry container — it needs registry:2 locally.
+        if ! docker image inspect registry:2 &>/dev/null; then
+            echo "  Loading registry:2 into CI Docker (B56 fix)..."
+            docker load < docker-images/registry.tar 2>&1 || {
+                echo "ERROR: Failed to load registry:2 — cannot populate local registry"
+                sync
+                umount /mnt/cubeos-image
+                losetup -d "$LOOPDEV"
+                exit 1
+            }
+        fi
+        echo "  registry:2 available on CI Docker: OK"
+
+        # ── Step 3: Start temp registry:2 against mounted storage ──────
+        # The registry container runs on x86_64 but stores ARM64 manifests
+        # — this is fine because registry:2 storage is arch-agnostic.
+        #
+        # B66: Use --network=container sharing so the temp registry is
+        # reachable at localhost:5099 from this CI job. Previous approach
+        # used bridge networking with -p port mapping, which fails because
+        # the CI job runs in a container — the mapped port binds to the
+        # Docker HOST, unreachable at localhost from inside the CI container.
+        # Container IP fallback also fails when CI job and temp registry
+        # are on different bridge networks.
+        #
+        # By sharing the CI job's network namespace, both processes see the
+        # same localhost — no port mapping or IP discovery needed.
+        echo "Starting temporary registry:2..."
+        docker rm -f cubeos-temp-registry 2>/dev/null || true
+
+        # Discover our own container ID for --network=container: sharing
+        # Most reliable: GitLab Runner labels build containers with job metadata
+        CI_CONTAINER_ID=""
+        if [ -n "$CI_JOB_ID" ]; then
+          CI_CONTAINER_ID=$(docker ps -q --filter "label=com.gitlab.gitlab-runner.job.id=$CI_JOB_ID" 2>/dev/null | head -1 || true)
+        fi
+        # Fallback 1: cgroup v1 — container ID in /proc/self/cgroup
+        if [ -z "$CI_CONTAINER_ID" ]; then
+          CI_CONTAINER_ID=$(sed -nE 's|.*[:/]([a-f0-9]{64}).*|\1|p' /proc/self/cgroup 2>/dev/null | head -1 || true)
+        fi
+        # Fallback 2: cgroup v2 — container ID in /proc/self/mountinfo
+        if [ -z "$CI_CONTAINER_ID" ]; then
+          CI_CONTAINER_ID=$(sed -nE 's|.*docker/containers/([a-f0-9]{64}).*|\1|p' /proc/self/mountinfo 2>/dev/null | head -1 || true)
+        fi
+
+        echo "  Container ID detection result: '${CI_CONTAINER_ID:0:16}...'"
+
+        if [ -n "$CI_CONTAINER_ID" ] && docker inspect "$CI_CONTAINER_ID" &>/dev/null; then
+          echo "  CI container detected: ${CI_CONTAINER_ID:0:12}... — using shared network namespace"
+          docker run -d --name cubeos-temp-registry \
+            --network=container:"$CI_CONTAINER_ID" \
+            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
+            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+            -e REGISTRY_HTTP_ADDR=:5099 \
+            registry:2
+          REGISTRY_URL="http://127.0.0.1:5099"
+        else
+          echo "  Not running inside Docker — using bridge networking with port mapping"
+          docker run -d --name cubeos-temp-registry \
+            -p 5099:5099 \
+            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
+            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+            -e REGISTRY_HTTP_ADDR=:5099 \
+            registry:2
+          REGISTRY_URL="http://127.0.0.1:5099"
+        fi
+
+        echo "  Registry URL: ${REGISTRY_URL}"
+        sleep 2
+
+        # Wait for registry to be ready
+        for i in $(seq 1 30); do
+          if curl -sf "${REGISTRY_URL}/v2/" &>/dev/null; then
+            echo "  Temp registry ready (${i}s)"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "ERROR: Temp registry failed to start"
+            docker logs cubeos-temp-registry 2>&1 | tail -10
+            docker rm -f cubeos-temp-registry 2>/dev/null || true
+            umount /mnt/cubeos-image
+            losetup -d "$LOOPDEV"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # ── Step 4: Push curated images into registry ──────────────────
+        PUSHED=0
+        PUSH_FAILED=0
+        # Extract host:port from REGISTRY_URL for docker:// transport
+        REGISTRY_HOST=$(echo "$REGISTRY_URL" | sed 's|http://||')
+
+        # Read manifest to get repo:tag mapping for each tarball
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
+          TARBALL="curated-images/${FILENAME}"
+
+          # Strip registry host prefix for the repo name in our local registry
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+
+          if [ ! -f "$TARBALL" ]; then
+            echo "  SKIP: ${TARBALL} not found"
+            PUSH_FAILED=$((PUSH_FAILED + 1))
+            continue
+          fi
+
+          echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
+          if skopeo copy \
+            --override-arch arm64 \
+            --override-os linux \
+            --dest-tls-verify=false \
+            "docker-archive:${TARBALL}" \
+            "docker://${REGISTRY_HOST}/${REPO_NAME}:${TAG}" 2>&1; then
+            echo "    OK"
+            PUSHED=$((PUSHED + 1))
+          else
+            echo "    FAILED"
+            PUSH_FAILED=$((PUSH_FAILED + 1))
+          fi
+        done < skopeo/curated-apps.txt
+
+        echo ""
+        echo "Registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
+
+        # B56: Fail build if any curated image failed to push — silent failures
+        # previously caused kiwix to show 0/1 replicas on boot.
+        if [ "$PUSH_FAILED" -gt 0 ]; then
+            echo "ERROR: ${PUSH_FAILED} curated images failed to push to registry!"
+            echo "Kiwix and other curated apps will not work on the built image."
+            docker stop cubeos-temp-registry 2>/dev/null || true
+            docker rm cubeos-temp-registry 2>/dev/null || true
+            sync
+            umount /mnt/cubeos-image
+            losetup -d "$LOOPDEV"
+            exit 1
+        fi
+
+        # ── Step 5: Validate registry contents ─────────────────────────
+        echo ""
+        echo "Validating registry contents..."
+        CATALOG=$(curl -sf "${REGISTRY_URL}/v2/_catalog" 2>/dev/null || echo '{"repositories":[]}')
+        echo "  Catalog: ${CATALOG}"
+
+        # Verify each expected image has a valid manifest with config digest
+        VALID=0
+        INVALID=0
+        while IFS= read -r line; do
+          [[ "$line" =~ ^[[:space:]]*# ]] && continue
+          [[ -z "${line// }" ]] && continue
+
+          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+
+          # B56: Verify manifest exists AND has a config digest (proves the image
+          # layers are actually stored, not just an empty manifest stub)
+          MANIFEST_RESP=$(curl -sf \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "${REGISTRY_URL}/v2/${REPO_NAME}/manifests/${TAG}" 2>/dev/null || echo "")
+
+          if [ -n "$MANIFEST_RESP" ]; then
+            # Extract config digest without python3 (not available on CI host)
+            CONFIG_DIGEST=$(echo "$MANIFEST_RESP" | grep -o '"digest"[[:space:]]*:[[:space:]]*"sha256:[a-f0-9]*"' | head -1 | grep -o 'sha256:[a-f0-9]*' || echo "")
+
+            if [ -n "$CONFIG_DIGEST" ]; then
+              echo "  VALID: ${REPO_NAME}:${TAG} (config: ${CONFIG_DIGEST:0:19}...)"
+              VALID=$((VALID + 1))
+            else
+              echo "  INVALID: ${REPO_NAME}:${TAG} (no config digest in manifest)"
+              INVALID=$((INVALID + 1))
+            fi
+          else
+            echo "  INVALID: ${REPO_NAME}:${TAG} (manifest not found)"
+            INVALID=$((INVALID + 1))
+          fi
+        done < skopeo/curated-apps.txt
+
+        echo "  Validated: ${VALID} images"
+        if [ "$INVALID" -gt 0 ]; then
+          echo "ERROR: ${INVALID} curated images failed validation!"
+          docker stop cubeos-temp-registry 2>/dev/null || true
+          docker rm cubeos-temp-registry 2>/dev/null || true
+          sync
+          umount /mnt/cubeos-image
+          losetup -d "$LOOPDEV"
+          exit 1
+        fi
+
+        # ── Step 6: Stop temp registry ─────────────────────────────────
+        echo "Stopping temp registry..."
+        docker stop cubeos-temp-registry 2>/dev/null || true
+        docker rm cubeos-temp-registry 2>/dev/null || true
+
+        # Verify registry storage on disk
+        REGISTRY_SIZE=$(du -sh /mnt/cubeos-image/cubeos/data/registry/ 2>/dev/null | cut -f1)
+        echo "  Registry storage on disk: ${REGISTRY_SIZE}"
+
+        # ── Step 7: Copy ZIM content into image ───────────────────────
+        if [ -d "zim-content" ] && ls zim-content/*.zim &>/dev/null; then
+          echo ""
+          echo "Copying ZIM files into image..."
+          mkdir -p /mnt/cubeos-image/cubeos/data/kiwix
+          cp zim-content/*.zim /mnt/cubeos-image/cubeos/data/kiwix/
+          # Kiwix container runs as UID 1001 — ensure it can read the files
+          chown -R 1001:1001 /mnt/cubeos-image/cubeos/data/kiwix/
+          ZIM_SIZE=$(du -sh /mnt/cubeos-image/cubeos/data/kiwix/ | cut -f1)
+          echo "  ZIM content: ${ZIM_SIZE}"
+        else
+          echo ""
+          echo "No ZIM files to copy (Kiwix will show empty library)"
+          mkdir -p /mnt/cubeos-image/cubeos/data/kiwix
+          chown -R 1001:1001 /mnt/cubeos-image/cubeos/data/kiwix/
+        fi
+
+        # ── Step 8: Unmount ────────────────────────────────────────────
+        sync
+        umount /mnt/cubeos-image
+        losetup -d "$LOOPDEV"
+        rmdir /mnt/cubeos-image 2>/dev/null || true
+
+        echo ""
+        echo "Phase 1c: OK — ${PUSHED} images in registry, ZIM content copied"
+        echo "Phase 1c: OK ($(date -u +%H:%M:%S))"
+      fi
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 2: Shrink + Compress"
+      echo "============================================================"
+
+      # PiShrink
+      echo "[1/5] Running PiShrink..."
+      wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping"
+      if [ -f pishrink.sh ]; then
+        chmod +x pishrink.sh
+        bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN PiShrink failed (non-fatal)"
+      fi
+
+      # Zerofree
+      echo "[2/5] Running zerofree..."
+      LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+      echo "Loop device: $LOOPDEV"
+      sleep 2
+      ROOT_PART="${LOOPDEV}p2"
+      if [ -b "$ROOT_PART" ]; then
+        e2fsck -fy "$ROOT_PART" || true
+        zerofree -v "$ROOT_PART" || echo "WARN zerofree failed (non-fatal)"
+      fi
+      losetup -d "$LOOPDEV"
+
+      # XZ compress
+      echo "[3/5] Compressing with xz -6 (multi-threaded)..."
+      ls -lh ${IMAGE_NAME}.img
+      xz -6 -T0 -v ${IMAGE_NAME}.img
+
+      # Checksums
+      echo "[4/5] Calculating checksums..."
+      sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
+      md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "  Phase 3: Upload to GitLab Package Registry"
+      echo "============================================================"
+
+      echo "[5/5] Uploading..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz \
+           --connect-timeout 30 \
+           --max-time 1800 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+      echo "  Image uploaded."
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+      echo "  SHA256 uploaded."
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz.md5 \
+           --connect-timeout 30 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.md5"
+      echo "  MD5 uploaded."
+
+      echo ""
+      echo "============================================================"
+      echo "  CubeOS Release Image — Build Complete"
+      echo "============================================================"
+      echo "  Version   ${CUBEOS_VERSION}"
+      echo "  File      ${IMAGE_NAME}.img.xz"
+      echo "  Size      $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+      echo "  SHA256    $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
+      echo "  Base      cubeos-base/${BASE_VERSION}"
+      echo "============================================================"
+  artifacts:
+    paths:
+      - "${IMAGE_NAME}.img.xz.sha256"
+      - "${IMAGE_NAME}.img.xz.md5"
+    expire_in: 30 days
+  after_script:
+    - docker rm -f cubeos-temp-registry 2>/dev/null || true
+    - umount /mnt/cubeos-image 2>/dev/null || true
+    - losetup -D 2>/dev/null || true
+  timeout: 60m
+
+# =============================================================================
+# Create GitLab Release (tag push only — uses pre-built image from Package Registry)
+# =============================================================================
+create-gitlab-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  script:
+    - |
+      echo "Creating GitLab release for ${CI_COMMIT_TAG}..."
+
+      # Download checksum from Package Registry (uploaded during build-image)
+      echo "Fetching checksum from Package Registry..."
+      apk add --no-cache curl 2>/dev/null || true
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o ${IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+
+      CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
+      echo "SHA256: ${CHECKSUM}"
+
+      if [ -z "$CHECKSUM" ]; then
+        echo "ERROR: Image not found in Package Registry."
+        echo "Did you push to main first? build-image must succeed before tagging."
+        exit 1
+      fi
+  release:
+    tag_name: "${CI_COMMIT_TAG}"
+    name: "CubeOS ${CI_COMMIT_TAG}"
+    description: |
+      ## CubeOS ${CI_COMMIT_TAG}
+
+      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+
+      ### Quick Start
+      1. Flash the .img.xz to SD card using Raspberry Pi Imager
+      2. Boot the Pi
+      3. Connect to WiFi AP (check console output for SSID and password)
+      4. Open http://cubeos.cube in your browser
+      5. Complete the setup wizard
+
+      ### Default Credentials
+      - Dashboard: admin / cubeos
+      - SSH: key-only (configure in wizard)
+    assets:
+      links:
+        - name: "${IMAGE_NAME}.img.xz"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+        - name: "SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+
+# =============================================================================
+# Create GitHub Release (mirror — tag push only, with binary upload)
+# =============================================================================
+# Alpha.14+: Image is ~1.4G (under GitHub's 2GB asset limit), so we upload
+# the image directly as a release asset for easy downloads.
+# =============================================================================
+create-github-release:
+  stage: release
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  script:
+    - |
+      set -e
+      apk add --no-cache curl jq
+
+      if [ -z "${GHCR_TOKEN:-}" ]; then
+        echo "WARN: GHCR_TOKEN not set — skipping GitHub release."
+        exit 0
+      fi
+
+      IMAGE_FILE="${IMAGE_NAME}.img.xz"
+      CHECKSUM_FILE="${IMAGE_NAME}.img.xz.sha256"
+
+      # --- Step 1: Download image + checksum from GitLab Package Registry ---
+      echo "============================================================"
+      echo "  Step 1: Download from GitLab Package Registry"
+      echo "============================================================"
+
+      echo "Downloading ${CHECKSUM_FILE}..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${CHECKSUM_FILE}" \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}"
+
+      CHECKSUM=$(cut -d' ' -f1 "${CHECKSUM_FILE}")
+      echo "SHA256: ${CHECKSUM}"
+
+      if [ -z "$CHECKSUM" ]; then
+        echo "ERROR: Image not found in Package Registry."
+        echo "Did you push to main first? build-image must succeed before tagging."
+        exit 1
+      fi
+
+      echo "Downloading ${IMAGE_FILE} (~1.4G)..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${IMAGE_FILE}" \
+           --connect-timeout 30 \
+           --max-time 3600 \
+           --retry 3 \
+           --retry-delay 60 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}"
+
+      echo "Downloaded: $(du -h ${IMAGE_FILE} | cut -f1)"
+
+      # Verify checksum
+      echo "Verifying checksum..."
+      echo "${CHECKSUM}  ${IMAGE_FILE}" | sha256sum -c - || {
+        echo "ERROR: Checksum mismatch!"
+        exit 1
+      }
+
+      # --- Step 2: Create GitHub Release ---
+      echo "============================================================"
+      echo "  Step 2: Create GitHub Release"
+      echo "============================================================"
+
+      RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
+
+      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+
+      ### Download
+
+      | File | Link |
+      |------|------|
+      | \`${IMAGE_FILE}\` | [Download from GitLab](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}) |
+      | SHA256 Checksum | [${CHECKSUM_FILE}](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}) |
+
+      **SHA256:** \`${CHECKSUM}\`
+
+      ### Quick Start
+      1. Download \`${IMAGE_FILE}\` from Assets below
+      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) → Use custom
+      3. Boot the Pi — connect to the CubeOS WiFi AP
+      4. Open http://cubeos.cube and complete setup wizard
+
+      ### Default Credentials
+      - **SSH:** cubeos / cubeos
+      - **Dashboard:** admin / admin"
+
+      echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
+      RESPONSE=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases" \
+        -d "$(jq -n \
+          --arg tag "${CI_COMMIT_TAG}" \
+          --arg name "CubeOS ${CI_COMMIT_TAG}" \
+          --arg body "${RELEASE_BODY}" \
+          '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: true}'
+        )")
+
+      HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+      RESP_BODY=$(echo "$RESPONSE" | sed '$d')
+      echo "GitHub API: HTTP ${HTTP_CODE}"
+
+      if [ "$HTTP_CODE" = "201" ]; then
+        RELEASE_ID=$(echo "$RESP_BODY" | jq -r '.id')
+        UPLOAD_URL=$(echo "$RESP_BODY" | jq -r '.upload_url' | sed 's/{?name,label}//')
+        echo "  Release created (ID: ${RELEASE_ID})"
+      elif [ "$HTTP_CODE" = "422" ]; then
+        echo "  Release already exists — fetching existing release..."
+        EXISTING=$(curl -s \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CI_COMMIT_TAG}")
+        RELEASE_ID=$(echo "$EXISTING" | jq -r '.id')
+        UPLOAD_URL=$(echo "$EXISTING" | jq -r '.upload_url' | sed 's/{?name,label}//')
+
+        # Update release body
+        curl -s -X PATCH \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}" \
+          -d "$(jq -n \
+            --arg body "${RELEASE_BODY}" \
+            '{body: $body}'
+          )" > /dev/null
+
+        # Delete existing assets (re-upload fresh)
+        echo "  Deleting old assets..."
+        ASSETS=$(curl -s \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets")
+        echo "$ASSETS" | jq -r '.[].id' | while read ASSET_ID; do
+          curl -s -X DELETE \
+            -H "Authorization: token ${GHCR_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}" || true
+        done
+
+        echo "  Updated existing release (ID: ${RELEASE_ID})"
+      else
+        echo "  ERROR: Unexpected response."
+        echo "$RESP_BODY" | jq . 2>/dev/null || echo "$RESP_BODY"
+        exit 1
+      fi
+
+      # --- Step 3: Upload image as release asset ---
+      echo "============================================================"
+      echo "  Step 3: Upload image to GitHub Release"
+      echo "============================================================"
+      echo "Uploading ${IMAGE_FILE} ($(du -h ${IMAGE_FILE} | cut -f1))..."
+      UPLOAD_RESP=$(curl -s -w "\n%{http_code}" \
+        --max-time 3600 \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: application/x-xz" \
+        "${UPLOAD_URL}?name=${IMAGE_FILE}" \
+        --data-binary "@${IMAGE_FILE}")
+
+      UPLOAD_CODE=$(echo "$UPLOAD_RESP" | tail -1)
+      UPLOAD_BODY=$(echo "$UPLOAD_RESP" | sed '$d')
+      if [ "$UPLOAD_CODE" = "201" ]; then
+        echo "  Image uploaded: $(echo "$UPLOAD_BODY" | jq -r '.browser_download_url')"
+      else
+        echo "  ERROR uploading image (HTTP ${UPLOAD_CODE})"
+        echo "$UPLOAD_BODY" | jq . 2>/dev/null || echo "$UPLOAD_BODY"
+        exit 1
+      fi
+
+      # --- Step 4: Upload checksum as release asset ---
+      echo "Uploading ${CHECKSUM_FILE}..."
+      CHKSUM_RESP=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: text/plain" \
+        "${UPLOAD_URL}?name=${CHECKSUM_FILE}" \
+        --data-binary "@${CHECKSUM_FILE}")
+
+      CHKSUM_CODE=$(echo "$CHKSUM_RESP" | tail -1)
+      if [ "$CHKSUM_CODE" = "201" ]; then
+        echo "  Checksum uploaded."
+      else
+        echo "  WARN: Checksum upload failed (HTTP ${CHKSUM_CODE}) — non-fatal."
+      fi
+
+      echo "============================================================"
+      echo "  GitHub Release complete!"
+      echo "  https://github.com/${GITHUB_REPO}/releases/tag/${CI_COMMIT_TAG}"
+      echo "============================================================"
+  allow_failure: true
+  timeout: 60m
