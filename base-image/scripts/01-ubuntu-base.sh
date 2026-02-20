@@ -278,14 +278,23 @@ install_group "Security / VPN" \
 # B65: fail2ban on Python 3.12+ needs both asyncore AND asynchat.
 # - python3-pyasyncore: exists in apt (provides asyncore)
 # - python3-pyasynchat: does NOT exist in Ubuntu 24.04 apt repos
-#   Must install via pip. fail2ban does NOT vendor asynchat internally —
-#   it imports asynchat at startup and crashes with "No module named 'asynchat'"
-#   if missing. This bug persisted through Alpha.22, .23, and .24.
+#   python3-pip is also NOT installed (QEMU dependency conflicts).
+#   Install asynchat from PyPI tarball directly. fail2ban does NOT vendor
+#   asynchat internally — it imports asynchat at startup and crashes with
+#   "No module named 'asynchat'" if missing. Bug persisted Alpha.22–.24.
 echo "[BASE] Installing fail2ban Python 3.12 dependencies (B65)..."
 apt-get install -y --no-install-recommends python3-pyasyncore
 echo "[BASE]   python3-pyasyncore: installed (apt)"
-pip3 install pyasynchat --break-system-packages 2>&1 | tail -3
-echo "[BASE]   pyasynchat: installed (pip — not available in apt)"
+
+# Install pyasynchat from PyPI tarball (no pip available)
+ASYNCHAT_VERSION="1.0.4"
+echo "[BASE]   Installing pyasynchat ${ASYNCHAT_VERSION} from PyPI tarball..."
+curl -sL -o /tmp/pyasynchat.tar.gz \
+  "https://files.pythonhosted.org/packages/source/p/pyasynchat/pyasynchat-${ASYNCHAT_VERSION}.tar.gz"
+tar xzf /tmp/pyasynchat.tar.gz -C /tmp/
+cp -r "/tmp/pyasynchat-${ASYNCHAT_VERSION}/asynchat" /usr/lib/python3/dist-packages/
+rm -rf /tmp/pyasynchat.tar.gz /tmp/pyasynchat-${ASYNCHAT_VERSION}
+echo "[BASE]   pyasynchat: installed (tarball — pip not available, apt has no package)"
 
 # Verify BOTH asyncore AND asynchat are importable
 if python3 -c "import asyncore; import asynchat; print('asyncore+asynchat: OK')" 2>&1; then
