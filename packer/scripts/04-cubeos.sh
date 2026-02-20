@@ -37,6 +37,10 @@ fi
 CUBEOS_VERSION="${CUBEOS_VERSION:-0.0.0-dev}"
 echo "[04] Building CubeOS version: ${CUBEOS_VERSION}"
 
+# Write version to /etc for runtime queries (T1.1)
+echo "${CUBEOS_VERSION}" > /etc/cubeos-version
+echo "[04] Created /etc/cubeos-version: ${CUBEOS_VERSION}"
+
 # ---------------------------------------------------------------------------
 # Directory structure
 # ---------------------------------------------------------------------------
