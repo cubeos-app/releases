@@ -496,58 +496,53 @@ build-image:
         fi
         echo "  registry:2 available on CI Docker: OK"
 
-        # ── Step 3: Start temp registry:2 against mounted storage ──────
-        # The registry container runs on x86_64 but stores ARM64 manifests
-        # — this is fine because registry:2 storage is arch-agnostic.
+        # ── Step 3: Start temp registry:2 against local storage ──────
+        # B66v2: Previous approach used -v volume mount to map the mounted
+        # image partition into the temp registry container. This FAILS in
+        # Docker-in-Docker (GitLab CI): the -v path is interpreted from the
+        # Docker HOST's perspective, not the CI container's mount namespace.
+        # The CI container loop-mounts the image at /mnt/cubeos-image, but
+        # the Docker host has nothing at that path — so the registry writes
+        # to an empty dir on the host. Validation passes (queries the running
+        # registry) but data never reaches the disk image.
         #
-        # B66: Use --network=container sharing so the temp registry is
-        # reachable at localhost:5099 from this CI job. Previous approach
-        # used bridge networking with -p port mapping, which fails because
-        # the CI job runs in a container — the mapped port binds to the
-        # Docker HOST, unreachable at localhost from inside the CI container.
-        # Container IP fallback also fails when CI job and temp registry
-        # are on different bridge networks.
-        #
-        # By sharing the CI job's network namespace, both processes see the
-        # same localhost — no port mapping or IP discovery needed.
-        echo "Starting temporary registry:2..."
+        # FIX: Start registry WITHOUT a host volume. Push images to it.
+        # Then use `docker cp` to extract the registry data back into the
+        # CI container's mount namespace (which sees the real partition).
+        echo "Starting temporary registry:2 (no volume — will docker cp after push)..."
         docker rm -f cubeos-temp-registry 2>/dev/null || true
 
-        # Discover our own container ID for --network=container: sharing
-        # Most reliable: GitLab Runner labels build containers with job metadata
-        CI_CONTAINER_ID=""
-        if [ -n "$CI_JOB_ID" ]; then
-          CI_CONTAINER_ID=$(docker ps -q --filter "label=com.gitlab.gitlab-runner.job.id=$CI_JOB_ID" 2>/dev/null | head -1 || true)
-        fi
-        # Fallback 1: cgroup v1 — container ID in /proc/self/cgroup
-        if [ -z "$CI_CONTAINER_ID" ]; then
-          CI_CONTAINER_ID=$(sed -nE 's|.*[:/]([a-f0-9]{64}).*|\1|p' /proc/self/cgroup 2>/dev/null | head -1 || true)
-        fi
-        # Fallback 2: cgroup v2 — container ID in /proc/self/mountinfo
-        if [ -z "$CI_CONTAINER_ID" ]; then
-          CI_CONTAINER_ID=$(sed -nE 's|.*docker/containers/([a-f0-9]{64}).*|\1|p' /proc/self/mountinfo 2>/dev/null | head -1 || true)
-        fi
+        docker run -d --name cubeos-temp-registry \
+          -p 5099:5099 \
+          -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+          -e REGISTRY_HTTP_ADDR=:5099 \
+          registry:2
 
-        echo "  Container ID detection result: '${CI_CONTAINER_ID:0:16}...'"
+        # Discover reachable URL. In DinD, port-mapped container binds to
+        # the Docker host — find container IP as fallback.
+        REGISTRY_URL=""
+        sleep 3
 
-        if [ -n "$CI_CONTAINER_ID" ] && docker inspect "$CI_CONTAINER_ID" &>/dev/null; then
-          echo "  CI container detected: ${CI_CONTAINER_ID:0:12}... — using shared network namespace"
-          docker run -d --name cubeos-temp-registry \
-            --network=container:"$CI_CONTAINER_ID" \
-            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
-            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
-            -e REGISTRY_HTTP_ADDR=:5099 \
-            registry:2
+        # Try localhost first (works when not in DinD)
+        if curl -sf "http://127.0.0.1:5099/v2/" &>/dev/null; then
           REGISTRY_URL="http://127.0.0.1:5099"
+          echo "  Registry reachable at localhost:5099"
         else
-          echo "  Not running inside Docker — using bridge networking with port mapping"
-          docker run -d --name cubeos-temp-registry \
-            -p 5099:5099 \
-            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
-            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
-            -e REGISTRY_HTTP_ADDR=:5099 \
-            registry:2
-          REGISTRY_URL="http://127.0.0.1:5099"
+          # DinD fallback: get container IP on bridge network
+          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cubeos-temp-registry 2>/dev/null || true)
+          if [ -n "$CONTAINER_IP" ] && curl -sf "http://${CONTAINER_IP}:5099/v2/" &>/dev/null; then
+            REGISTRY_URL="http://${CONTAINER_IP}:5099"
+            echo "  Registry reachable at container IP ${CONTAINER_IP}:5099"
+          fi
+        fi
+
+        if [ -z "$REGISTRY_URL" ]; then
+          echo "ERROR: Cannot reach temp registry at localhost:5099 or container IP"
+          docker logs cubeos-temp-registry 2>&1 | tail -10
+          docker rm -f cubeos-temp-registry 2>/dev/null || true
+          umount /mnt/cubeos-image
+          losetup -d "$LOOPDEV"
+          exit 1
         fi
 
         echo "  Registry URL: ${REGISTRY_URL}"
@@ -677,7 +672,28 @@ build-image:
           exit 1
         fi
 
-        # ── Step 6: Stop temp registry ─────────────────────────────────
+        # ── Step 6: Copy registry data to mounted image, then stop ────
+        # B66v2: Registry data lives inside the container (no volume mount).
+        # Use docker cp to extract it to the mounted image partition.
+        echo "Copying registry data from container to image..."
+        rm -rf /mnt/cubeos-image/cubeos/data/registry/*
+        docker cp cubeos-temp-registry:/var/lib/registry/. /mnt/cubeos-image/cubeos/data/registry/
+
+        # Verify data was actually copied
+        COPY_SIZE=$(du -sh /mnt/cubeos-image/cubeos/data/registry/ 2>/dev/null | cut -f1)
+        REPO_COUNT=$(find /mnt/cubeos-image/cubeos/data/registry/docker/registry/v2/repositories -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        echo "  Copied: ${COPY_SIZE} (${REPO_COUNT} repositories on disk)"
+
+        if [ "$REPO_COUNT" -eq 0 ]; then
+          echo "ERROR: docker cp produced empty registry — no repositories on disk!"
+          docker logs cubeos-temp-registry 2>&1 | tail -10
+          docker rm -f cubeos-temp-registry 2>/dev/null || true
+          sync
+          umount /mnt/cubeos-image
+          losetup -d "$LOOPDEV"
+          exit 1
+        fi
+
         echo "Stopping temp registry..."
         docker stop cubeos-temp-registry 2>/dev/null || true
         docker rm cubeos-temp-registry 2>/dev/null || true

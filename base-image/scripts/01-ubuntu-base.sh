@@ -275,18 +275,25 @@ install_group "Security / VPN" \
     openvpn \
     tor
 
-# B65: fail2ban 1.0.2-3ubuntu0.1 (noble-updates) vendors asynchat internally.
-# It only needs python3-pyasyncore as an external dependency (exists in apt).
-# python3-pyasynchat does NOT exist in any Ubuntu repo — and we don't need it.
-echo "[BASE] Installing fail2ban Python 3.12 dependency (B65)..."
+# B65: fail2ban on Python 3.12+ needs both asyncore AND asynchat.
+# - python3-pyasyncore: exists in apt (provides asyncore)
+# - python3-pyasynchat: does NOT exist in Ubuntu 24.04 apt repos
+#   Must install via pip. fail2ban does NOT vendor asynchat internally —
+#   it imports asynchat at startup and crashes with "No module named 'asynchat'"
+#   if missing. This bug persisted through Alpha.22, .23, and .24.
+echo "[BASE] Installing fail2ban Python 3.12 dependencies (B65)..."
 apt-get install -y --no-install-recommends python3-pyasyncore
-echo "[BASE]   python3-pyasyncore: installed"
+echo "[BASE]   python3-pyasyncore: installed (apt)"
+pip3 install pyasynchat --break-system-packages 2>&1 | tail -3
+echo "[BASE]   pyasynchat: installed (pip — not available in apt)"
 
-# Verify asyncore is importable (asynchat is vendored inside fail2ban itself)
-if python3 -c "import asyncore; print('asyncore: OK')" 2>&1; then
-    echo "[BASE]   B65 verification: PASS"
+# Verify BOTH asyncore AND asynchat are importable
+if python3 -c "import asyncore; import asynchat; print('asyncore+asynchat: OK')" 2>&1; then
+    echo "[BASE]   B65 verification: PASS (both modules importable)"
 else
-    echo "[BASE]   FATAL: asyncore not importable. fail2ban will crash."
+    echo "[BASE]   FATAL: asyncore or asynchat not importable. fail2ban will crash."
+    echo "[BASE]   asyncore: $(python3 -c 'import asyncore' 2>&1)"
+    echo "[BASE]   asynchat: $(python3 -c 'import asynchat' 2>&1)"
     exit 1
 fi
 
@@ -622,13 +629,15 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
     fi
 done
 
-# B65: Verify asyncore is importable (asynchat is vendored inside fail2ban)
+# B65: Verify both asyncore AND asynchat are importable (fail2ban needs both)
 echo ""
-echo "[BASE] Verifying fail2ban asyncore dependency (B65)..."
-if python3 -c "import asyncore" 2>/dev/null; then
-    echo "[BASE]   fail2ban Python deps: OK (asyncore importable)"
+echo "[BASE] Verifying fail2ban Python dependencies (B65)..."
+if python3 -c "import asyncore; import asynchat" 2>/dev/null; then
+    echo "[BASE]   fail2ban Python deps: OK (asyncore+asynchat importable)"
 else
-    echo "[BASE]   fail2ban Python deps: MISSING (asyncore)"
+    echo "[BASE]   fail2ban Python deps: MISSING"
+    echo "[BASE]     asyncore: $(python3 -c 'import asyncore' 2>&1)"
+    echo "[BASE]     asynchat: $(python3 -c 'import asynchat' 2>&1)"
     VERIFY_OK=false
 fi
 
