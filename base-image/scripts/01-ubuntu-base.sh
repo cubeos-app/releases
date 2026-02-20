@@ -406,8 +406,11 @@ install_group "Cloud-init" \
 
 # NOTE: python3-pip intentionally NOT installed.
 # On Ubuntu 24.04 it causes dependency conflicts under QEMU.
+# python3-venv provides ensurepip for the B65 pip fallback path
+# (python3-pyasynchat doesn't exist in Ubuntu 24.04 ARM64 repos).
 install_group "Python (no pip)" \
-    python3
+    python3 \
+    python3-venv
 
 # ---------------------------------------------------------------------------
 # Install Docker CE
