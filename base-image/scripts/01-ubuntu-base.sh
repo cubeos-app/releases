@@ -275,43 +275,19 @@ install_group "Security / VPN" \
     openvpn \
     tor
 
-# B65: fail2ban 1.0.2 on Python 3.12 crashes with "No module named asynchat".
-# Python 3.12 removed asynchat/asyncore from stdlib. These backport packages
-# provide the compatibility modules fail2ban needs.
-#
-# Strategy: Try apt first (fastest, no pip needed). If apt packages don't exist
-# in Ubuntu 24.04 ARM64 repos, fall back to pip install. Verify either way.
-echo "[BASE] Installing Python 3.12 compatibility for fail2ban (B65)..."
-B65_OK=false
-if apt-get install -y --no-install-recommends \
-    python3-pyasyncore python3-pyasynchat; then
-    echo "[BASE]   asynchat/asyncore apt packages: installed"
-    B65_OK=true
-else
-    echo "[BASE]   apt packages not available — falling back to pip..."
-    # Bootstrap pip (not installed by default) and install from PyPI
-    python3 -m ensurepip --upgrade 2>&1 || true
-    if python3 -m pip install pyasyncore pyasynchat --break-system-packages; then
-        echo "[BASE]   asynchat/asyncore pip packages: installed"
-        B65_OK=true
-    else
-        echo "[BASE]   WARN: pip install also failed"
-    fi
-    # Clean up pip cache (don't leave it in the base image)
-    python3 -m pip cache purge 2>/dev/null || true
-    rm -rf /root/.cache/pip 2>/dev/null || true
-fi
+# B65: fail2ban 1.0.2-3ubuntu0.1 (noble-updates) vendors asynchat internally.
+# It only needs python3-pyasyncore as an external dependency (exists in apt).
+# python3-pyasynchat does NOT exist in any Ubuntu repo — and we don't need it.
+echo "[BASE] Installing fail2ban Python 3.12 dependency (B65)..."
+apt-get install -y --no-install-recommends python3-pyasyncore
+echo "[BASE]   python3-pyasyncore: installed"
 
-# B65: Verify the modules can actually be imported (catches silent install failures)
-if python3 -c "import asynchat; import asyncore; print('asynchat+asyncore: importable')" 2>&1; then
+# Verify asyncore is importable (asynchat is vendored inside fail2ban itself)
+if python3 -c "import asyncore; print('asyncore: OK')" 2>&1; then
     echo "[BASE]   B65 verification: PASS"
 else
-    echo "[BASE]   B65 verification: FAIL — fail2ban will crash at runtime!"
-    echo "[BASE]   Debug: python3 -c 'import asynchat' on the built image"
-    if [ "$B65_OK" = false ]; then
-        echo "[BASE]   FATAL: No asynchat/asyncore available. fail2ban is broken."
-        exit 1
-    fi
+    echo "[BASE]   FATAL: asyncore not importable. fail2ban will crash."
+    exit 1
 fi
 
 # ===== GROUP 4: Raspberry Pi Hardware =====
@@ -406,11 +382,8 @@ install_group "Cloud-init" \
 
 # NOTE: python3-pip intentionally NOT installed.
 # On Ubuntu 24.04 it causes dependency conflicts under QEMU.
-# python3-venv provides ensurepip for the B65 pip fallback path
-# (python3-pyasynchat doesn't exist in Ubuntu 24.04 ARM64 repos).
 install_group "Python (no pip)" \
-    python3 \
-    python3-venv
+    python3
 
 # ---------------------------------------------------------------------------
 # Install Docker CE
@@ -478,7 +451,6 @@ PROTECTED_PACKAGES=(
     bc                  # Calculator for scripts
     fail2ban            # B65: SSH intrusion prevention
     python3-pyasyncore  # B65: fail2ban asyncore compat (Python 3.12)
-    python3-pyasynchat  # B65: fail2ban asynchat compat (Python 3.12)
     wpasupplicant       # B52: SERVER_WIFI mode needs wpa_supplicant on host
     networkd-dispatcher # B52: auto eth0 carrier detection hooks
 )
