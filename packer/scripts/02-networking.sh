@@ -318,31 +318,44 @@ rm -f /etc/networkd-dispatcher/no-carrier.d/50-cubeos-eth-offline
 rm -f /etc/networkd-dispatcher/off.d/50-cubeos-eth-offline
 
 # ---------------------------------------------------------------------------
-# T03 (Network Modes Batch 1): udev rule for USB WiFi dongle → wlan1
+# T03 (Network Modes Batch 1): USB WiFi dongle → wlan1 naming
 # ---------------------------------------------------------------------------
 # Ensures any USB WiFi adapter is consistently named 'wlan1' regardless of
 # chipset. This is critical for ONLINE_WIFI mode where wlan0 is the AP and
 # wlan1 is the upstream WiFi client via USB dongle.
 #
-# Rule matches: any USB wireless device (type 1 = ARPHRD_ETHER on wireless).
-# The built-in WiFi (wlan0) is on the platform bus, not USB, so this rule
-# won't match it.
+# IMPORTANT: Uses a systemd .link file, NOT a udev NAME= rule.
+# systemd-networkd's predictable naming (73-usb-net-by-mac.link) overrides
+# udev NAME= rules, producing wlx<MAC> names instead of wlan1.
+# A .link file with a lower number (10-) takes precedence.
+#
+# The built-in WiFi (wlan0) is on the platform bus, not USB, so the
+# Path=*-usb-* match won't affect it.
 # ---------------------------------------------------------------------------
-echo "[02] Installing udev rule for USB WiFi → wlan1..."
+echo "[02] Installing systemd .link for USB WiFi → wlan1..."
 
-cat > /etc/udev/rules.d/70-cubeos-usb-wifi.rules << 'UDEV_WIFI'
+# Remove the old udev rule (broken — systemd overrides it)
+rm -f /etc/udev/rules.d/70-cubeos-usb-wifi.rules
+
+cat > /etc/systemd/network/10-cubeos-usb-wifi.link << 'LINK_WIFI'
 # =============================================================================
 # CubeOS: Force USB WiFi adapters to wlan1
 # =============================================================================
-# Any USB wireless NIC gets named wlan1. The built-in WiFi (platform bus) is
-# wlan0 and managed by hostapd as the AP interface.
-# This ensures ONLINE_WIFI mode can reliably reference wlan1 as the upstream
-# WiFi client interface.
+# systemd .link file — takes precedence over the default 73-usb-net-by-mac.link
+# which would name USB WiFi adapters as wlx<MAC> (unusable by netplan/hostapd).
+#
+# wlan0 = built-in WiFi (platform bus, AP mode via hostapd)
+# wlan1 = USB WiFi dongle (upstream client for ONLINE_WIFI mode)
 # =============================================================================
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ATTR{type}=="1", KERNEL=="wl*", NAME="wlan1"
-UDEV_WIFI
+[Match]
+Type=wlan
+Path=*-usb-*
 
-echo "[02]   udev rule installed: /etc/udev/rules.d/70-cubeos-usb-wifi.rules"
+[Link]
+Name=wlan1
+LINK_WIFI
+
+echo "[02]   systemd .link installed: /etc/systemd/network/10-cubeos-usb-wifi.link"
 
 # ---------------------------------------------------------------------------
 # B61 FIX: Create cubeos user EXPLICITLY (no cloud-init dependency)
@@ -493,7 +506,15 @@ echo "[02]   SSH password + pubkey auth enabled (via sshd_config.d/01-cubeos.con
 # Prepare .ssh directory for post-flash key deployment (ssh-copy-id or Pi Imager)
 mkdir -p /home/cubeos/.ssh
 chmod 700 /home/cubeos/.ssh
-chown cubeos:cubeos /home/cubeos/.ssh
-echo "[02]   /home/cubeos/.ssh/ directory created (ready for authorized_keys)"
+
+# CI/CD deploy key — allows GitLab CI pipelines on the GPU VM to deploy
+# to the Pi via SSH without manual ssh-copy-id after every flash.
+cat > /home/cubeos/.ssh/authorized_keys << 'AUTH_KEYS'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEox5R6N6upResIpJg9gouLkSNvmAaoh3ocRPUP4sb/f cubeos-ci-deploy
+AUTH_KEYS
+chmod 600 /home/cubeos/.ssh/authorized_keys
+
+chown -R cubeos:cubeos /home/cubeos/.ssh
+echo "[02]   /home/cubeos/.ssh/ created with CI deploy key"
 
 echo "[02] Network configuration complete."
