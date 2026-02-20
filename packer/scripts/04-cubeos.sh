@@ -64,6 +64,7 @@ mkdir -p /cubeos/static
 
 # Correct ownership
 chown -R root:root /cubeos
+chown -R cubeos:cubeos /cubeos/coreapps
 chmod 755 /cubeos
 
 # Symlink for backward compatibility
