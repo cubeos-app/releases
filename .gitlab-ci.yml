@@ -499,26 +499,52 @@ build-image:
         # ── Step 3: Start temp registry:2 against mounted storage ──────
         # The registry container runs on x86_64 but stores ARM64 manifests
         # — this is fine because registry:2 storage is arch-agnostic.
-        # B01: Use bridge networking with -p port mapping (NOT --network host).
-        # --network host binds to the Docker HOST namespace, but the CI job
-        # container has a separate namespace — curl localhost:5099 never reaches it.
+        #
+        # B66: Use --network=container sharing so the temp registry is
+        # reachable at localhost:5099 from this CI job. Previous approach
+        # used bridge networking with -p port mapping, which fails because
+        # the CI job runs in a container — the mapped port binds to the
+        # Docker HOST, unreachable at localhost from inside the CI container.
+        # Container IP fallback also fails when CI job and temp registry
+        # are on different bridge networks.
+        #
+        # By sharing the CI job's network namespace, both processes see the
+        # same localhost — no port mapping or IP discovery needed.
         echo "Starting temporary registry:2..."
         docker rm -f cubeos-temp-registry 2>/dev/null || true
-        docker run -d --name cubeos-temp-registry \
-          -p 5099:5099 \
-          -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
-          -e REGISTRY_STORAGE_DELETE_ENABLED=true \
-          -e REGISTRY_HTTP_ADDR=:5099 \
-          registry:2
 
-        sleep 2
-        # Discover the registry URL — try container IP first, fall back to localhost
-        REGISTRY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cubeos-temp-registry 2>/dev/null || echo "")
-        if [ -z "$REGISTRY_IP" ]; then
-          REGISTRY_IP="127.0.0.1"
+        # Discover our own container ID for --network=container: sharing
+        CI_CONTAINER_ID=""
+        if [ -f /proc/self/cgroup ]; then
+          CI_CONTAINER_ID=$(grep -oP '[a-f0-9]{64}' /proc/self/cgroup 2>/dev/null | head -1 || true)
         fi
-        REGISTRY_URL="http://${REGISTRY_IP}:5099"
+        # Fallback: hostname in Docker containers is usually the short container ID
+        if [ -z "$CI_CONTAINER_ID" ]; then
+          CI_CONTAINER_ID=$(hostname)
+        fi
+
+        if [ -n "$CI_CONTAINER_ID" ] && docker inspect "$CI_CONTAINER_ID" &>/dev/null; then
+          echo "  CI container detected: ${CI_CONTAINER_ID:0:12}... — using shared network namespace"
+          docker run -d --name cubeos-temp-registry \
+            --network=container:"$CI_CONTAINER_ID" \
+            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
+            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+            -e REGISTRY_HTTP_ADDR=:5099 \
+            registry:2
+          REGISTRY_URL="http://127.0.0.1:5099"
+        else
+          echo "  Not running inside Docker — using bridge networking with port mapping"
+          docker run -d --name cubeos-temp-registry \
+            -p 5099:5099 \
+            -v /mnt/cubeos-image/cubeos/data/registry:/var/lib/registry \
+            -e REGISTRY_STORAGE_DELETE_ENABLED=true \
+            -e REGISTRY_HTTP_ADDR=:5099 \
+            registry:2
+          REGISTRY_URL="http://127.0.0.1:5099"
+        fi
+
         echo "  Registry URL: ${REGISTRY_URL}"
+        sleep 2
 
         # Wait for registry to be ready
         for i in $(seq 1 30); do
@@ -540,6 +566,8 @@ build-image:
         # ── Step 4: Push curated images into registry ──────────────────
         PUSHED=0
         PUSH_FAILED=0
+        # Extract host:port from REGISTRY_URL for docker:// transport
+        REGISTRY_HOST=$(echo "$REGISTRY_URL" | sed 's|http://||')
 
         # Read manifest to get repo:tag mapping for each tarball
         while IFS= read -r line; do
@@ -560,13 +588,13 @@ build-image:
             continue
           fi
 
-          echo "  Pushing ${REPO_NAME}:${TAG} → ${REGISTRY_IP}:5099..."
+          echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
           if skopeo copy \
             --override-arch arm64 \
             --override-os linux \
             --dest-tls-verify=false \
             "docker-archive:${TARBALL}" \
-            "docker://${REGISTRY_IP}:5099/${REPO_NAME}:${TAG}" 2>&1; then
+            "docker://${REGISTRY_HOST}/${REPO_NAME}:${TAG}" 2>&1; then
             echo "    OK"
             PUSHED=$((PUSHED + 1))
           else

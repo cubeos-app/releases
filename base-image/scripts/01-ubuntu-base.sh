@@ -27,6 +27,14 @@
 #   - B65: Added python3-pyasyncore + python3-pyasynchat for fail2ban
 #          (Python 3.12 removed asynchat/asyncore from stdlib)
 #   - Added fail2ban, asynchat/asyncore to protected packages list
+#
+# v2.2 (alpha.24):
+#   - Added: openvpn, tor (VPN/anonymity client daemons)
+#   - Added: smbclient (SMB CLI tools, complements cifs-utils)
+#   - Added: plocate (fast file search, replaces mlocate)
+#   - Removed: gpsd-clients (python3-gps + GTK deps, ~40min QEMU build)
+#     HAL communicates with gpsd via socket protocol, no Python CLI needed
+#   - B65: Pipe masking fixed, verification now aborts build on failure
 # =============================================================================
 set -euo pipefail
 
@@ -62,7 +70,7 @@ install_group() {
         if apt-get install -y --no-install-recommends \
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
-            "${packages[@]}" 2>&1 | tail -20; then
+            "${packages[@]}"; then
             echo "[BASE]     $group_name: OK ($(date -u +%H:%M:%S))"
             return 0
         fi
@@ -258,12 +266,14 @@ install_group "Networking" \
     networkd-dispatcher \
     isc-dhcp-client
 
-# ===== GROUP 3: Security =====
-install_group "Security" \
+# ===== GROUP 3: Security & VPN =====
+install_group "Security / VPN" \
     fail2ban \
     ufw \
     openssh-server \
-    wireguard-tools
+    wireguard-tools \
+    openvpn \
+    tor
 
 # B65: fail2ban 1.0.2 on Python 3.12 crashes with "No module named asynchat".
 # Python 3.12 removed asynchat/asyncore from stdlib. These backport packages
@@ -274,14 +284,14 @@ install_group "Security" \
 echo "[BASE] Installing Python 3.12 compatibility for fail2ban (B65)..."
 B65_OK=false
 if apt-get install -y --no-install-recommends \
-    python3-pyasyncore python3-pyasynchat 2>&1 | tail -5; then
+    python3-pyasyncore python3-pyasynchat; then
     echo "[BASE]   asynchat/asyncore apt packages: installed"
     B65_OK=true
 else
     echo "[BASE]   apt packages not available — falling back to pip..."
     # Bootstrap pip (not installed by default) and install from PyPI
-    python3 -m ensurepip --upgrade 2>&1 | tail -3 || true
-    if python3 -m pip install pyasyncore pyasynchat --break-system-packages 2>&1 | tail -5; then
+    python3 -m ensurepip --upgrade 2>&1 || true
+    if python3 -m pip install pyasyncore pyasynchat --break-system-packages; then
         echo "[BASE]   asynchat/asyncore pip packages: installed"
         B65_OK=true
     else
@@ -300,7 +310,7 @@ else
     echo "[BASE]   Debug: python3 -c 'import asynchat' on the built image"
     if [ "$B65_OK" = false ]; then
         echo "[BASE]   FATAL: No asynchat/asyncore available. fail2ban is broken."
-        # Don't exit — fail2ban is important but not worth killing the entire build
+        exit 1
     fi
 fi
 
@@ -328,14 +338,18 @@ install_group "Cellular / Modem" \
     usb-modeswitch-data
 
 # ===== GROUP 6: GPS & Time =====
+# NOTE: gpsd-clients REMOVED — it pulls in python3-gps, python3-cairo,
+# python3-gi, python3-serial and GTK deps for xgps/xgpsspeed graphical tools.
+# These add ~40 min to QEMU ARM64 builds. HAL talks to gpsd via socket
+# protocol directly, no Python CLI tools needed.
 install_group "GPS / Time" \
     gpsd \
-    gpsd-clients \
     chrony
 
 # ===== GROUP 7: Storage & Filesystems =====
 install_group "Storage" \
     cifs-utils \
+    smbclient \
     nfs-common \
     parted \
     e2fsprogs \
@@ -371,6 +385,7 @@ install_group "Utilities" \
     pigz \
     sqlite3 \
     picocom \
+    plocate \
     bc
 
 # ===== GROUP 10: SD Card & Memory Optimization =====
@@ -444,8 +459,11 @@ PROTECTED_PACKAGES=(
     usb-modeswitch      # USB modem mode-switch
     usb-modeswitch-data # Modem device database
     gpsd                # GPS daemon
-    gpsd-clients        # GPS CLI tools
     chrony              # NTP replacement
+    openvpn             # VPN client
+    tor                 # Tor client
+    smbclient           # SMB/CIFS CLI tools
+    plocate             # Fast file search
     picocom             # Serial terminal
     smartmontools       # SMART disk monitoring
     ethtool             # Network diagnostics
@@ -529,6 +547,21 @@ echo "[BASE]   gpsd: disabled (HAL manages lifecycle)"
 echo "[BASE] Disabling ModemManager auto-start..."
 systemctl disable ModemManager 2>/dev/null || true
 echo "[BASE]   ModemManager: disabled (HAL manages lifecycle)"
+
+# ---------------------------------------------------------------------------
+# OpenVPN: disable auto-start (API/HAL manage VPN lifecycle)
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling OpenVPN auto-start..."
+systemctl disable openvpn 2>/dev/null || true
+systemctl disable 'openvpn@*' 2>/dev/null || true
+echo "[BASE]   openvpn: disabled (API manages lifecycle)"
+
+# ---------------------------------------------------------------------------
+# Tor: disable auto-start (API/HAL manage Tor lifecycle)
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling Tor auto-start..."
+systemctl disable tor 2>/dev/null || true
+echo "[BASE]   tor: disabled (API manages lifecycle)"
 
 # ---------------------------------------------------------------------------
 # smartmontools: disable auto-start (SD cards don't support SMART)
@@ -625,7 +658,8 @@ else
 fi
 
 if [ "$VERIFY_OK" = false ]; then
-    echo "[BASE] WARNING: Some critical binaries are missing. Check package installation."
+    echo "[BASE] FATAL: Some critical binaries are missing. Aborting build."
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -651,13 +685,17 @@ echo "  NEW in v2.0:"
 echo "    + GPS:      gpsd, chrony, pps-tools"
 echo "    + Cellular: modemmanager, libqmi, libmbim, usb-modeswitch"
 echo "    + Pi HW:    gpiod, v4l-utils, libraspberrypi-bin"
-echo "    + Storage:  ntfs-3g, exfatprogs, smartmontools"
+echo "    + Storage:  ntfs-3g, exfatprogs, smartmontools, smbclient"
 echo "    + Network:  wireguard-tools, ethtool, avahi-daemon"
+echo "    + VPN:      openvpn, tor (client daemons)"
 echo "    + B52 net:  wpasupplicant (SERVER_WIFI), networkd-dispatcher (auto-detect)"
 echo "    + B62 mem:  ZRAM configured at 100% RAM with lz4 (was 14% default)"
 echo "    + B65 sec:  fail2ban Python 3.12 asynchat/asyncore backports"
 echo "    + B87 net:  isc-dhcp-client (HAL DHCP endpoint, Android tethering)"
-echo "    + Tools:    sqlite3, picocom, nano, zram-tools"
+echo "    + Tools:    sqlite3, picocom, plocate, nano, zram-tools"
+echo ""
+echo "  REMOVED in v2.2:"
+echo "    - gpsd-clients (python3-gps + GTK deps — 40min QEMU, HAL uses socket)"
 echo ""
 echo "  All packages installed. No configuration applied."
 echo "  Configuration happens in the release pipeline."

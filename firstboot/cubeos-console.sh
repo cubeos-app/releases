@@ -843,6 +843,11 @@ if ! command -v sqlite3 &>/dev/null; then
     exit 1
 fi
 
+# B93: Wait for boot messages to settle before launching whiptail.
+# systemd prints [OK] status lines to tty1 during startup. If the console
+# launches too early, these messages overlay the whiptail menu. A brief
+# pause + double clear ensures a clean screen.
+sleep 2
 clear
 CLEAN_EXIT=0
 main_menu

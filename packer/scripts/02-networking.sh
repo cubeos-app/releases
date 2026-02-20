@@ -71,16 +71,15 @@ cat > /etc/netplan/01-cubeos.yaml << 'NETPLAN'
 # =============================================================================
 # CubeOS Network Configuration — Default: OFFLINE Mode
 # =============================================================================
-# Default netplan baked into the image. Matches OFFLINE mode where both
-# wlan0 (AP) and eth0 (wired clients) serve the 10.42.24.0/24 subnet.
+# Default netplan baked into the image. Matches OFFLINE mode where wlan0
+# serves the 10.42.24.0/24 subnet as the Access Point.
 #
 # wlan0: Static IP for Access Point mode (managed by hostapd)
 #        MUST be under 'ethernets' — NOT 'wifis' — to prevent Netplan
 #        from spawning wpa_supplicant which conflicts with hostapd.
-# eth0:  Static IP for wired client access (OFFLINE = no upstream DHCP)
-#
-# On first mode switch, write_netplan_for_mode() in cubeos-boot-lib.sh
-# overwrites this file with the mode-specific template.
+# eth0:  No address in OFFLINE mode. Previous dual-IP assignment caused
+#        ARP conflicts (B92). eth0 gets an address only in ONLINE_ETH or
+#        SERVER_ETH modes via write_netplan_for_mode().
 
 network:
   version: 2
@@ -88,8 +87,6 @@ network:
 
   ethernets:
     eth0:
-      addresses:
-        - 10.42.24.1/24
       link-local: []
       optional: true
 
@@ -103,7 +100,7 @@ network:
 NETPLAN
 
 chmod 600 /etc/netplan/01-cubeos.yaml
-echo "[02]   Netplan configured (OFFLINE default: wlan0=10.42.24.1, eth0=10.42.24.1)"
+echo "[02]   Netplan configured (OFFLINE default: wlan0=10.42.24.1, eth0=no address)"
 
 # ---------------------------------------------------------------------------
 # systemd-resolved — disable stub listener + point to Pi-hole
