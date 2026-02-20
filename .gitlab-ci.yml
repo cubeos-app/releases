@@ -27,9 +27,9 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.1.0-alpha.24"
+  CUBEOS_VERSION: "0.1.0-alpha.23"
   IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
-  BASE_VERSION: "2.2.0"
+  BASE_VERSION: "2.1.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
   GITHUB_REPO: "cubeos-app/releases"
 
@@ -514,14 +514,21 @@ build-image:
         docker rm -f cubeos-temp-registry 2>/dev/null || true
 
         # Discover our own container ID for --network=container: sharing
+        # Most reliable: GitLab Runner labels build containers with job metadata
         CI_CONTAINER_ID=""
-        if [ -f /proc/self/cgroup ]; then
-          CI_CONTAINER_ID=$(grep -oP '[a-f0-9]{64}' /proc/self/cgroup 2>/dev/null | head -1 || true)
+        if [ -n "$CI_JOB_ID" ]; then
+          CI_CONTAINER_ID=$(docker ps -q --filter "label=com.gitlab.gitlab-runner.job.id=$CI_JOB_ID" 2>/dev/null | head -1 || true)
         fi
-        # Fallback: hostname in Docker containers is usually the short container ID
+        # Fallback 1: cgroup v1 — container ID in /proc/self/cgroup
         if [ -z "$CI_CONTAINER_ID" ]; then
-          CI_CONTAINER_ID=$(hostname)
+          CI_CONTAINER_ID=$(sed -nE 's|.*[:/]([a-f0-9]{64}).*|\1|p' /proc/self/cgroup 2>/dev/null | head -1 || true)
         fi
+        # Fallback 2: cgroup v2 — container ID in /proc/self/mountinfo
+        if [ -z "$CI_CONTAINER_ID" ]; then
+          CI_CONTAINER_ID=$(sed -nE 's|.*docker/containers/([a-f0-9]{64}).*|\1|p' /proc/self/mountinfo 2>/dev/null | head -1 || true)
+        fi
+
+        echo "  Container ID detection result: '${CI_CONTAINER_ID:0:16}...'"
 
         if [ -n "$CI_CONTAINER_ID" ] && docker inspect "$CI_CONTAINER_ID" &>/dev/null; then
           echo "  CI container detected: ${CI_CONTAINER_ID:0:12}... — using shared network namespace"
