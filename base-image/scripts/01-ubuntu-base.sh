@@ -622,13 +622,13 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
     fi
 done
 
-# B65: Verify fail2ban can actually start (asynchat/asyncore present)
+# B65: Verify asyncore is importable (asynchat is vendored inside fail2ban)
 echo ""
-echo "[BASE] Verifying fail2ban asynchat/asyncore (B65)..."
-if python3 -c "import asynchat; import asyncore" 2>/dev/null; then
-    echo "[BASE]   fail2ban Python deps: OK"
+echo "[BASE] Verifying fail2ban asyncore dependency (B65)..."
+if python3 -c "import asyncore" 2>/dev/null; then
+    echo "[BASE]   fail2ban Python deps: OK (asyncore importable)"
 else
-    echo "[BASE]   fail2ban Python deps: MISSING (asynchat/asyncore)"
+    echo "[BASE]   fail2ban Python deps: MISSING (asyncore)"
     VERIFY_OK=false
 fi
 
