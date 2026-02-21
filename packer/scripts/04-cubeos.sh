@@ -69,6 +69,8 @@ mkdir -p /cubeos/static
 # Correct ownership
 chown -R root:root /cubeos
 chown -R cubeos:cubeos /cubeos/coreapps
+# FileBrowser runs as UID 911 inside the container — must own its database dir
+chown -R 911:911 /cubeos/coreapps/filebrowser/appdata
 chmod 755 /cubeos
 
 # Symlink for backward compatibility
