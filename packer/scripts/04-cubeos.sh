@@ -54,7 +54,7 @@ mkdir -p /cubeos/config/vpn/{wireguard,openvpn}
 COREAPPS=(
     pihole npm cubeos-api cubeos-hal cubeos-dashboard
     dozzle registry kiwix
-    cubeos-docsindex cubeos-filebrowser
+    cubeos-docsindex filebrowser
     wireguard openvpn tor
     diagnostics reset terminal backup watchdog
 )
