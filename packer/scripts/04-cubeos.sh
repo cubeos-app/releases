@@ -69,8 +69,6 @@ mkdir -p /cubeos/static
 # Correct ownership
 chown -R root:root /cubeos
 chown -R cubeos:cubeos /cubeos/coreapps
-# FileBrowser runs as UID 911 inside the container — must own its database dir
-chown -R 911:911 /cubeos/coreapps/filebrowser/appdata
 chmod 755 /cubeos
 
 # Symlink for backward compatibility
@@ -393,6 +391,7 @@ cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
 10.42.24.1 docs.cubeos.cube
 10.42.24.1 terminal.cubeos.cube
 10.42.24.1 kiwix.cubeos.cube
+10.42.24.1 filebrowser.cubeos.cube
 DNS
 
 # ---------------------------------------------------------------------------
