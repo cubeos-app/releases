@@ -13,7 +13,9 @@
 #
 # v3.0:
 #   - Added v3.0 packages to protected list (bluez, rtl-sdr, alsa-utils,
-#     lm-sensors, apparmor-utils, udisks2)
+#     lm-sensors, apparmor-utils, udisks2, nvme-cli, mdadm, lvm2,
+#     cryptsetup, btrfs-progs, xfsprogs, hdparm, fio, samba,
+#     nfs-kernel-server, drbd-utils, ocfs2-tools)
 # =============================================================================
 set -euo pipefail
 
@@ -25,9 +27,6 @@ echo "=== [BASE-CLEANUP] Cleaning base image (v3.0) ==="
 # ---------------------------------------------------------------------------
 # Protect ALL critical packages from autoremove
 # ---------------------------------------------------------------------------
-# Belt-and-suspenders: 01-ubuntu-base.sh already does this, but autoremove
-# below could still strip packages if apt-mark failed under QEMU.
-# ---------------------------------------------------------------------------
 echo "[BASE-CLEANUP] Protecting critical packages..."
 for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            v4l-utils pps-tools modemmanager libqmi-utils libmbim-utils \
@@ -37,7 +36,10 @@ for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            libpam-modules libpam-runtime openssh-server fail2ban \
            python3-pyasyncore isc-dhcp-client \
            bluez bluez-tools rtl-sdr alsa-utils lm-sensors \
-           apparmor-utils udisks2; do
+           apparmor-utils udisks2 \
+           nvme-cli mdadm lvm2 cryptsetup btrfs-progs xfsprogs hdparm fio \
+           samba nfs-kernel-server \
+           drbd-utils ocfs2-tools; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
 
@@ -74,10 +76,26 @@ for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools
     fi
 done
 
-# v3.0 binaries
+# v3.0 binaries — hardware & radio
 for cmd_pkg in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
                "sensors:lm-sensors" "aa-status:apparmor-utils" \
                "udisksctl:udisks2"; do
+    cmd="${cmd_pkg%%:*}"
+    pkg="${cmd_pkg##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "[BASE-CLEANUP]   MISSING: $cmd ($pkg) — attempting reinstall..."
+        apt-get update -q >/dev/null 2>&1 || true
+        apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || true
+        apt-mark manual "$pkg" 2>/dev/null || true
+        MISSING=$((MISSING + 1))
+    fi
+done
+
+# v3.0 binaries — storage & RAID & file sharing
+for cmd_pkg in "nvme:nvme-cli" "mdadm:mdadm" "pvcreate:lvm2" \
+               "cryptsetup:cryptsetup" "mkfs.btrfs:btrfs-progs" \
+               "mkfs.xfs:xfsprogs" "hdparm:hdparm" "fio:fio" \
+               "smbd:samba" "exportfs:nfs-kernel-server"; do
     cmd="${cmd_pkg%%:*}"
     pkg="${cmd_pkg##*:}"
     if ! command -v "$cmd" &>/dev/null; then
@@ -131,7 +149,6 @@ rm -rf /usr/share/lintian/*
 rm -rf /usr/share/groff/*
 rm -rf /usr/share/linda/*
 
-# Prevent docs from being installed in future (release pipeline installs nothing)
 cat > /etc/dpkg/dpkg.cfg.d/01-nodoc << 'NODOC'
 path-exclude /usr/share/doc/*
 path-exclude /usr/share/man/*

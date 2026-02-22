@@ -8,7 +8,7 @@
 #
 # Run frequency: Monthly, or when the package list changes.
 # Run environment: QEMU ARM64 emulation (packer-builder-arm)
-# Expected time: ~20-25 minutes under QEMU
+# Expected time: ~25-30 minutes under QEMU
 #
 # v2.0 (alpha.21+):
 #   - Added: sqlite3, gpiod, libgpiod2, usbutils, v4l-utils, pps-tools
@@ -44,9 +44,14 @@
 #   - Added GROUP 16: mptcpd (optional — MPTCP WAN bonding C0)
 #   - Added GROUP 17: udisks2 (USB drive management, Phase 4 backup)
 #   - Added GROUP 18: setserial (optional — serial port config C3/C5)
+#   - Added GROUP 19: samba, nfs-kernel-server (file sharing server)
+#   - Added GROUP 20: lvm2, cryptsetup, btrfs-progs, xfsprogs, hdparm,
+#     fio, drbd-utils, ocfs2-tools (advanced storage / RAID / encryption)
+#   - Expanded GROUP 7: nvme-cli, mdadm (NVMe + software RAID)
 #   - Added RTL-SDR modprobe blacklist (dvb_usb_rtl28xxu)
-#   - Added kernel modules: pps_gpio, snd-usb-audio
-#   - Covers: Track A (Phases 1-6), Track B (MeshSat), Track C (C0-C7)
+#   - Added kernel modules: pps_gpio, snd-usb-audio, raid1, dm-crypt
+#   - Covers: Track A (Phases 1-6), Track B (MeshSat), Track C (C0-C7),
+#     X1004 dual NVMe HAT, clustered storage (DRBD/OCFS2)
 # =============================================================================
 set -euo pipefail
 
@@ -236,8 +241,6 @@ echo "[BASE] Upgrade: OK"
 # ---------------------------------------------------------------------------
 # CRITICAL: Refresh apt cache AFTER upgrade
 # ---------------------------------------------------------------------------
-# Upgrade changes dependency versions. Without this refresh, install fails
-# with "held broken packages" because apt resolves against stale metadata.
 echo ""
 echo "[BASE] Refreshing package lists after upgrade..."
 apt-get update 2>&1 | grep -E "^(Hit|Get|Fetched|Reading)" || true
@@ -288,17 +291,10 @@ install_group "Security / VPN" \
     tor
 
 # B65: fail2ban on Python 3.12+ needs both asyncore AND asynchat.
-# - python3-pyasyncore: exists in apt (provides asyncore)
-# - python3-pyasynchat: does NOT exist in Ubuntu 24.04 apt repos
-#   python3-pip is also NOT installed (QEMU dependency conflicts).
-#   Install asynchat from PyPI tarball directly. fail2ban does NOT vendor
-#   asynchat internally — it imports asynchat at startup and crashes with
-#   "No module named 'asynchat'" if missing. Bug persisted Alpha.22–.24.
 echo "[BASE] Installing fail2ban Python 3.12 dependencies (B65)..."
 apt-get install -y --no-install-recommends python3-pyasyncore
 echo "[BASE]   python3-pyasyncore: installed (apt)"
 
-# Install pyasynchat from PyPI tarball (no pip available)
 ASYNCHAT_VERSION="1.0.4"
 echo "[BASE]   Installing pyasynchat ${ASYNCHAT_VERSION} from PyPI tarball..."
 curl -sL -o /tmp/pyasynchat.tar.gz \
@@ -308,7 +304,6 @@ cp -r "/tmp/pyasynchat-${ASYNCHAT_VERSION}/asynchat" /usr/lib/python3/dist-packa
 rm -rf /tmp/pyasynchat.tar.gz /tmp/pyasynchat-${ASYNCHAT_VERSION}
 echo "[BASE]   pyasynchat: installed (tarball — pip not available, apt has no package)"
 
-# Verify BOTH asyncore AND asynchat are importable
 if python3 -c "import asyncore; import asynchat; print('asyncore+asynchat: OK')" 2>&1; then
     echo "[BASE]   B65 verification: PASS (both modules importable)"
 else
@@ -330,10 +325,9 @@ install_group "Hardware / Pi" \
     v4l-utils \
     pps-tools
 
-# libraspberrypi-bin may not exist in all Ubuntu ARM64 repos
 install_optional "libraspberrypi-bin" "libraspberrypi-bin (vcgencmd)"
 
-# ===== GROUP 5: Cellular / Modem (MuleCube expedition) =====
+# ===== GROUP 5: Cellular / Modem =====
 install_group "Cellular / Modem" \
     modemmanager \
     libqmi-utils \
@@ -342,15 +336,12 @@ install_group "Cellular / Modem" \
     usb-modeswitch-data
 
 # ===== GROUP 6: GPS & Time =====
-# NOTE: gpsd-clients REMOVED — it pulls in python3-gps, python3-cairo,
-# python3-gi, python3-serial and GTK deps for xgps/xgpsspeed graphical tools.
-# These add ~40 min to QEMU ARM64 builds. HAL talks to gpsd via socket
-# protocol directly, no Python CLI tools needed.
 install_group "GPS / Time" \
     gpsd \
     chrony
 
 # ===== GROUP 7: Storage & Filesystems =====
+# v3.0: Added nvme-cli (X1004 dual NVMe HAT) and mdadm (software RAID)
 install_group "Storage" \
     cifs-utils \
     smbclient \
@@ -359,13 +350,13 @@ install_group "Storage" \
     e2fsprogs \
     dosfstools \
     ntfs-3g \
-    smartmontools
+    smartmontools \
+    nvme-cli \
+    mdadm
 
-# exfatprogs is the modern kernel-native exFAT toolset (Ubuntu 24.04+)
 install_optional "exfatprogs" "exfatprogs (exFAT support)"
 
 # ===== GROUP 8: Monitoring =====
-# NOTE: iotop-c replaces iotop (broken python deps on Ubuntu 24.04 ARM64)
 install_group "Monitoring" \
     htop \
     iotop-c \
@@ -396,7 +387,6 @@ install_group "Utilities" \
 install_group "SD Card optimization" \
     zram-tools
 
-# B62: Configure ZRAM for 100% of RAM (default is 14%, way too low)
 echo "[BASE] Configuring ZRAM (100% RAM, lz4)..."
 cat > /etc/default/zramswap <<'ZRAM'
 ALGO=lz4
@@ -408,64 +398,74 @@ echo "[BASE]   ZRAM: 100% of RAM with lz4 compression"
 install_group "Cloud-init" \
     cloud-init
 
-# NOTE: python3-pip intentionally NOT installed.
-# On Ubuntu 24.04 it causes dependency conflicts under QEMU.
 install_group "Python (no pip)" \
     python3
 
 # =========================================================================
-# NEW IN v3.0: Groups 12–18 (Track B, Track C, Phase 1.3, Phase 4)
+# NEW IN v3.0: Groups 12–20
 # =========================================================================
 
 # ===== GROUP 12: Bluetooth / BLE (Track B: MeshSat) =====
-# MeshSat communicates with Meshtastic radios via BLE. The HAL needs
-# host-level Bluetooth stack access for discovery, pairing, and streaming.
-# BLE requires direct HCI socket access — cannot run in Docker.
 install_group "Bluetooth / BLE" \
     bluez \
     bluez-tools
 
-# ===== GROUP 13: SDR / Radio Host Tools (Track C4: SDR, C5: Radio) =====
-# RTL-SDR: host USB device management + udev rules that prevent the kernel's
-# DVB-T driver from claiming the device. SDR apps run in Docker with
-# --device passthrough, but the host needs rtl-sdr for device config.
-# ALSA: Digirig is a USB sound card — host manages audio device, Docker
-# containers (Direwolf, Pat) access via --device /dev/snd.
+# ===== GROUP 13: SDR / Radio Host Tools (C4: SDR, C5: Radio) =====
 install_group "SDR / Radio" \
     rtl-sdr \
     alsa-utils
 
-# ===== GROUP 14: Sensors & Power Monitoring (Track C3: Smart Power) =====
-# Hardware sensor reading for temperature, voltage, fan control. Used by
-# HAL power management for thermal profiles and load shedding decisions.
+# ===== GROUP 14: Sensors & Power Monitoring (C3: Smart Power) =====
 install_group "Sensors" \
     lm-sensors
 
 # ===== GROUP 15: Security Hardening (Phase 1.3, SEC-09) =====
-# AppArmor is partially pre-installed in Ubuntu 24.04 but the management
-# tools (aa-enforce, aa-complain, aa-logprof) are missing. These are needed
-# to manage container security profiles.
 install_group "Security hardening" \
     apparmor-utils
 
-# ===== GROUP 16: MPTCP Support (Track C0: WAN Bonding) =====
-# MPTCP is a kernel feature in Linux 6.8+ (Ubuntu 24.04). mptcpd provides
-# the path manager daemon and mptcpize wrapper. May not exist in 24.04
-# ARM64 repos — non-fatal. Fallback: raw sysctl + ip-mptcp commands.
+# ===== GROUP 16: MPTCP Support (C0: WAN Bonding) =====
 install_optional "mptcpd" "mptcpd (MPTCP path manager daemon)"
 
 # ===== GROUP 17: USB Drive Management (Phase 4: Backup) =====
-# D-Bus-based mount management for USB drives used as backup destinations.
-# HAL uses udisks2 to safely mount/unmount/eject USB storage.
 install_group "USB drive management" \
     udisks2
 
 # ===== GROUP 18: Serial Port Tools (Track B, C3, C5) =====
-# Low-level serial port configuration for Victron VE.Direct solar readers
-# (C3), Meshtastic serial mode (Track B), and Digirig serial PTT (C5).
-# picocom is already installed for interactive debugging; setserial adds
-# programmatic port configuration (baud, flow control) for HAL.
 install_optional "setserial" "setserial (serial port config)"
+
+# ===== GROUP 19: File Sharing Server (NVMe storage) =====
+# Samba and NFS server daemons for sharing NVMe/RAID storage over the
+# network. Run on the host (not Docker) — need direct access to RAID
+# mount points and kernel-level NFS exports.
+install_group "File sharing server" \
+    samba \
+    nfs-kernel-server
+
+# ===== GROUP 20: Advanced Storage / RAID / Encryption =====
+# Full storage stack for the Geekworm X1004 dual NVMe HAT and future
+# multi-node clustered storage.
+#
+# Stack options available after install:
+#   Simple:    NVMe -> ext4/XFS/Btrfs
+#   RAID:      NVMe x2 -> mdadm RAID0/1 -> ext4/XFS
+#   LVM:       NVMe -> LVM -> LVs (Docker, shares, backup)
+#   Encrypted: NVMe -> LUKS -> LVM -> LVs
+#   Btrfs:     NVMe x2 -> Btrfs RAID1 (built-in, no mdadm needed)
+#   Clustered: NVMe -> DRBD -> OCFS2 (multi-node shared filesystem)
+install_group "Advanced storage" \
+    lvm2 \
+    cryptsetup \
+    btrfs-progs \
+    xfsprogs \
+    hdparm \
+    fio
+
+# DRBD + OCFS2: clustered storage for multi-node CubeOS deployments.
+# DRBD mirrors block devices over the network (RAID1 across nodes).
+# OCFS2 provides a shared-access cluster filesystem on top of DRBD.
+# Both require kernel modules — cannot run in Docker.
+install_optional "drbd-utils" "drbd-utils (DRBD network-mirrored block devices)"
+install_optional "ocfs2-tools" "ocfs2-tools (OCFS2 cluster filesystem)"
 
 # ---------------------------------------------------------------------------
 # Install Docker CE
@@ -495,10 +495,6 @@ echo "[BASE]   Docker: $(docker --version 2>/dev/null || echo 'installed')"
 
 # ---------------------------------------------------------------------------
 # CRITICAL: Mark packages that autoremove likes to strip
-# ---------------------------------------------------------------------------
-# These packages have no strong reverse-dependencies, so apt marks them as
-# "auto-installed" and autoremove removes them. apt-mark manual prevents this.
-# This is the DEFINITIVE fix for the 5-alpha hwclock saga (B03/B44).
 # ---------------------------------------------------------------------------
 echo ""
 echo "[BASE] Protecting critical packages from autoremove..."
@@ -533,22 +529,38 @@ PROTECTED_PACKAGES=(
     ntfs-3g             # NTFS support
     bc                  # Calculator for scripts
     fail2ban            # B65: SSH intrusion prevention
-    python3-pyasyncore  # B65: fail2ban asyncore compat (Python 3.12)
-    wpasupplicant       # B52: SERVER_WIFI mode needs wpa_supplicant on host
-    networkd-dispatcher # B52: auto eth0 carrier detection hooks
-    # --- v3.0 NEW packages ---
-    bluez               # Bluetooth stack (Track B: MeshSat BLE)
-    bluez-tools         # BT CLI tools (bt-adapter, bt-device)
+    python3-pyasyncore  # B65: fail2ban asyncore compat
+    wpasupplicant       # B52: SERVER_WIFI
+    networkd-dispatcher # B52: auto eth0 carrier detection
+    # --- v3.0 NEW: Hardware & Radio ---
+    bluez               # Bluetooth stack (Track B)
+    bluez-tools         # BT CLI tools
     rtl-sdr             # SDR device management (C4)
-    alsa-utils          # Audio device management (C5: Digirig)
-    lm-sensors          # Hardware sensors (C3: thermal profiles)
-    apparmor-utils      # Security profile management (SEC-09)
-    udisks2             # USB drive management (Phase 4: backup)
+    alsa-utils          # Audio device management (C5)
+    lm-sensors          # Hardware sensors (C3)
+    apparmor-utils      # Security profiles (SEC-09)
+    udisks2             # USB drive management
+    # --- v3.0 NEW: Storage & RAID (X1004 dual NVMe) ---
+    nvme-cli            # NVMe drive management
+    mdadm               # Software RAID
+    lvm2                # Logical Volume Manager
+    cryptsetup          # LUKS disk encryption
+    btrfs-progs         # Btrfs filesystem
+    xfsprogs            # XFS filesystem
+    hdparm              # Disk parameter tuning
+    fio                 # I/O benchmarking
+    # --- v3.0 NEW: File sharing server ---
+    samba               # SMB file server
+    nfs-kernel-server   # NFS file server
 )
 for pkg in "${PROTECTED_PACKAGES[@]}"; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
-echo "[BASE]   Protected ${#PROTECTED_PACKAGES[@]} packages from autoremove"
+# Optional packages — protect if installed
+for pkg in drbd-utils ocfs2-tools mptcpd setserial; do
+    apt-mark manual "$pkg" 2>/dev/null || true
+done
+echo "[BASE]   Protected ${#PROTECTED_PACKAGES[@]}+ packages from autoremove"
 
 # ---------------------------------------------------------------------------
 # Kernel modules and sysctl
@@ -568,7 +580,7 @@ net.ipv6.conf.default.autoconf = 0
 # Reduce kernel log noise
 kernel.printk = 3 4 1 3
 
-# MPTCP WAN bonding (C0) — disabled by default, enable via API when active
+# MPTCP WAN bonding (C0) — disabled by default, enable via API
 # net.mptcp.enabled = 1
 SYSCTL
 
@@ -578,15 +590,14 @@ br_netfilter
 i2c-dev
 pps_gpio
 snd-usb-audio
+raid1
+dm-crypt
 MODULES
 
 echo "[BASE]   Kernel config: OK"
 
 # ---------------------------------------------------------------------------
 # RTL-SDR: Blacklist DVB-T kernel driver (C4)
-# ---------------------------------------------------------------------------
-# The kernel's DVB-T driver auto-claims RTL2832U USB devices, preventing
-# userspace SDR tools from accessing them. Blacklist it so rtl-sdr works.
 # ---------------------------------------------------------------------------
 echo "[BASE] Configuring RTL-SDR modprobe blacklist..."
 cat > /etc/modprobe.d/cubeos-blacklist.conf << 'BLACKLIST'
@@ -600,123 +611,88 @@ echo "[BASE]   RTL-SDR blacklist: OK"
 # ---------------------------------------------------------------------------
 # Chrony: disable default NTP pools (offline-first, GPS/PPS later)
 # ---------------------------------------------------------------------------
-# On first boot the user has no internet. Default pool.ntp.org servers
-# cause log spam. Chrony will be configured by the setup wizard.
-# ---------------------------------------------------------------------------
 echo "[BASE] Configuring chrony for offline-first..."
 if [ -f /etc/chrony/chrony.conf ]; then
-    # Comment out default pool/server lines
     sed -i 's/^pool /#pool /' /etc/chrony/chrony.conf
     sed -i 's/^server /#server /' /etc/chrony/chrony.conf
-    # Add local reference clock (stratum 10 = unsynchronized but usable)
     echo "" >> /etc/chrony/chrony.conf
     echo "# CubeOS: local clock fallback for air-gapped operation" >> /etc/chrony/chrony.conf
     echo "local stratum 10" >> /etc/chrony/chrony.conf
     echo "# Allow subnet clients to sync from us" >> /etc/chrony/chrony.conf
     echo "allow 10.42.24.0/24" >> /etc/chrony/chrony.conf
 fi
-# Disable timesyncd (chrony replaces it)
 systemctl disable systemd-timesyncd 2>/dev/null || true
 echo "[BASE]   chrony: configured for offline-first + local stratum 10"
 
 # ---------------------------------------------------------------------------
-# gpsd: disable auto-start (HAL manages GPS lifecycle)
+# Disable services (HAL/API manage their lifecycle)
 # ---------------------------------------------------------------------------
+
 echo "[BASE] Disabling gpsd auto-start..."
 systemctl disable gpsd 2>/dev/null || true
 systemctl disable gpsd.socket 2>/dev/null || true
-echo "[BASE]   gpsd: disabled (HAL manages lifecycle)"
+echo "[BASE]   gpsd: disabled"
 
-# ---------------------------------------------------------------------------
-# ModemManager: disable auto-start (HAL manages modem lifecycle)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling ModemManager auto-start..."
 systemctl disable ModemManager 2>/dev/null || true
-echo "[BASE]   ModemManager: disabled (HAL manages lifecycle)"
+echo "[BASE]   ModemManager: disabled"
 
-# ---------------------------------------------------------------------------
-# OpenVPN: disable auto-start (API/HAL manage VPN lifecycle)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling OpenVPN auto-start..."
 systemctl disable openvpn 2>/dev/null || true
 systemctl disable 'openvpn@*' 2>/dev/null || true
-echo "[BASE]   openvpn: disabled (API manages lifecycle)"
+echo "[BASE]   openvpn: disabled"
 
-# ---------------------------------------------------------------------------
-# Tor: disable auto-start (API/HAL manage Tor lifecycle)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling Tor auto-start..."
 systemctl disable tor 2>/dev/null || true
-echo "[BASE]   tor: disabled (API manages lifecycle)"
+echo "[BASE]   tor: disabled"
 
-# ---------------------------------------------------------------------------
-# smartmontools: disable auto-start (SD cards don't support SMART)
-# ---------------------------------------------------------------------------
-# smartd fails on boot with "No devices found to scan" because SD cards
-# and eMMC don't support SMART. The package is installed for users who
-# attach USB/SATA drives via HAT, but the daemon shouldn't auto-start.
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling smartmontools auto-start..."
 systemctl disable smartd 2>/dev/null || true
 systemctl disable smartmontools 2>/dev/null || true
-echo "[BASE]   smartd: disabled (enable manually for external drives)"
+echo "[BASE]   smartd: disabled (enable manually for NVMe/external drives)"
 
-# ---------------------------------------------------------------------------
-# avahi-daemon: disable for now (boot scripts enable if needed)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling avahi-daemon auto-start..."
 systemctl disable avahi-daemon 2>/dev/null || true
-echo "[BASE]   avahi-daemon: disabled (enables on demand)"
+echo "[BASE]   avahi-daemon: disabled"
 
-# ---------------------------------------------------------------------------
-# wpa_supplicant: disable but DO NOT MASK (B52 SERVER_WIFI needs it)
-# ---------------------------------------------------------------------------
-# B52 SERVER_WIFI mode uses netplan wifis: section which triggers
-# wpa_supplicant via networkctl reconfigure. If masked, SERVER_WIFI breaks.
-# The 02-networking.sh release script also disables it, but we set the
-# correct state here to be explicit.
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling wpa_supplicant (NOT masked — B52 SERVER_WIFI needs it)..."
 systemctl disable wpa_supplicant 2>/dev/null || true
-# Ensure it's NOT masked (undo any previous masking)
 systemctl unmask wpa_supplicant 2>/dev/null || true
 echo "[BASE]   wpa_supplicant: disabled (unmask verified)"
 
-# ---------------------------------------------------------------------------
-# networkd-dispatcher: enable (B52 auto eth0 carrier detection)
-# ---------------------------------------------------------------------------
-# B52 installs hook scripts in /etc/networkd-dispatcher/ that auto-enable
-# NAT when ethernet is plugged in OFFLINE mode. The service must be active
-# for these hooks to fire.
-# ---------------------------------------------------------------------------
 echo "[BASE] Enabling networkd-dispatcher..."
 systemctl enable networkd-dispatcher 2>/dev/null || true
 echo "[BASE]   networkd-dispatcher: enabled"
 
-# =========================================================================
-# v3.0: Disable new services (HAL manages their lifecycle)
-# =========================================================================
+# --- v3.0 new services ---
 
-# ---------------------------------------------------------------------------
-# Bluetooth: disable auto-start (HAL manages BLE lifecycle)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling bluetooth auto-start..."
 systemctl disable bluetooth 2>/dev/null || true
 echo "[BASE]   bluetooth: disabled (HAL manages BLE lifecycle)"
 
-# ---------------------------------------------------------------------------
-# lm-sensors: disable auto-start (HAL reads sensors on-demand)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling lm-sensors auto-start..."
 systemctl disable lm-sensors 2>/dev/null || true
 echo "[BASE]   lm-sensors: disabled (HAL reads on-demand)"
 
-# ---------------------------------------------------------------------------
-# udisks2: disable auto-start (HAL manages mount lifecycle)
-# ---------------------------------------------------------------------------
 echo "[BASE] Disabling udisks2 auto-start..."
 systemctl disable udisks2 2>/dev/null || true
 echo "[BASE]   udisks2: disabled (HAL manages mount lifecycle)"
+
+echo "[BASE] Disabling samba auto-start..."
+systemctl disable smbd 2>/dev/null || true
+systemctl disable nmbd 2>/dev/null || true
+echo "[BASE]   samba (smbd+nmbd): disabled (API manages lifecycle)"
+
+echo "[BASE] Disabling nfs-kernel-server auto-start..."
+systemctl disable nfs-kernel-server 2>/dev/null || true
+echo "[BASE]   nfs-kernel-server: disabled (API manages lifecycle)"
+
+# mdadm: KEEP ENABLED — RAID must auto-assemble at boot
+echo "[BASE]   mdadm: keeping enabled (RAID auto-assembly required)"
+
+echo "[BASE] Disabling DRBD auto-start..."
+systemctl disable drbd 2>/dev/null || true
+echo "[BASE]   drbd: disabled (API manages multi-node replication)"
 
 # ---------------------------------------------------------------------------
 # Restore workarounds
@@ -760,9 +736,9 @@ for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-too
     fi
 done
 
-# v3.0 NEW binaries
+# v3.0 binaries — hardware & radio
 echo ""
-echo "[BASE] Verifying v3.0 binaries..."
+echo "[BASE] Verifying v3.0 binaries (hardware & radio)..."
 for cmd_check in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
                   "sensors:lm-sensors" "aa-status:apparmor-utils" \
                   "udisksctl:udisks2"; do
@@ -776,7 +752,37 @@ for cmd_check in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
     fi
 done
 
-# B65: Verify both asyncore AND asynchat are importable (fail2ban needs both)
+# v3.0 binaries — storage & RAID & file sharing
+echo ""
+echo "[BASE] Verifying v3.0 binaries (storage & RAID & file sharing)..."
+for cmd_check in "nvme:nvme-cli" "mdadm:mdadm" "pvcreate:lvm2" \
+                  "cryptsetup:cryptsetup" "mkfs.btrfs:btrfs-progs" \
+                  "mkfs.xfs:xfsprogs" "hdparm:hdparm" "fio:fio" \
+                  "smbd:samba" "exportfs:nfs-kernel-server"; do
+    cmd="${cmd_check%%:*}"
+    pkg="${cmd_check##*:}"
+    if command -v "$cmd" &>/dev/null; then
+        echo "[BASE]   $cmd ($pkg): OK"
+    else
+        echo "[BASE]   $cmd ($pkg): MISSING"
+        VERIFY_OK=false
+    fi
+done
+
+# v3.0 optional binaries (non-fatal)
+echo ""
+echo "[BASE] Verifying v3.0 optional binaries..."
+for cmd_check in "drbdadm:drbd-utils" "mkfs.ocfs2:ocfs2-tools"; do
+    cmd="${cmd_check%%:*}"
+    pkg="${cmd_check##*:}"
+    if command -v "$cmd" &>/dev/null; then
+        echo "[BASE]   $cmd ($pkg): OK"
+    else
+        echo "[BASE]   $cmd ($pkg): not installed (optional, non-fatal)"
+    fi
+done
+
+# B65: Verify asyncore + asynchat
 echo ""
 echo "[BASE] Verifying fail2ban Python dependencies (B65)..."
 if python3 -c "import asyncore; import asynchat" 2>/dev/null; then
@@ -812,32 +818,22 @@ TOTAL_PKGS=$(dpkg -l 2>/dev/null | grep -c '^ii' || echo 'unknown')
 echo "  Total packages: $TOTAL_PKGS"
 echo "  Installed size: $(du -sh /usr 2>/dev/null | cut -f1 || echo 'unknown')"
 echo ""
-echo "  NEW in v2.0:"
-echo "    + GPS:      gpsd, chrony, pps-tools"
-echo "    + Cellular: modemmanager, libqmi, libmbim, usb-modeswitch"
-echo "    + Pi HW:    gpiod, v4l-utils, libraspberrypi-bin"
-echo "    + Storage:  ntfs-3g, exfatprogs, smartmontools, smbclient"
-echo "    + Network:  wireguard-tools, ethtool, avahi-daemon"
-echo "    + VPN:      openvpn, tor (client daemons)"
-echo "    + B52 net:  wpasupplicant (SERVER_WIFI), networkd-dispatcher (auto-detect)"
-echo "    + B62 mem:  ZRAM configured at 100% RAM with lz4 (was 14% default)"
-echo "    + B65 sec:  fail2ban Python 3.12 asynchat/asyncore backports"
-echo "    + B87 net:  isc-dhcp-client (HAL DHCP endpoint, Android tethering)"
-echo "    + Tools:    sqlite3, picocom, plocate, nano, zram-tools"
-echo ""
-echo "  NEW in v3.0:"
+echo "  v3.0 NEW packages:"
 echo "    + BLE:      bluez, bluez-tools (Track B: MeshSat)"
-echo "    + SDR:      rtl-sdr (C4), alsa-utils (C5: Digirig audio)"
+echo "    + SDR:      rtl-sdr (C4), alsa-utils (C5: Digirig)"
 echo "    + Sensors:  lm-sensors (C3: thermal profiles)"
-echo "    + Security: apparmor-utils (SEC-09: container profiles)"
+echo "    + Security: apparmor-utils (SEC-09)"
 echo "    + MPTCP:    mptcpd (optional — C0: WAN bonding)"
-echo "    + USB:      udisks2 (Phase 4: backup destinations)"
-echo "    + Serial:   setserial (optional — C3/C5 port config)"
-echo "    + Kernel:   pps_gpio, snd-usb-audio modules"
+echo "    + USB:      udisks2 (backup destinations)"
+echo "    + Serial:   setserial (optional — C3/C5)"
+echo "    + NVMe:     nvme-cli (X1004 dual NVMe HAT)"
+echo "    + RAID:     mdadm, lvm2, cryptsetup (RAID0/1, LVM, LUKS)"
+echo "    + FS:       btrfs-progs, xfsprogs (NVMe filesystems)"
+echo "    + Disk:     hdparm, fio (tuning + benchmarking)"
+echo "    + Server:   samba, nfs-kernel-server (file sharing)"
+echo "    + Cluster:  drbd-utils, ocfs2-tools (optional — multi-node)"
+echo "    + Kernel:   pps_gpio, snd-usb-audio, raid1, dm-crypt"
 echo "    + Modprobe: RTL-SDR DVB-T blacklist"
-echo ""
-echo "  REMOVED in v2.2:"
-echo "    - gpsd-clients (python3-gps + GTK deps — 40min QEMU, HAL uses socket)"
 echo ""
 echo "  All packages installed. No configuration applied."
 echo "  Configuration happens in the release pipeline."
