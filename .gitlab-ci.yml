@@ -733,6 +733,131 @@ build-image:
       set -e
       echo ""
       echo "============================================================"
+      echo "  Phase 1d: Post-Build File Validation (P1-21)"
+      echo "============================================================"
+      # Loopback-mount the built image and verify critical files exist.
+      # Catches missing boot scripts, broken configs, wrong version, etc.
+      # BEFORE compression — cheapest place to catch errors.
+
+      LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
+      echo "Loop device: $LOOPDEV"
+      sleep 2
+
+      ROOT_PART="${LOOPDEV}p2"
+      BOOT_PART="${LOOPDEV}p1"
+      MOUNT_DIR="/mnt/cubeos-validate"
+      mkdir -p "$MOUNT_DIR"
+      mount -o ro "$ROOT_PART" "$MOUNT_DIR"
+      mount -o ro "$BOOT_PART" "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+
+      VALIDATION_ERRORS=0
+      val_check() {
+        local label="$1" path="$2"
+        if [ -e "${MOUNT_DIR}${path}" ]; then
+          echo "  OK: ${label}"
+        else
+          echo "  FAIL: ${label} — ${path} missing"
+          VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+        fi
+      }
+
+      echo ""
+      echo "[1/6] Boot scripts..."
+      val_check "cubeos-boot-lib.sh"       "/usr/local/bin/cubeos-boot-lib.sh"
+      val_check "cubeos-first-boot.sh"     "/usr/local/bin/cubeos-first-boot.sh"
+      val_check "cubeos-normal-boot.sh"    "/usr/local/bin/cubeos-normal-boot.sh"
+      val_check "cubeos-boot-detect.sh"    "/usr/local/bin/cubeos-boot-detect.sh"
+      val_check "cubeos-generate-secrets.sh" "/usr/local/bin/cubeos-generate-secrets.sh"
+      val_check "cubeos-deploy-stacks.sh"  "/usr/local/bin/cubeos-deploy-stacks.sh"
+
+      echo ""
+      echo "[2/6] Systemd & services..."
+      val_check "Docker daemon.json"       "/etc/docker/daemon.json"
+      val_check "Netplan config"           "/etc/netplan/01-cubeos.yaml"
+      val_check "hostapd config"           "/etc/hostapd/hostapd.conf"
+
+      echo ""
+      echo "[3/6] Security hardening (Phase 1.3)..."
+      val_check "SSH 01-cubeos.conf"             "/etc/ssh/sshd_config.d/01-cubeos.conf"
+      val_check "SSH 99-cubeos-hardening.conf"   "/etc/ssh/sshd_config.d/99-cubeos-hardening.conf"
+      val_check "sysctl 99-cubeos.conf"          "/etc/sysctl.d/99-cubeos.conf"
+      val_check "sysctl 99-cubeos-security.conf" "/etc/sysctl.d/99-cubeos-security.conf"
+      val_check "journald cubeos.conf"           "/etc/systemd/journald.conf.d/cubeos.conf"
+      val_check "watchdog cubeos-watchdog.conf"  "/etc/systemd/system.conf.d/cubeos-watchdog.conf"
+      val_check "fail2ban cubeos-sshd.conf"      "/etc/fail2ban/jail.d/cubeos-sshd.conf"
+
+      echo ""
+      echo "[4/6] CubeOS directories & config..."
+      val_check "/cubeos/config/defaults.env"    "/cubeos/config/defaults.env"
+      val_check "/cubeos/data/"                  "/cubeos/data/"
+      val_check "/cubeos/coreapps/"              "/cubeos/coreapps/"
+      val_check "/cubeos/docs/"                  "/cubeos/docs/"
+
+      echo ""
+      echo "[5/6] Compose files..."
+      val_check "pihole compose"      "/cubeos/coreapps/pihole/appconfig/docker-compose.yml"
+      val_check "npm compose"         "/cubeos/coreapps/npm/appconfig/docker-compose.yml"
+      val_check "cubeos-api compose"  "/cubeos/coreapps/cubeos-api/appconfig/docker-compose.yml"
+      val_check "cubeos-hal compose"  "/cubeos/coreapps/cubeos-hal/appconfig/docker-compose.yml"
+      val_check "cubeos-dashboard compose" "/cubeos/coreapps/cubeos-dashboard/appconfig/docker-compose.yml"
+
+      echo ""
+      echo "[6/6] Version & metadata..."
+      val_check "/etc/cubeos-version"  "/etc/cubeos-version"
+      if [ -f "${MOUNT_DIR}/etc/cubeos-version" ]; then
+        BAKED_VERSION=$(cat "${MOUNT_DIR}/etc/cubeos-version")
+        if [ "$BAKED_VERSION" = "$CUBEOS_VERSION" ]; then
+          echo "  OK: Version matches ($BAKED_VERSION)"
+        else
+          echo "  FAIL: Version mismatch — baked=$BAKED_VERSION expected=$CUBEOS_VERSION"
+          VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+        fi
+      fi
+
+      # Spot-check security content (not just file existence)
+      echo ""
+      echo "[SPOT] Content verification..."
+      if grep -q "PermitRootLogin no" "${MOUNT_DIR}/etc/ssh/sshd_config.d/99-cubeos-hardening.conf" 2>/dev/null; then
+        echo "  OK: SSH PermitRootLogin=no"
+      else
+        echo "  FAIL: SSH PermitRootLogin not set to no"
+        VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+      fi
+      if grep -q "Storage=volatile" "${MOUNT_DIR}/etc/systemd/journald.conf.d/cubeos.conf" 2>/dev/null; then
+        echo "  OK: journald Storage=volatile"
+      else
+        echo "  FAIL: journald not set to volatile"
+        VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+      fi
+      if grep -q "RuntimeWatchdogSec=10s" "${MOUNT_DIR}/etc/systemd/system.conf.d/cubeos-watchdog.conf" 2>/dev/null; then
+        echo "  OK: watchdog RuntimeWatchdogSec=10s"
+      else
+        echo "  FAIL: watchdog not configured"
+        VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+      fi
+
+      # Cleanup
+      umount "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+      umount "$MOUNT_DIR"
+      losetup -d "$LOOPDEV"
+      rmdir "$MOUNT_DIR" 2>/dev/null || true
+
+      echo ""
+      if [ "$VALIDATION_ERRORS" -gt 0 ]; then
+        echo "============================================================"
+        echo "  VALIDATION FAILED: $VALIDATION_ERRORS errors detected"
+        echo "  Image will NOT be compressed. Fix the build and retry."
+        echo "============================================================"
+        exit 1
+      else
+        echo "============================================================"
+        echo "  Phase 1d: PASSED — All files verified"
+        echo "============================================================"
+      fi
+    - |
+      set -e
+      echo ""
+      echo "============================================================"
       echo "  Phase 2: Shrink + Compress"
       echo "============================================================"
 
