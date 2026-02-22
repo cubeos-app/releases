@@ -10,13 +10,17 @@
 #   - Doc/manpage removal — saves ~50MB
 #   - Comprehensive apt-mark manual for all critical packages
 #   - Better zero-fill approach
+#
+# v3.0:
+#   - Added v3.0 packages to protected list (bluez, rtl-sdr, alsa-utils,
+#     lm-sensors, apparmor-utils, udisks2)
 # =============================================================================
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 export TERM=dumb
 
-echo "=== [BASE-CLEANUP] Cleaning base image (v2.0) ==="
+echo "=== [BASE-CLEANUP] Cleaning base image (v3.0) ==="
 
 # ---------------------------------------------------------------------------
 # Protect ALL critical packages from autoremove
@@ -27,11 +31,13 @@ echo "=== [BASE-CLEANUP] Cleaning base image (v2.0) ==="
 echo "[BASE-CLEANUP] Protecting critical packages..."
 for pkg in util-linux-extra sqlite3 i2c-tools gpiod libgpiod2 usbutils \
            v4l-utils pps-tools modemmanager libqmi-utils libmbim-utils \
-           usb-modeswitch usb-modeswitch-data gpsd gpsd-clients chrony \
+           usb-modeswitch usb-modeswitch-data gpsd chrony \
            picocom smartmontools ethtool avahi-daemon wireguard-tools \
            zram-tools exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher \
            libpam-modules libpam-runtime openssh-server fail2ban \
-           python3-pyasyncore python3-pyasynchat isc-dhcp-client; do
+           python3-pyasyncore isc-dhcp-client \
+           bluez bluez-tools rtl-sdr alsa-utils lm-sensors \
+           apparmor-utils udisks2; do
     apt-mark manual "$pkg" 2>/dev/null || true
 done
 
@@ -51,6 +57,8 @@ rm -rf /var/cache/apt/archives/*.deb
 # ---------------------------------------------------------------------------
 echo "[BASE-CLEANUP] Verifying critical packages survived autoremove..."
 MISSING=0
+
+# v2.x binaries
 for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools" \
                "gpiodetect:gpiod" "lsusb:usbutils" "mmcli:modemmanager" \
                "chronyd:chrony" "fail2ban-server:fail2ban" \
@@ -65,6 +73,22 @@ for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools
         MISSING=$((MISSING + 1))
     fi
 done
+
+# v3.0 binaries
+for cmd_pkg in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
+               "sensors:lm-sensors" "aa-status:apparmor-utils" \
+               "udisksctl:udisks2"; do
+    cmd="${cmd_pkg%%:*}"
+    pkg="${cmd_pkg##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "[BASE-CLEANUP]   MISSING: $cmd ($pkg) — attempting reinstall..."
+        apt-get update -q >/dev/null 2>&1 || true
+        apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || true
+        apt-mark manual "$pkg" 2>/dev/null || true
+        MISSING=$((MISSING + 1))
+    fi
+done
+
 # B65: Verify asynchat/asyncore survived autoremove
 if ! python3 -c "import asynchat; import asyncore" 2>/dev/null; then
     echo "[BASE-CLEANUP]   MISSING: asynchat/asyncore (fail2ban deps) — attempting reinstall..."

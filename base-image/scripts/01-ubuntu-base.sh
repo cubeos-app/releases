@@ -35,6 +35,18 @@
 #   - Removed: gpsd-clients (python3-gps + GTK deps, ~40min QEMU build)
 #     HAL communicates with gpsd via socket protocol, no Python CLI needed
 #   - B65: Pipe masking fixed, verification now aborts build on failure
+#
+# v3.0 (golden base rebuild — "cook once, use forever"):
+#   - Added GROUP 12: bluez, bluez-tools (BLE for MeshSat Track B)
+#   - Added GROUP 13: rtl-sdr, alsa-utils (SDR C4, Radio C5)
+#   - Added GROUP 14: lm-sensors (Power profiles C3)
+#   - Added GROUP 15: apparmor-utils (Security hardening SEC-09)
+#   - Added GROUP 16: mptcpd (optional — MPTCP WAN bonding C0)
+#   - Added GROUP 17: udisks2 (USB drive management, Phase 4 backup)
+#   - Added GROUP 18: setserial (optional — serial port config C3/C5)
+#   - Added RTL-SDR modprobe blacklist (dvb_usb_rtl28xxu)
+#   - Added kernel modules: pps_gpio, snd-usb-audio
+#   - Covers: Track A (Phases 1-6), Track B (MeshSat), Track C (C0-C7)
 # =============================================================================
 set -euo pipefail
 
@@ -401,6 +413,60 @@ install_group "Cloud-init" \
 install_group "Python (no pip)" \
     python3
 
+# =========================================================================
+# NEW IN v3.0: Groups 12–18 (Track B, Track C, Phase 1.3, Phase 4)
+# =========================================================================
+
+# ===== GROUP 12: Bluetooth / BLE (Track B: MeshSat) =====
+# MeshSat communicates with Meshtastic radios via BLE. The HAL needs
+# host-level Bluetooth stack access for discovery, pairing, and streaming.
+# BLE requires direct HCI socket access — cannot run in Docker.
+install_group "Bluetooth / BLE" \
+    bluez \
+    bluez-tools
+
+# ===== GROUP 13: SDR / Radio Host Tools (Track C4: SDR, C5: Radio) =====
+# RTL-SDR: host USB device management + udev rules that prevent the kernel's
+# DVB-T driver from claiming the device. SDR apps run in Docker with
+# --device passthrough, but the host needs rtl-sdr for device config.
+# ALSA: Digirig is a USB sound card — host manages audio device, Docker
+# containers (Direwolf, Pat) access via --device /dev/snd.
+install_group "SDR / Radio" \
+    rtl-sdr \
+    alsa-utils
+
+# ===== GROUP 14: Sensors & Power Monitoring (Track C3: Smart Power) =====
+# Hardware sensor reading for temperature, voltage, fan control. Used by
+# HAL power management for thermal profiles and load shedding decisions.
+install_group "Sensors" \
+    lm-sensors
+
+# ===== GROUP 15: Security Hardening (Phase 1.3, SEC-09) =====
+# AppArmor is partially pre-installed in Ubuntu 24.04 but the management
+# tools (aa-enforce, aa-complain, aa-logprof) are missing. These are needed
+# to manage container security profiles.
+install_group "Security hardening" \
+    apparmor-utils
+
+# ===== GROUP 16: MPTCP Support (Track C0: WAN Bonding) =====
+# MPTCP is a kernel feature in Linux 6.8+ (Ubuntu 24.04). mptcpd provides
+# the path manager daemon and mptcpize wrapper. May not exist in 24.04
+# ARM64 repos — non-fatal. Fallback: raw sysctl + ip-mptcp commands.
+install_optional "mptcpd" "mptcpd (MPTCP path manager daemon)"
+
+# ===== GROUP 17: USB Drive Management (Phase 4: Backup) =====
+# D-Bus-based mount management for USB drives used as backup destinations.
+# HAL uses udisks2 to safely mount/unmount/eject USB storage.
+install_group "USB drive management" \
+    udisks2
+
+# ===== GROUP 18: Serial Port Tools (Track B, C3, C5) =====
+# Low-level serial port configuration for Victron VE.Direct solar readers
+# (C3), Meshtastic serial mode (Track B), and Digirig serial PTT (C5).
+# picocom is already installed for interactive debugging; setserial adds
+# programmatic port configuration (baud, flow control) for HAL.
+install_optional "setserial" "setserial (serial port config)"
+
 # ---------------------------------------------------------------------------
 # Install Docker CE
 # ---------------------------------------------------------------------------
@@ -437,6 +503,7 @@ echo "[BASE]   Docker: $(docker --version 2>/dev/null || echo 'installed')"
 echo ""
 echo "[BASE] Protecting critical packages from autoremove..."
 PROTECTED_PACKAGES=(
+    # --- v2.x packages ---
     util-linux-extra    # hwclock for RTC (B03/B44)
     sqlite3             # CLI database debugging
     i2c-tools           # UPS HAT, RTC, sensors
@@ -469,6 +536,14 @@ PROTECTED_PACKAGES=(
     python3-pyasyncore  # B65: fail2ban asyncore compat (Python 3.12)
     wpasupplicant       # B52: SERVER_WIFI mode needs wpa_supplicant on host
     networkd-dispatcher # B52: auto eth0 carrier detection hooks
+    # --- v3.0 NEW packages ---
+    bluez               # Bluetooth stack (Track B: MeshSat BLE)
+    bluez-tools         # BT CLI tools (bt-adapter, bt-device)
+    rtl-sdr             # SDR device management (C4)
+    alsa-utils          # Audio device management (C5: Digirig)
+    lm-sensors          # Hardware sensors (C3: thermal profiles)
+    apparmor-utils      # Security profile management (SEC-09)
+    udisks2             # USB drive management (Phase 4: backup)
 )
 for pkg in "${PROTECTED_PACKAGES[@]}"; do
     apt-mark manual "$pkg" 2>/dev/null || true
@@ -492,15 +567,35 @@ net.ipv6.conf.default.autoconf = 0
 
 # Reduce kernel log noise
 kernel.printk = 3 4 1 3
+
+# MPTCP WAN bonding (C0) — disabled by default, enable via API when active
+# net.mptcp.enabled = 1
 SYSCTL
 
 cat > /etc/modules-load.d/cubeos.conf << 'MODULES'
 overlay
 br_netfilter
 i2c-dev
+pps_gpio
+snd-usb-audio
 MODULES
 
 echo "[BASE]   Kernel config: OK"
+
+# ---------------------------------------------------------------------------
+# RTL-SDR: Blacklist DVB-T kernel driver (C4)
+# ---------------------------------------------------------------------------
+# The kernel's DVB-T driver auto-claims RTL2832U USB devices, preventing
+# userspace SDR tools from accessing them. Blacklist it so rtl-sdr works.
+# ---------------------------------------------------------------------------
+echo "[BASE] Configuring RTL-SDR modprobe blacklist..."
+cat > /etc/modprobe.d/cubeos-blacklist.conf << 'BLACKLIST'
+# RTL-SDR: prevent DVB-T driver from claiming RTL2832U devices (C4)
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+BLACKLIST
+echo "[BASE]   RTL-SDR blacklist: OK"
 
 # ---------------------------------------------------------------------------
 # Chrony: disable default NTP pools (offline-first, GPS/PPS later)
@@ -598,6 +693,31 @@ echo "[BASE] Enabling networkd-dispatcher..."
 systemctl enable networkd-dispatcher 2>/dev/null || true
 echo "[BASE]   networkd-dispatcher: enabled"
 
+# =========================================================================
+# v3.0: Disable new services (HAL manages their lifecycle)
+# =========================================================================
+
+# ---------------------------------------------------------------------------
+# Bluetooth: disable auto-start (HAL manages BLE lifecycle)
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling bluetooth auto-start..."
+systemctl disable bluetooth 2>/dev/null || true
+echo "[BASE]   bluetooth: disabled (HAL manages BLE lifecycle)"
+
+# ---------------------------------------------------------------------------
+# lm-sensors: disable auto-start (HAL reads sensors on-demand)
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling lm-sensors auto-start..."
+systemctl disable lm-sensors 2>/dev/null || true
+echo "[BASE]   lm-sensors: disabled (HAL reads on-demand)"
+
+# ---------------------------------------------------------------------------
+# udisks2: disable auto-start (HAL manages mount lifecycle)
+# ---------------------------------------------------------------------------
+echo "[BASE] Disabling udisks2 auto-start..."
+systemctl disable udisks2 2>/dev/null || true
+echo "[BASE]   udisks2: disabled (HAL manages mount lifecycle)"
+
 # ---------------------------------------------------------------------------
 # Restore workarounds
 # ---------------------------------------------------------------------------
@@ -622,12 +742,30 @@ echo "[BASE]   resolv.conf: restored"
 echo ""
 echo "[BASE] Verifying critical binaries..."
 VERIFY_OK=true
+
+# v2.x binaries
 for cmd_check in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools" \
                   "gpiodetect:gpiod" "lsusb:usbutils" "gpsd:gpsd" "mmcli:modemmanager" \
                   "chronyd:chrony" "picocom:picocom" "jq:jq" "curl:curl" \
                   "usb_modeswitch:usb-modeswitch" "smartctl:smartmontools" \
                   "wpa_supplicant:wpasupplicant" "fail2ban-server:fail2ban" \
                   "dhclient:isc-dhcp-client"; do
+    cmd="${cmd_check%%:*}"
+    pkg="${cmd_check##*:}"
+    if command -v "$cmd" &>/dev/null; then
+        echo "[BASE]   $cmd ($pkg): OK"
+    else
+        echo "[BASE]   $cmd ($pkg): MISSING"
+        VERIFY_OK=false
+    fi
+done
+
+# v3.0 NEW binaries
+echo ""
+echo "[BASE] Verifying v3.0 binaries..."
+for cmd_check in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
+                  "sensors:lm-sensors" "aa-status:apparmor-utils" \
+                  "udisksctl:udisks2"; do
     cmd="${cmd_check%%:*}"
     pkg="${cmd_check##*:}"
     if command -v "$cmd" &>/dev/null; then
@@ -686,6 +824,17 @@ echo "    + B62 mem:  ZRAM configured at 100% RAM with lz4 (was 14% default)"
 echo "    + B65 sec:  fail2ban Python 3.12 asynchat/asyncore backports"
 echo "    + B87 net:  isc-dhcp-client (HAL DHCP endpoint, Android tethering)"
 echo "    + Tools:    sqlite3, picocom, plocate, nano, zram-tools"
+echo ""
+echo "  NEW in v3.0:"
+echo "    + BLE:      bluez, bluez-tools (Track B: MeshSat)"
+echo "    + SDR:      rtl-sdr (C4), alsa-utils (C5: Digirig audio)"
+echo "    + Sensors:  lm-sensors (C3: thermal profiles)"
+echo "    + Security: apparmor-utils (SEC-09: container profiles)"
+echo "    + MPTCP:    mptcpd (optional — C0: WAN bonding)"
+echo "    + USB:      udisks2 (Phase 4: backup destinations)"
+echo "    + Serial:   setserial (optional — C3/C5 port config)"
+echo "    + Kernel:   pps_gpio, snd-usb-audio modules"
+echo "    + Modprobe: RTL-SDR DVB-T blacklist"
 echo ""
 echo "  REMOVED in v2.2:"
 echo "    - gpsd-clients (python3-gps + GTK deps — 40min QEMU, HAL uses socket)"
