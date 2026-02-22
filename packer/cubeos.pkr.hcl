@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Release Image Builder — v0.1.0-alpha.21
+# CubeOS Release Image Builder — v0.2.0-alpha.01
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
@@ -44,7 +44,7 @@
 
 variable "version" {
   type    = string
-  default = "0.1.0-alpha.21"
+  default = "0.2.0-alpha.01"
 }
 
 variable "image_size" {

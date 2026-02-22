@@ -1,9 +1,9 @@
 {
     "os_list": [
         {
-            "name": "CubeOS 0.1.0 Alpha (64-bit)",
+            "name": "CubeOS 0.2.0 Alpha (64-bit)",
             "description": "Self-hosting OS for Raspberry Pi — Docker, offline-first, web management",
-            "url": "https://github.com/cubeos-app/releases/releases/download/v0.1.0-alpha/cubeos-0.1.0-alpha-arm64.img.xz",
+            "url": "https://github.com/cubeos-app/releases/releases/download/v0.2.0-alpha/cubeos-0.2.0-alpha-arm64.img.xz",
             "icon": "https://raw.githubusercontent.com/cubeos-app/releases/main/assets/cubeos-icon-40x40.png",
             "website": "https://github.com/cubeos-app",
             "release_date": "2026-02-15",
