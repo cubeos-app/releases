@@ -511,6 +511,60 @@ SSHEOF
 rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 echo "[02]   SSH password + pubkey auth enabled (via sshd_config.d/01-cubeos.conf)"
 
+# ---------------------------------------------------------------------------
+# P1-11: SSH Hardening — 99-cubeos-hardening.conf
+# ---------------------------------------------------------------------------
+# Comprehensive SSH lockdown. Loaded AFTER 01-cubeos.conf (first-match-wins),
+# so PasswordAuthentication and PubkeyAuthentication from 01-cubeos.conf
+# take precedence. This file catches everything else.
+#
+# Target: ssh-audit grade A or higher.
+# ---------------------------------------------------------------------------
+echo "[02] Applying SSH hardening (99-cubeos-hardening.conf)..."
+cat > /etc/ssh/sshd_config.d/99-cubeos-hardening.conf <<'SSHHARD'
+# =============================================================================
+# CubeOS SSH Hardening — Phase 1.3 Security Sprint
+# =============================================================================
+# Applied during image build. Targets ssh-audit grade A.
+# PasswordAuthentication and PubkeyAuthentication are set in 01-cubeos.conf
+# (first-match-wins), so they are NOT repeated here.
+# =============================================================================
+
+# --- Access Control ---
+PermitRootLogin no
+MaxAuthTries 3
+MaxSessions 5
+LoginGraceTime 30
+
+# --- Disable unnecessary features ---
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+DisableForwarding yes
+
+# --- Hardened key exchange, ciphers, MACs ---
+# Ref: https://infosec.mozilla.org/guidelines/openssh
+KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256,rsa-sha2-256-cert-v01@openssh.com
+
+# --- Logging ---
+LogLevel VERBOSE
+
+# --- Idle timeout (15 min) ---
+ClientAliveInterval 300
+ClientAliveCountMax 3
+
+# --- Banner ---
+Banner none
+SSHHARD
+
+echo "[02]   SSH hardening applied (PermitRootLogin=no, MaxAuthTries=3, strong ciphers)"
+
 # Prepare .ssh directory for post-flash key deployment (ssh-copy-id or Pi Imager)
 mkdir -p /home/cubeos/.ssh
 chmod 700 /home/cubeos/.ssh

@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-echo "=== [04] CubeOS Setup (alpha.18) ==="
+echo "=== [04] CubeOS Setup (alpha.18 + Phase 1.3 Security) ==="
 
 # ---------------------------------------------------------------------------
 # B44: Check for hwclock (util-linux-extra)
@@ -393,6 +393,147 @@ cat > /cubeos/coreapps/pihole/appdata/etc-pihole/hosts/custom.list << 'DNS'
 10.42.24.1 kiwix.cubeos.cube
 10.42.24.1 filebrowser.cubeos.cube
 DNS
+
+# ---------------------------------------------------------------------------
+# P1-13: Kernel Security Hardening — sysctl
+# ---------------------------------------------------------------------------
+# Complements 99-cubeos.conf (IP forwarding) from the base image.
+# This file adds security-specific settings that don't belong in the base.
+# ---------------------------------------------------------------------------
+echo "[04] Applying kernel security hardening (sysctl)..."
+
+cat > /etc/sysctl.d/99-cubeos-security.conf << 'SECURITY_SYSCTL'
+# =============================================================================
+# CubeOS Kernel Security Hardening — Phase 1.3
+# =============================================================================
+# Network security settings. IP forwarding is in 99-cubeos.conf (base image).
+# =============================================================================
+
+# --- Prevent source routing attacks ---
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+
+# --- Reject ICMP redirects (prevents MITM via fake routes) ---
+# NOTE: accept_redirects must be 0 for routers (which CubeOS is — it NATs)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# --- Enable reverse path filtering (anti-spoofing) ---
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# --- TCP SYN flood protection ---
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 2048
+net.ipv4.tcp_synack_retries = 2
+
+# --- Ignore ICMP broadcasts (smurf attack prevention) ---
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# --- Log martian packets (impossible source addresses) ---
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+
+# --- ASLR (Address Space Layout Randomization) ---
+kernel.randomize_va_space = 2
+
+# --- Restrict kernel pointer exposure ---
+kernel.kptr_restrict = 1
+
+# --- Restrict dmesg to root ---
+kernel.dmesg_restrict = 1
+
+# --- Restrict ptrace to parent processes only ---
+kernel.yama.ptrace_scope = 1
+
+# --- Prevent core dumps for SUID binaries ---
+fs.suid_dumpable = 0
+SECURITY_SYSCTL
+
+echo "[04]   Kernel security hardening applied (99-cubeos-security.conf)"
+
+# ---------------------------------------------------------------------------
+# P1-15: journald — tmpfs storage (prevent SD card wear)
+# ---------------------------------------------------------------------------
+# SD cards have limited write endurance. systemd-journald writing logs to
+# persistent storage is the #1 cause of premature SD card failure on Pi.
+# volatile = tmpfs only, RuntimeMaxUse caps the RAM footprint.
+# ---------------------------------------------------------------------------
+echo "[04] Configuring journald for tmpfs storage..."
+
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/cubeos.conf << 'JOURNALD'
+# CubeOS: Logs in RAM only — prevents SD card wear
+# Logs are lost on reboot, which is acceptable for an embedded appliance.
+# Dozzle provides real-time container log viewing via the dashboard.
+[Journal]
+Storage=volatile
+RuntimeMaxUse=50M
+RuntimeMaxFileSize=10M
+MaxRetentionSec=1day
+ForwardToSyslog=no
+Compress=yes
+JOURNALD
+
+echo "[04]   journald: volatile storage (50M max, tmpfs only)"
+
+# ---------------------------------------------------------------------------
+# P1-14: Hardware Watchdog — systemd integration
+# ---------------------------------------------------------------------------
+# Pi 4/5 have a hardware watchdog (bcm2835_wdt). systemd can feed it
+# directly — if the system hangs, the watchdog triggers a hard reboot.
+# RuntimeWatchdogSec: systemd feeds the watchdog; if it misses, HW reboots.
+# RebootWatchdogSec: timeout during reboot sequence before forced reset.
+# Max hardware timeout on Pi is 15 seconds.
+# ---------------------------------------------------------------------------
+echo "[04] Enabling systemd hardware watchdog..."
+
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/cubeos-watchdog.conf << 'WATCHDOG'
+# CubeOS: Hardware watchdog via systemd
+# Pi hardware watchdog max timeout = 15s
+# RuntimeWatchdogSec: kernel hang → auto-reboot after 10s
+# RebootWatchdogSec: stuck reboot → forced reset after 30s
+[Manager]
+RuntimeWatchdogSec=10s
+RebootWatchdogSec=30s
+WATCHDOG
+
+echo "[04]   systemd watchdog: RuntimeWatchdogSec=10s, RebootWatchdogSec=30s"
+
+# ---------------------------------------------------------------------------
+# P1-12: fail2ban — SSH jail configuration
+# ---------------------------------------------------------------------------
+# fail2ban is installed in the base image (v3.0.0). Configure the SSH jail
+# to ban IPs after 5 failures for 10 minutes. Uses systemd backend
+# (reads journal, not log files — works with volatile journald).
+# ---------------------------------------------------------------------------
+echo "[04] Configuring fail2ban SSH jail..."
+
+mkdir -p /etc/fail2ban/jail.d
+cat > /etc/fail2ban/jail.d/cubeos-sshd.conf << 'FAIL2BAN'
+# CubeOS: SSH brute-force protection
+# Ban after 5 failures within 10 minutes, ban lasts 10 minutes.
+# Uses systemd backend (journal-based, works with volatile storage).
+[sshd]
+enabled = true
+port = ssh
+backend = systemd
+maxretry = 5
+findtime = 600
+bantime = 600
+FAIL2BAN
+
+# Ensure fail2ban starts on boot
+systemctl enable fail2ban 2>/dev/null || true
+
+echo "[04]   fail2ban: SSH jail configured (5 retries, 10min ban, systemd backend)"
 
 # ---------------------------------------------------------------------------
 # MOTD
