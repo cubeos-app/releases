@@ -1,0 +1,29 @@
+# =============================================================================
+# core-images.txt — Core infrastructure and platform images for local registry
+# =============================================================================
+# These images are pushed to the local registry at build time (Phase 1c).
+# On first boot, services can pull from localhost:5000 instead of the internet.
+#
+# Format: source_image|tag|tarball_filename
+#   source_image     — full registry path (used for stripping prefix)
+#   tag              — exact tag to push
+#   tarball_filename — tarball name in docker-images/ directory
+#
+# registry:2 is EXCLUDED (chicken-and-egg — cannot self-host the registry
+# that serves itself).
+# =============================================================================
+
+# DNS + ad blocking
+docker.io/pihole/pihole|latest|pihole.tar
+
+# Reverse proxy
+docker.io/jc21/nginx-proxy-manager|latest|npm.tar
+
+# CubeOS platform services
+ghcr.io/cubeos-app/api|latest|cubeos-api.tar
+ghcr.io/cubeos-app/hal|latest|cubeos-hal.tar
+ghcr.io/cubeos-app/dashboard|latest|cubeos-dashboard.tar
+ghcr.io/cubeos-app/cubeos-docsindex|latest|cubeos-docsindex.tar
+
+# Log viewer
+docker.io/amir20/dozzle|latest|dozzle.tar

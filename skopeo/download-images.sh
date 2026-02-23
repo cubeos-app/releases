@@ -33,7 +33,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Image list — the 9 CubeOS core services
+# Image list — the 8 CubeOS core services
 # ---------------------------------------------------------------------------
 # Format: "registry/image:tag|output_filename|needs_ghcr_auth"
 IMAGES=(
@@ -43,8 +43,6 @@ IMAGES=(
     "docker://ghcr.io/cubeos-app/hal:latest|cubeos-hal.tar|true"
     "docker://ghcr.io/cubeos-app/dashboard:latest|cubeos-dashboard.tar|true"
     "docker://ghcr.io/cubeos-app/cubeos-docsindex:latest|cubeos-docsindex.tar|true"
-    "docker://docker.io/ollama/ollama:latest|ollama.tar|false"
-    "docker://docker.io/chromadb/chroma:latest|chromadb.tar|false"
     "docker://docker.io/library/registry:2|registry.tar|false"
     "docker://docker.io/amir20/dozzle:latest|dozzle.tar|false"
 )
