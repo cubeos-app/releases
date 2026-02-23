@@ -69,6 +69,7 @@ fi
 
 # =============================================================================
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
+source_image_versions
 
 log "============================================================"
 log "  CubeOS Normal Boot -- v${CUBEOS_VERSION:-unknown}"

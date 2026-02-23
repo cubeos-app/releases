@@ -86,7 +86,8 @@ CORE_DNS_HOSTS=(
 # B08: Split into pre-API and post-API stacks.
 # Dashboard deploys AFTER API health check to prevent 502/wizard flash.
 # Kiwix is optional/non-critical — deploys after core stacks.
-SWARM_STACKS_PRE_API="cubeos-api registry cubeos-docsindex dozzle"
+SWARM_STACKS_BOOTSTRAP="registry"
+SWARM_STACKS_PRE_API="cubeos-api cubeos-docsindex dozzle"
 SWARM_STACKS_POST_API="cubeos-dashboard kiwix"
 # Combined list for recovery/normal boot where ordering is less critical
 SWARM_STACKS="registry cubeos-api cubeos-docsindex dozzle cubeos-dashboard kiwix"
@@ -122,6 +123,23 @@ wait_for() {
     done
     log_warn "${name} not ready after ${max_wait}s"
     return 1
+}
+
+# ── Registry health gate ──────────────────────────────────────────
+wait_for_registry() {
+    local max_wait="${1:-30}"
+    log "Waiting for local registry (localhost:5000)..."
+    local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        if curl -sf http://localhost:5000/v2/ &>/dev/null; then
+            log_ok "Registry healthy (${elapsed}s)"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log_warn "Registry not healthy after ${max_wait}s -- continuing (--pull never uses Docker cache)"
+    return 0  # Non-blocking: always return success
 }
 
 container_running() {
@@ -237,6 +255,16 @@ ensure_dns_resolver() {
     if ! grep -q "^nameserver" /etc/resolv.conf 2>/dev/null; then
         log "Fixing /etc/resolv.conf (no nameserver)"
         echo "nameserver 127.0.0.1" > /etc/resolv.conf
+    fi
+}
+
+# ── Image version pins ────────────────────────────────────────────
+source_image_versions() {
+    if [ -f "${COREAPPS_DIR}/image-versions.env" ]; then
+        source "${COREAPPS_DIR}/image-versions.env"
+        log_ok "Sourced image-versions.env"
+    else
+        log_warn "image-versions.env not found -- using default tags"
     fi
 }
 

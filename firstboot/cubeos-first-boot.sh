@@ -363,13 +363,23 @@ if [ "$SWARM_READY" = true ]; then
     ensure_overlay_network
 fi
 
+# ── Source image version pins for registry-first deploys ──────────
+source_image_versions
+
 # =========================================================================
 # Step 5/9: Pi-hole (DNS/DHCP first)
 # =========================================================================
 log_step "Step 5/9: Deploying infrastructure..."
 echo "5/9" > "$PROGRESS"
 
-if docker image inspect "pihole/pihole:latest" &>/dev/null; then
+# Registry-first: deploy registry before any other service
+if [ "$SWARM_READY" = true ]; then
+    log "  Deploying registry (bootstrap)..."
+    deploy_stack "registry" || log_warn "Registry bootstrap deploy failed"
+    wait_for_registry 30
+fi
+
+if docker image inspect "localhost:5000/pihole/pihole:${PIHOLE_TAG:-latest}" &>/dev/null; then
     log_ok "Pi-hole image present (pre-loaded)"
 else
     log_warn "Pi-hole image not found -- deploy may pull or fail"
@@ -452,7 +462,7 @@ location = /cubeos-log-meta {
 NGINX
 log_ok "NPM custom nginx config created (boot page + log endpoints)"
 
-if docker image inspect "jc21/nginx-proxy-manager:latest" &>/dev/null; then
+if docker image inspect "localhost:5000/jc21/nginx-proxy-manager:${NPM_TAG:-latest}" &>/dev/null; then
     log_ok "NPM image present (pre-loaded)"
 else
     log_warn "NPM image not found -- deploy may pull or fail"
@@ -464,7 +474,7 @@ wait_for "NPM" "curl -sf http://127.0.0.1:81/api/" 90 || log_warn "NPM not respo
 seed_npm || log_warn "NPM seeding failed -- cubeos.cube may show default page"
 
 # HAL
-if docker image inspect "ghcr.io/cubeos-app/hal:latest" &>/dev/null; then
+if docker image inspect "localhost:5000/cubeos-app/hal:${HAL_TAG:-latest}" &>/dev/null; then
     log_ok "HAL image present (pre-loaded)"
 else
     log_warn "HAL image not found -- deploy may pull or fail"

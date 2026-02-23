@@ -26,6 +26,7 @@ echo ""
 
 # ── Source defaults.env for version and config (B59 fix) ──────────────
 source /cubeos/config/defaults.env 2>/dev/null || true
+source /cubeos/coreapps/image-versions.env 2>/dev/null || true
 
 # ── Ensure wlan0 has our IP ──────────────────────────────────────────
 echo "[RECOVER] Ensuring wlan0 has ${GATEWAY_IP}..."
