@@ -27,3 +27,9 @@ ghcr.io/cubeos-app/cubeos-docsindex|latest|cubeos-docsindex.tar
 
 # Log viewer
 docker.io/amir20/dozzle|latest|dozzle.tar
+
+# File browser
+docker.io/sigoden/dufs|latest|dufs.tar
+
+# AI vector DB
+docker.io/chromadb/chroma|latest|chromadb.tar

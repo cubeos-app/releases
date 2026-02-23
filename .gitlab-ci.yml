@@ -85,7 +85,7 @@ build-image:
         "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
         /tmp/coreapps-src
 
-      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix"
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix filebrowser chromadb"
 
       mkdir -p coreapps-bundle
       for svc in $SERVICES; do
@@ -142,54 +142,64 @@ build-image:
 
       mkdir -p docker-images
 
-      echo "[1/8] Pi-hole..."
+      echo "[1/10] Pi-hole..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
 
-      echo "[2/8] Nginx Proxy Manager..."
+      echo "[2/10] Nginx Proxy Manager..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
 
-      echo "[3/8] CubeOS API..."
+      echo "[3/10] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
 
-      echo "[4/8] CubeOS HAL..."
+      echo "[4/10] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
 
-      echo "[5/8] CubeOS Dashboard..."
+      echo "[5/10] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
 
-      echo "[6/8] CubeOS DocsIndex..."
+      echo "[6/10] CubeOS DocsIndex..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
         docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
 
-      echo "[7/8] Docker Registry..."
+      echo "[7/10] Docker Registry..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/library/registry:2 \
         docker-archive:docker-images/registry.tar:library/registry:2
 
-      echo "[8/8] Dozzle..."
+      echo "[8/10] Dozzle..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/amir20/dozzle:latest \
         docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
 
+      echo "[9/10] Dufs (file browser)..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/sigoden/dufs:latest \
+        docker-archive:docker-images/dufs.tar:sigoden/dufs:latest
+
+      echo "[10/10] ChromaDB..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/chromadb/chroma:latest \
+        docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
+
       echo ""
       ls -lh docker-images/
       du -sh docker-images/
-      echo "Docker images: OK (8 images)"
+      echo "Docker images: OK (10 images)"
     - |
       set -e
       echo ""
@@ -700,7 +710,7 @@ build-image:
         echo "Curated registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
         TOTAL_PUSHED=$((CORE_PUSHED + PUSHED))
         TOTAL_PUSH_FAILED=$((CORE_PUSH_FAILED + PUSH_FAILED))
-        echo "Total registry push: ${TOTAL_PUSHED} pushed, ${TOTAL_PUSH_FAILED} failed (7 core + 2 curated expected)"
+        echo "Total registry push: ${TOTAL_PUSHED} pushed, ${TOTAL_PUSH_FAILED} failed (9 core + 2 curated expected)"
 
         # B56: Fail build if any curated image failed to push — silent failures
         # previously caused kiwix to show 0/1 replicas on boot.
@@ -718,7 +728,7 @@ build-image:
         # ── Step 5: Validate registry contents ─────────────────────────
         # Validates ALL images (7 core + 2 curated = 9 total)
         echo ""
-        echo "Validating registry contents (9 expected: 7 core + 2 curated)..."
+        echo "Validating registry contents (11 expected: 9 core + 2 curated)..."
         CATALOG=$(curl -sf "${REGISTRY_URL}/v2/_catalog" 2>/dev/null || echo '{"repositories":[]}')
         echo "  Catalog: ${CATALOG}"
 
@@ -782,7 +792,7 @@ build-image:
           fi
         done < skopeo/curated-apps.txt
 
-        echo "  Validated: ${VALID}/9 images"
+        echo "  Validated: ${VALID}/11 images"
         if [ "$INVALID" -gt 0 ]; then
           echo "ERROR: ${INVALID} images failed validation!"
           docker stop cubeos-temp-registry 2>/dev/null || true
