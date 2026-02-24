@@ -864,6 +864,104 @@ apply_network_mode() {
     esac
 }
 
+# ── USB Recovery Detection (bare-metal restore) ──────────────────────
+# Scans USB block devices for CubeOS backup archives. If found, copies
+# the backup to /cubeos/data/backups/ and writes a pending-restore.json
+# marker so the API can auto-trigger a restore workflow on first boot.
+#
+# Priority 1: cubeos-backup-*.tar.gz → bare-metal restore
+# Priority 2: cubeos-config.json     → config import (Phase 6 prep)
+#
+# Returns 0 if any recovery file was found, 1 otherwise.
+check_usb_recovery() {
+    local USB_MNT="/cubeos/mnt/usb-restore"
+    local BACKUP_DEST="${DATA_DIR}/backups"
+    local found=false
+
+    mkdir -p "${USB_MNT}" "${BACKUP_DEST}"
+
+    # Find USB block devices via lsblk
+    local usb_parts
+    usb_parts=$(lsblk -nrpo NAME,TRAN,FSTYPE 2>/dev/null | awk '$2=="usb" && $3!=""{ print $1 }')
+
+    if [ -z "${usb_parts}" ]; then
+        log "USB recovery: no USB partitions detected"
+        rmdir "${USB_MNT}" 2>/dev/null || true
+        return 1
+    fi
+
+    for part in ${usb_parts}; do
+        log "USB recovery: checking ${part}..."
+        [ -f "${HEARTBEAT:-}" ] && date +%s > "${HEARTBEAT}"
+
+        # Mount read-only
+        if ! mount -o ro "${part}" "${USB_MNT}" 2>/dev/null; then
+            log_warn "USB recovery: failed to mount ${part}"
+            continue
+        fi
+
+        # Priority 1: look for backup archives (max depth 2)
+        local backup_file
+        backup_file=$(find "${USB_MNT}" -maxdepth 2 -name 'cubeos-backup-*.tar.gz' -type f 2>/dev/null | head -n 1)
+
+        if [ -n "${backup_file}" ]; then
+            local backup_name
+            backup_name=$(basename "${backup_file}")
+            log "USB recovery: found backup ${backup_name} on ${part}"
+
+            # Copy to backup directory (update heartbeat during copy)
+            [ -f "${HEARTBEAT:-}" ] && date +%s > "${HEARTBEAT}"
+            if cp "${backup_file}" "${BACKUP_DEST}/${backup_name}"; then
+                log_ok "USB recovery: copied ${backup_name} to ${BACKUP_DEST}/"
+
+                # Write pending-restore marker for the API
+                cat > "${DATA_DIR}/pending-restore.json" << RESTORE_EOF
+{
+  "backup_file": "${BACKUP_DEST}/${backup_name}",
+  "source_device": "${part}",
+  "detected_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "auto_restore": true
+}
+RESTORE_EOF
+                log_ok "USB recovery: pending-restore.json written"
+                found=true
+            else
+                log_warn "USB recovery: failed to copy ${backup_name}"
+            fi
+
+            umount "${USB_MNT}" 2>/dev/null || true
+            break
+        fi
+
+        # Priority 2: look for config import file (Phase 6 prep)
+        local config_file
+        config_file=$(find "${USB_MNT}" -maxdepth 2 -name 'cubeos-config.json' -type f 2>/dev/null | head -n 1)
+
+        if [ -n "${config_file}" ]; then
+            log "USB recovery: found cubeos-config.json on ${part}"
+            if cp "${config_file}" "${DATA_DIR}/pending-import.json"; then
+                log_ok "USB recovery: pending-import.json written (Phase 6)"
+                found=true
+            fi
+
+            umount "${USB_MNT}" 2>/dev/null || true
+            break
+        fi
+
+        # Nothing found on this device — unmount and try next
+        umount "${USB_MNT}" 2>/dev/null || true
+    done
+
+    rmdir "${USB_MNT}" 2>/dev/null || true
+
+    if [ "${found}" = true ]; then
+        return 0
+    else
+        log "USB recovery: no recovery files found on USB devices"
+        return 1
+    fi
+}
+
 # Check if current mode is a server mode (no AP).
 # Used by normal-boot.sh to skip hostapd start.
 is_server_mode() {

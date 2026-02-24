@@ -366,6 +366,14 @@ fi
 # ── Source image version pins for registry-first deploys ──────────
 source_image_versions
 
+# ── USB recovery check (bare-metal restore) ──────────────────────
+# After Docker/Swarm are ready but before infrastructure deployment.
+# If a USB drive contains a CubeOS backup, copy it and write a
+# pending-restore.json marker for the API to pick up at startup.
+if [ ! -f "${SETUP_FLAG}" ]; then
+    check_usb_recovery || true
+fi
+
 # =========================================================================
 # Step 5/9: Pi-hole (DNS/DHCP first)
 # =========================================================================
