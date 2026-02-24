@@ -145,7 +145,7 @@ seed_pihole_dns
 ensure_dns_resolver
 
 # ── WiFi AP ───────────────────────────────────────────────────────────
-# Server modes (SERVER_ETH, SERVER_WIFI) don't run an AP — skip hostapd.
+# Server modes (eth_client, wifi_client) don't run an AP — skip hostapd.
 if is_server_mode; then
     log "Server mode detected -- skipping WiFi AP (no hostapd)"
 else

@@ -268,15 +268,15 @@ if command -v cloud-init &>/dev/null; then
         hostnamectl set-hostname "$IMAGER_HOSTNAME" 2>/dev/null || true
     fi
 
-    # Read WiFi credentials set by Pi Imager (for ONLINE_WIFI mode)
+    # Read WiFi credentials set by Pi Imager (for wifi_bridge mode)
     # Pi Imager configures WiFi CLIENT — CubeOS uses WiFi as ACCESS POINT.
-    # Store Imager WiFi as the default upstream for ONLINE_WIFI mode.
+    # Store Imager WiFi as the default upstream for wifi_bridge mode.
     if [ -f /boot/firmware/network-config ]; then
         IMAGER_WIFI_SSID=$(grep -A5 'wifis:' /boot/firmware/network-config 2>/dev/null | grep -oP '(?<=")[^"]+(?=":)' | head -1 || echo "")
         IMAGER_WIFI_PASS=$(grep -A10 'wifis:' /boot/firmware/network-config 2>/dev/null | grep 'password:' | awk '{print $2}' | tr -d '"' || echo "")
 
         if [ -n "$IMAGER_WIFI_SSID" ]; then
-            log "Pi Imager WiFi detected: $IMAGER_WIFI_SSID (stored for ONLINE_WIFI mode)"
+            log "Pi Imager WiFi detected: $IMAGER_WIFI_SSID (stored for wifi_bridge mode)"
             mkdir -p /cubeos/config/wifi
             cat > /cubeos/config/wifi/imager-wifi.env << IMAGER_WIFI
 UPSTREAM_SSID=${IMAGER_WIFI_SSID}
@@ -446,10 +446,10 @@ wait_for "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 90 1 || log_warn "Pi-
 # Seed custom DNS — uses shared CORE_DNS_HOSTS array
 seed_pihole_dns
 
-# Configure Pi-hole DHCP for default OFFLINE mode (Batch 2)
+# Configure Pi-hole DHCP for default offline_hotspot mode (Batch 2)
 # Must run after Pi-hole is healthy — DHCP is disabled by default since
 # FTLCONF_dhcp_active was removed from env vars in Batch 1.
-configure_pihole_dhcp "offline"
+configure_pihole_dhcp "offline_hotspot"
 
 # =========================================================================
 # Step 6/9: WiFi AP
