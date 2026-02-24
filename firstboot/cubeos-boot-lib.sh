@@ -842,6 +842,7 @@ apply_network_mode() {
             networkctl reconfigure eth0 2>/dev/null || true
             sleep 2
             /usr/local/lib/cubeos/nat-enable.sh eth0 2>/dev/null || true
+            systemctl stop avahi-daemon 2>/dev/null || true
             ;;
 
         wifi_bridge)
@@ -861,6 +862,7 @@ apply_network_mode() {
                 log_warn "wifi_bridge: wlan1 has no IP -- check WiFi credentials or dongle"
             fi
             /usr/local/lib/cubeos/nat-enable.sh wlan1 2>/dev/null || true
+            systemctl stop avahi-daemon 2>/dev/null || true
             ;;
 
         eth_client)
@@ -875,6 +877,8 @@ apply_network_mode() {
             /usr/local/lib/cubeos/nat-disable.sh 2>/dev/null || true
             # Ensure eth0 has DHCP
             networkctl reconfigure eth0 2>/dev/null || true
+            # Start avahi for mDNS discovery (cubeos.local)
+            systemctl start avahi-daemon 2>/dev/null || true
             ;;
 
         wifi_client)
@@ -889,14 +893,37 @@ apply_network_mode() {
             networkctl reload 2>/dev/null || true
             sleep 2
             networkctl reconfigure wlan0 2>/dev/null || true
-            # Give wpa_supplicant time to associate + DHCP
-            sleep 5
+
+            # Wait for WiFi association + DHCP (30s timeout)
+            local WIFI_TIMEOUT=30
+            local WIFI_ELAPSED=0
+            while [ "$WIFI_ELAPSED" -lt "$WIFI_TIMEOUT" ]; do
+                if ip addr show wlan0 2>/dev/null | grep -q "inet "; then
+                    break
+                fi
+                sleep 2
+                WIFI_ELAPSED=$((WIFI_ELAPSED + 2))
+            done
+
             if ip addr show wlan0 2>/dev/null | grep -q "inet "; then
                 local WLAN_IP
                 WLAN_IP=$(ip -4 addr show wlan0 | grep -oP 'inet \K[\d.]+')
                 log_ok "wifi_client: wlan0 connected ($WLAN_IP)"
+                # Start avahi for mDNS discovery (cubeos.local)
+                systemctl start avahi-daemon 2>/dev/null || true
             else
-                log_warn "wifi_client: wlan0 has no IP -- check WiFi credentials"
+                log_warn "wifi_client: connection failed after ${WIFI_TIMEOUT}s -- reverting to offline_hotspot"
+                # Revert: restore AP netplan and start hostapd
+                write_netplan_for_mode "offline_hotspot" "" ""
+                netplan apply 2>/dev/null || true
+                systemctl start hostapd 2>/dev/null || true
+                # Stop avahi in AP mode
+                systemctl stop avahi-daemon 2>/dev/null || true
+                # Update the database mode to offline_hotspot
+                if [ -f /cubeos/data/cubeos.db ]; then
+                    sqlite3 /cubeos/data/cubeos.db "UPDATE network_config SET mode='offline_hotspot' WHERE id=1;" 2>/dev/null || true
+                fi
+                log_warn "wifi_client: reverted to offline_hotspot"
             fi
             ;;
 
@@ -904,6 +931,7 @@ apply_network_mode() {
             log_ok "Mode: offline_hotspot"
             # Ensure NAT is disabled (clean state)
             /usr/local/lib/cubeos/nat-disable.sh 2>/dev/null || true
+            systemctl stop avahi-daemon 2>/dev/null || true
             ;;
     esac
 }

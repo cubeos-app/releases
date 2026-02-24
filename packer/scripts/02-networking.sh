@@ -579,4 +579,68 @@ chmod 600 /home/cubeos/.ssh/authorized_keys
 chown -R cubeos:cubeos /home/cubeos/.ssh
 echo "[02]   /home/cubeos/.ssh/ created with CI deploy key"
 
+# =========================================================================
+# AVAHI / mDNS -- cubeos.local discovery for wifi_client mode
+# =========================================================================
+echo "[02] Installing avahi-daemon for mDNS (cubeos.local)..."
+apt-get install -y avahi-daemon avahi-utils
+
+# Configure avahi to publish cubeos.local
+mkdir -p /etc/avahi
+cat > /etc/avahi/avahi-daemon.conf << 'AVAHI_CONF'
+[server]
+host-name=cubeos
+domain-name=local
+use-ipv4=yes
+use-ipv6=yes
+allow-interfaces=wlan0,eth0
+
+[publish]
+publish-addresses=yes
+publish-hinfo=yes
+publish-workstation=no
+publish-domain=yes
+
+[reflector]
+
+[rlimits]
+AVAHI_CONF
+
+# Avahi should only run when in wifi_client or eth_client mode.
+# Disable at boot -- boot scripts will start it when needed.
+systemctl disable avahi-daemon 2>/dev/null || true
+echo "[02] avahi-daemon installed (disabled at boot -- started by boot scripts in client modes)"
+
+# =========================================================================
+# WIFI WATCHDOG -- monitors wifi_client connectivity
+# =========================================================================
+echo "[02] Installing WiFi watchdog service..."
+install -m 755 /tmp/firstboot/cubeos-wifi-watchdog.sh /usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
+
+cat > /etc/systemd/system/cubeos-wifi-watchdog.service << 'UNIT'
+[Unit]
+Description=CubeOS WiFi Client Watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
+UNIT
+
+cat > /etc/systemd/system/cubeos-wifi-watchdog.timer << 'TIMER'
+[Unit]
+Description=CubeOS WiFi Client Watchdog Timer
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl enable cubeos-wifi-watchdog.timer
+echo "[02] WiFi watchdog timer enabled (checks every 60s, reverts after 5 failures)"
+
 echo "[02] Network configuration complete."
