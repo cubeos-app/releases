@@ -1302,7 +1302,7 @@ create-github-release:
   script:
     - |
       set -e
-      apk add --no-cache curl jq bash
+      apk add --no-cache curl jq bash xz
 
       if [ -z "${GHCR_TOKEN:-}" ]; then
         echo "WARN: GHCR_TOKEN not set — skipping GitHub release."
