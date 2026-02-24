@@ -832,13 +832,15 @@ build-image:
         fi
 
         # ── Step 5: Validate registry contents ─────────────────────────
-        CORE_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/core-images.txt)
         if [ "$CUBEOS_VARIANT" = "full" ]; then
+          CORE_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/core-images.txt)
           CURATED_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/curated-apps.txt)
           EXPECTED=$((CORE_COUNT + CURATED_COUNT))
           echo ""
           echo "Validating registry contents (${EXPECTED} expected: ${CORE_COUNT} core + ${CURATED_COUNT} curated)..."
         else
+          # Lite: count only tarballs that were actually downloaded
+          CORE_COUNT=$(find docker-images -maxdepth 1 -name '*.tar' 2>/dev/null | wc -l || echo 0)
           EXPECTED=${CORE_COUNT}
           echo ""
           echo "Validating registry contents (${EXPECTED} expected: ${CORE_COUNT} core)..."
@@ -880,7 +882,14 @@ build-image:
 
           SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
           TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+          FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
           REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+
+          # Lite variant: skip images whose tarballs were never downloaded
+          if [ "$CUBEOS_VARIANT" = "lite" ] && [ ! -f "docker-images/${FILENAME}" ]; then
+            echo "  SKIP (lite): ${REPO_NAME}:${TAG}"
+            continue
+          fi
 
           if validate_image "$REPO_NAME" "$TAG"; then
             VALID=$((VALID + 1))
