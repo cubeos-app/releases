@@ -51,6 +51,9 @@ SETUP_FLAG="/cubeos/data/.setup_complete"
 PROVISIONED_FLAG="/cubeos/data/.provisioned"
 LOG_FILE="${LOG_FILE:-/var/log/cubeos-boot.log}"
 
+# ── Source defaults.env early (provides CUBEOS_VERSION, TZ, DOMAIN, etc.) ──
+[ -f "${CONFIG_DIR}/defaults.env" ] && source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
+
 # ── NPM Proxy Rules (Single Source of Truth) ─────────────────────────
 # Format: "domain:port:coreapp_name"
 # coreapp_name is used to check if the service exists on this variant.
