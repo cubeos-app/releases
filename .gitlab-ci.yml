@@ -90,7 +90,13 @@ build-image:
 
       # Install tools
       echo "Installing tools..."
-      apt-get update -q 2>&1 | tail -3
+      # Refresh APT keys if stale (packer-builder-arm image may have outdated Ubuntu Jammy keyring)
+      apt-get update -q 2>&1 | tail -3 || {
+        echo "WARN: apt-get update failed — refreshing GPG keys..."
+        apt-key adv --refresh-keys --keyserver keyserver.ubuntu.com 2>&1 | tail -3 || true
+        rm -rf /var/lib/apt/lists/*
+        apt-get update -q 2>&1 | tail -3
+      }
       apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git zstd 2>&1 | tail -5
       echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
     - |
@@ -180,12 +186,14 @@ build-image:
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       echo "[core] Nginx Proxy Manager..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       echo "[core] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
@@ -193,6 +201,7 @@ build-image:
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       echo "[core] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
@@ -200,6 +209,7 @@ build-image:
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       echo "[core] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
@@ -207,12 +217,14 @@ build-image:
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       echo "[core] Docker Registry..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/library/registry:2 \
         docker-archive:docker-images/registry.tar:library/registry:2
       IMG_COUNT=$((IMG_COUNT + 1))
+      sleep 2
 
       # ── Full-only images ─────────────────────────────────────────────
       if [ "$CUBEOS_VARIANT" = "full" ]; then
