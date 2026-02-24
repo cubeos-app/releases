@@ -250,6 +250,49 @@ start_dead_mans_switch
 rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 
 # =========================================================================
+# Step 0: Wait for cloud-init (Pi Imager customizations)
+# =========================================================================
+# Pi Imager writes cloud-init user-data to /boot/firmware/user-data.
+# cloud-init handles: hostname, SSH authorized_keys, user creation.
+# We wait for it to finish, then read any settings it applied.
+# =========================================================================
+if command -v cloud-init &>/dev/null; then
+    log "Waiting for cloud-init to complete (Pi Imager customizations)..."
+    cloud-init status --wait --long 2>/dev/null || true
+    date +%s > "$HEARTBEAT"
+
+    # Read hostname set by Pi Imager
+    IMAGER_HOSTNAME=$(cloud-init query local-hostname 2>/dev/null || echo "")
+    if [ -n "$IMAGER_HOSTNAME" ] && [ "$IMAGER_HOSTNAME" != "cubeos" ]; then
+        log "Pi Imager set hostname to: $IMAGER_HOSTNAME"
+        hostnamectl set-hostname "$IMAGER_HOSTNAME" 2>/dev/null || true
+    fi
+
+    # Read WiFi credentials set by Pi Imager (for ONLINE_WIFI mode)
+    # Pi Imager configures WiFi CLIENT — CubeOS uses WiFi as ACCESS POINT.
+    # Store Imager WiFi as the default upstream for ONLINE_WIFI mode.
+    if [ -f /boot/firmware/network-config ]; then
+        IMAGER_WIFI_SSID=$(grep -A5 'wifis:' /boot/firmware/network-config 2>/dev/null | grep -oP '(?<=")[^"]+(?=":)' | head -1 || echo "")
+        IMAGER_WIFI_PASS=$(grep -A10 'wifis:' /boot/firmware/network-config 2>/dev/null | grep 'password:' | awk '{print $2}' | tr -d '"' || echo "")
+
+        if [ -n "$IMAGER_WIFI_SSID" ]; then
+            log "Pi Imager WiFi detected: $IMAGER_WIFI_SSID (stored for ONLINE_WIFI mode)"
+            mkdir -p /cubeos/config/wifi
+            cat > /cubeos/config/wifi/imager-wifi.env << IMAGER_WIFI
+UPSTREAM_SSID=${IMAGER_WIFI_SSID}
+UPSTREAM_PASSWORD=${IMAGER_WIFI_PASS}
+IMAGER_WIFI
+            chmod 600 /cubeos/config/wifi/imager-wifi.env
+        fi
+    fi
+
+    # SSH keys are handled automatically by cloud-init — no action needed
+    log_ok "cloud-init processing complete"
+else
+    log "cloud-init not found — skipping Pi Imager customization check"
+fi
+
+# =========================================================================
 # Step 1/9: ZRAM Swap + Watchdog
 # =========================================================================
 log_step "Step 1/9: ZRAM swap and hardware watchdog..."

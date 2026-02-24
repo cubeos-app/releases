@@ -1,5 +1,5 @@
 # =============================================================================
-# CubeOS Release Image Builder — v0.2.0-alpha.01
+# CubeOS Release Image Builder — v0.2.0-beta.01
 # =============================================================================
 # Builds a flashable ARM64 image for Raspberry Pi 4/5.
 #
@@ -44,7 +44,14 @@
 
 variable "version" {
   type    = string
-  default = "0.2.0-alpha.01"
+  default = "0.2.0-beta.01"
+}
+
+variable "variant" {
+  type    = string
+  default = "full"
+  # Accepted values: "full", "lite"
+  # Lite strips non-essential services for smaller image (2GB+ RAM Pi)
 }
 
 variable "image_size" {
@@ -75,7 +82,7 @@ source "arm" "cubeos" {
   file_unarchive_cmd    = ["xz", "-T0", "--decompress", "$ARCHIVE_PATH"]
 
   image_build_method = "resize"
-  image_path         = "cubeos-${var.version}-arm64.img"
+  image_path         = var.variant == "lite" ? "cubeos-${var.version}-lite-arm64.img" : "cubeos-${var.version}-arm64.img"
   image_size         = var.image_size
   image_type         = "dos"
 
@@ -133,7 +140,10 @@ build {
 
   provisioner "shell" {
     script           = "packer/scripts/04-cubeos.sh"
-    environment_vars = ["CUBEOS_VERSION=${var.version}"]
+    environment_vars = [
+      "CUBEOS_VERSION=${var.version}",
+      "CUBEOS_VARIANT=${var.variant}",
+    ]
   }
 
   # Phase 3: Docker preload, Pi-hole seed, firstboot service, cleanup
@@ -142,6 +152,9 @@ build {
   # AFTER Packer finishes, by mounting the image and running a temp dockerd.
   # Combined into one provisioner to stay within Packer's plugin process limit.
   provisioner "shell" {
+    environment_vars = [
+      "CUBEOS_VARIANT=${var.variant}",
+    ]
     scripts = [
       "packer/scripts/05-docker-preload.sh",
       "packer/scripts/08-pihole-seed.sh",

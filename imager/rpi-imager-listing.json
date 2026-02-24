@@ -1,0 +1,10 @@
+{
+  "os_list": [
+    {
+      "name": "CubeOS",
+      "description": "Open-source server OS for Raspberry Pi — Docker, self-hosting, offline-first",
+      "icon": "https://releases.cubeos.app/images/cubeos-icon-40x40.png",
+      "subitems_url": "https://releases.cubeos.app/rpi-imager.json"
+    }
+  ]
+}

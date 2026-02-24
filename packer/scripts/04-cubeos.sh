@@ -35,7 +35,8 @@ fi
 # Version — injected by CI pipeline, falls back to dev
 # ---------------------------------------------------------------------------
 CUBEOS_VERSION="${CUBEOS_VERSION:-0.0.0-dev}"
-echo "[04] Building CubeOS version: ${CUBEOS_VERSION}"
+CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+echo "[04] Building CubeOS version: ${CUBEOS_VERSION} (variant: ${CUBEOS_VARIANT})"
 
 # Write version to /etc for runtime queries (T1.1)
 echo "${CUBEOS_VERSION}" > /etc/cubeos-version
@@ -108,6 +109,7 @@ cat > /cubeos/config/defaults.env << DEFAULTS
 # System Settings
 # ===================
 CUBEOS_VERSION=${CUBEOS_VERSION}
+CUBEOS_VARIANT=${CUBEOS_VARIANT}
 CUBEOS_COUNTRY_CODE=\${CUBEOS_COUNTRY_CODE:-NL}
 TZ=UTC
 DOMAIN=cubeos.cube
@@ -299,6 +301,25 @@ fi
 
 # Cleanup packer temp
 rm -rf "$BUNDLE_SRC"
+
+# ---------------------------------------------------------------------------
+# Lite variant: remove non-essential coreapps
+# ---------------------------------------------------------------------------
+# Lite keeps only: pihole, npm, cubeos-hal, cubeos-api, cubeos-dashboard,
+# registry, terminal. Everything else is stripped.
+# Boot scripts are variant-agnostic — they deploy whatever coreapps are present.
+# ---------------------------------------------------------------------------
+if [ "$CUBEOS_VARIANT" = "lite" ]; then
+    echo "[04] Lite variant: removing non-essential coreapps..."
+    SKIP_COREAPPS="cubeos-docsindex dozzle kiwix filebrowser chromadb"
+    for app in $SKIP_COREAPPS; do
+        if [ -d "/cubeos/coreapps/${app}" ]; then
+            rm -rf "/cubeos/coreapps/${app}"
+            echo "[04]   Removed: ${app}"
+        fi
+    done
+    echo "[04] Lite variant: coreapps trimmed"
+fi
 
 # ---------------------------------------------------------------------------
 # Additional docs sources (overlay on top of guaranteed placeholder)

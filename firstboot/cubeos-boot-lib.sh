@@ -51,41 +51,70 @@ SETUP_FLAG="/cubeos/data/.setup_complete"
 PROVISIONED_FLAG="/cubeos/data/.provisioned"
 LOG_FILE="${LOG_FILE:-/var/log/cubeos-boot.log}"
 
-# ── NPM Proxy Rules (Single Source of Truth — 10 rules) ──────────────
-# Format: "domain:port"
-# Used by: first-boot NPM seeding, API NPM bootstrap, boot verification
-CORE_PROXY_RULES=(
-    "cubeos.cube:6011"
-    "api.cubeos.cube:6010"
-    "docs.cubeos.cube:6032"
-    "pihole.cubeos.cube:6001"
-    "npm.cubeos.cube:81"
-    "registry.cubeos.cube:5000"
-    "hal.cubeos.cube:6005"
-    "dozzle.cubeos.cube:6012"
-    "terminal.cubeos.cube:6042"
-    "kiwix.cubeos.cube:6043"
+# ── NPM Proxy Rules (Single Source of Truth) ─────────────────────────
+# Format: "domain:port:coreapp_name"
+# coreapp_name is used to check if the service exists on this variant.
+# Rules for always-present services (pihole, npm, hal, api, dashboard,
+# registry, terminal) are always included; optional ones are filtered.
+_ALL_PROXY_RULES=(
+    "cubeos.cube:6011:cubeos-dashboard"
+    "api.cubeos.cube:6010:cubeos-api"
+    "docs.cubeos.cube:6032:cubeos-docsindex"
+    "pihole.cubeos.cube:6001:pihole"
+    "npm.cubeos.cube:81:npm"
+    "registry.cubeos.cube:5000:registry"
+    "hal.cubeos.cube:6005:cubeos-hal"
+    "dozzle.cubeos.cube:6012:dozzle"
+    "terminal.cubeos.cube:6042:terminal"
+    "kiwix.cubeos.cube:6043:kiwix"
 )
 
 # ── Pi-hole Custom DNS Entries (Single Source of Truth) ──────────────
-# All *.cubeos.cube subdomains that Pi-hole should resolve to gateway
-CORE_DNS_HOSTS=(
-    "cubeos.cube"
-    "api.cubeos.cube"
-    "npm.cubeos.cube"
-    "pihole.cubeos.cube"
-    "hal.cubeos.cube"
-    "dozzle.cubeos.cube"
-    "registry.cubeos.cube"
-    "docs.cubeos.cube"
-    "terminal.cubeos.cube"
-    "kiwix.cubeos.cube"
+# Format: "hostname:coreapp_name"
+_ALL_DNS_HOSTS=(
+    "cubeos.cube:cubeos-dashboard"
+    "api.cubeos.cube:cubeos-api"
+    "npm.cubeos.cube:npm"
+    "pihole.cubeos.cube:pihole"
+    "hal.cubeos.cube:cubeos-hal"
+    "dozzle.cubeos.cube:dozzle"
+    "registry.cubeos.cube:registry"
+    "docs.cubeos.cube:cubeos-docsindex"
+    "terminal.cubeos.cube:terminal"
+    "kiwix.cubeos.cube:kiwix"
 )
+
+# Build active arrays by filtering on coreapps present on disk.
+# Services without a coreapps dir (e.g., cubeos-docsindex on lite) are excluded.
+_build_active_arrays() {
+    CORE_PROXY_RULES=()
+    CORE_DNS_HOSTS=()
+
+    for entry in "${_ALL_PROXY_RULES[@]}"; do
+        local domain="${entry%%:*}"
+        local rest="${entry#*:}"
+        local port="${rest%%:*}"
+        local svc="${rest#*:}"
+        if [ -d "${COREAPPS_DIR}/${svc}" ]; then
+            CORE_PROXY_RULES+=("${domain}:${port}")
+        fi
+    done
+
+    for entry in "${_ALL_DNS_HOSTS[@]}"; do
+        local host="${entry%%:*}"
+        local svc="${entry#*:}"
+        if [ -d "${COREAPPS_DIR}/${svc}" ]; then
+            CORE_DNS_HOSTS+=("${host}")
+        fi
+    done
+}
+_build_active_arrays
 
 # ── Swarm Stacks ─────────────────────────────────────────────────────
 # B08: Split into pre-API and post-API stacks.
 # Dashboard deploys AFTER API health check to prevent 502/wizard flash.
-# Kiwix is optional/non-critical — deploys after core stacks.
+# Canonical ordering — deploy_stack() skips stacks with no compose file,
+# so these lists are safe for both Full and Lite variants.
 SWARM_STACKS_BOOTSTRAP="registry"
 SWARM_STACKS_PRE_API="cubeos-api cubeos-docsindex dozzle"
 SWARM_STACKS_POST_API="cubeos-dashboard kiwix"
@@ -94,6 +123,18 @@ SWARM_STACKS="registry cubeos-api cubeos-docsindex dozzle cubeos-dashboard kiwix
 
 # ── Compose Services ─────────────────────────────────────────────────
 COMPOSE_SERVICES="pihole npm cubeos-hal terminal"
+
+# ── Variant Detection ────────────────────────────────────────────────
+# Read CUBEOS_VARIANT from defaults.env (set at image build time).
+# Used for logging — actual behavior is driven by presence of compose files.
+_detect_variant() {
+    local variant="full"
+    if [ -f "${CONFIG_DIR}/defaults.env" ]; then
+        variant=$(grep '^CUBEOS_VARIANT=' "${CONFIG_DIR}/defaults.env" 2>/dev/null | cut -d= -f2 || echo "full")
+    fi
+    echo "${variant:-full}"
+}
+CUBEOS_VARIANT="$(_detect_variant)"
 
 # ── Logging (ASCII-only markers) ─────────────────────────────────────
 log() {

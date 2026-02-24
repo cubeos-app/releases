@@ -1,14 +1,18 @@
 # =============================================================================
 # CubeOS Release Image Pipeline
 # =============================================================================
-# Builds a flashable ARM64 image from the pre-built golden base image.
+# Builds flashable ARM64 images (Full + Lite) from the golden base image.
 #
 # WORKFLOW (build once, release later):
-#   1. Push to main  → build-image runs (~20 min), uploads to Package Registry
-#   2. Verify green  → test the image if needed
+#   1. Push to main  → build-image runs (~20 min each), uploads to Package Registry
+#   2. Verify green  → test the images if needed
 #   3. Tag (git tag v0.1.0-alpha.10 && git push --tags)
 #      → release jobs run (~2 min), create GitLab + GitHub releases
-#      → NO rebuild — release jobs download the already-built image
+#      → NO rebuild — release jobs download the already-built images
+#
+# VARIANTS:
+#   Full: All services + offline content (docsindex, dozzle, kiwix, curated apps)
+#   Lite: Core services only (pihole, npm, hal, api, dashboard, registry, terminal)
 #
 # SINGLE JOB BUILD: Everything runs in one container to avoid transferring
 # 1.5GB+ of Docker image tarballs as CI artifacts between stages.
@@ -19,7 +23,7 @@
 #   3. CI variable: GHCR_TOKEN (used for both GHCR pushes and GitHub API releases)
 #   4. Token access: releases project allowed to access coreapps project
 #
-# TIME: ~20 minutes (build) + ~2 minutes (release on tag)
+# TIME: ~20 minutes per variant (build) + ~2 minutes (release on tag)
 # =============================================================================
 
 stages:
@@ -27,20 +31,25 @@ stages:
   - release
 
 variables:
-  CUBEOS_VERSION: "0.2.0-alpha.01"
-  IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
+  CUBEOS_VERSION: "0.2.0-beta.01"
   BASE_VERSION: "3.0.0"
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
   GITHUB_REPO: "cubeos-app/releases"
 
 # =============================================================================
-# Build Release Image
+# Build Release Image (Full + Lite variants via parallel matrix)
 # =============================================================================
 build-image:
   stage: build
   image:
     name: mkaczanowski/packer-builder-arm:latest
     entrypoint: [""]
+  parallel:
+    matrix:
+      - CUBEOS_VARIANT: "full"
+        IMAGE_SIZE: "12G"
+      - CUBEOS_VARIANT: "lite"
+        IMAGE_SIZE: "10G"
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -49,8 +58,18 @@ build-image:
   script:
     - |
       set -e
+
+      # ── Compute variant-specific IMAGE_NAME ──────────────────────────
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"
+      fi
+      export IMAGE_NAME
+      echo "VARIANT=${CUBEOS_VARIANT} IMAGE_NAME=${IMAGE_NAME} IMAGE_SIZE=${IMAGE_SIZE}"
+
       echo "============================================================"
-      echo "  CubeOS Release Pipeline — Phase 0: Setup"
+      echo "  CubeOS Release Pipeline — Phase 0: Setup (${CUBEOS_VARIANT})"
       echo "============================================================"
 
       # Validate CI variables
@@ -76,16 +95,25 @@ build-image:
       echo "  skopeo $(skopeo --version 2>/dev/null | head -1)"
     - |
       set -e
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 0a: Clone coreapps repo (single source of truth)"
+      echo "  Phase 0a: Clone coreapps repo (${CUBEOS_VARIANT})"
       echo "============================================================"
 
       git clone --depth 1 \
         "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
         /tmp/coreapps-src
 
-      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix filebrowser chromadb"
+      # Lite variant: only core services
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard registry terminal"
+      else
+        SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix filebrowser chromadb"
+      fi
 
       mkdir -p coreapps-bundle
       for svc in $SERVICES; do
@@ -135,77 +163,107 @@ build-image:
       fi
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 0b: Download ARM64 Docker images"
+      echo "  Phase 0b: Download ARM64 Docker images (${CUBEOS_VARIANT})"
       echo "============================================================"
 
       mkdir -p docker-images
+      IMG_COUNT=0
 
-      echo "[1/10] Pi-hole..."
+      # ── Core images (both variants) ──────────────────────────────────
+      echo "[core] Pi-hole..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[2/10] Nginx Proxy Manager..."
+      echo "[core] Nginx Proxy Manager..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[3/10] CubeOS API..."
+      echo "[core] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[4/10] CubeOS HAL..."
+      echo "[core] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[5/10] CubeOS Dashboard..."
+      echo "[core] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
         --override-arch arm64 --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[6/10] CubeOS DocsIndex..."
-      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
-        --override-arch arm64 --override-os linux --retry-times 3 \
-        docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
-        docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
-
-      echo "[7/10] Docker Registry..."
+      echo "[core] Docker Registry..."
       skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
         docker://docker.io/library/registry:2 \
         docker-archive:docker-images/registry.tar:library/registry:2
+      IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[8/10] Dozzle..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
-        docker://docker.io/amir20/dozzle:latest \
-        docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+      # ── Full-only images ─────────────────────────────────────────────
+      if [ "$CUBEOS_VARIANT" = "full" ]; then
+        echo "[full] CubeOS DocsIndex..."
+        skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+          --override-arch arm64 --override-os linux --retry-times 3 \
+          docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
+          docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
+        IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[9/10] Dufs (file browser)..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
-        docker://docker.io/sigoden/dufs:latest \
-        docker-archive:docker-images/dufs.tar:sigoden/dufs:latest
+        echo "[full] Dozzle..."
+        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+          docker://docker.io/amir20/dozzle:latest \
+          docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
+        IMG_COUNT=$((IMG_COUNT + 1))
 
-      echo "[10/10] ChromaDB..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
-        docker://docker.io/chromadb/chroma:latest \
-        docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
+        echo "[full] Dufs (file browser)..."
+        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+          docker://docker.io/sigoden/dufs:latest \
+          docker-archive:docker-images/dufs.tar:sigoden/dufs:latest
+        IMG_COUNT=$((IMG_COUNT + 1))
+
+        echo "[full] ChromaDB..."
+        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+          docker://docker.io/chromadb/chroma:latest \
+          docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
+        IMG_COUNT=$((IMG_COUNT + 1))
+      else
+        echo "[lite] Skipping full-only images (docsindex, dozzle, dufs, chromadb)"
+      fi
 
       echo ""
       ls -lh docker-images/
       du -sh docker-images/
-      echo "Docker images: OK (10 images)"
+      echo "Docker images: OK (${IMG_COUNT} images for ${CUBEOS_VARIANT} variant)"
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 0b2: Download curated app images + ZIM content"
+      echo "  Phase 0b2: Download curated app images + ZIM content (${CUBEOS_VARIANT})"
       echo "============================================================"
+
+      # Lite variant: skip curated apps and ZIM content entirely
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        echo "Lite variant: skipping curated images and ZIM content"
+        mkdir -p curated-images  # empty dir so later phases don't fail
+        echo "Phase 0b2: SKIPPED (lite)"
+      else
 
       # --- Curated app images (for local registry) ---
       chmod +x skopeo/download-curated.sh
@@ -259,8 +317,12 @@ build-image:
         echo "ZIM download disabled (ZIM_ENABLED=false)"
       fi
       echo "Phase 0b2: OK"
+      fi  # end full-only curated/ZIM block
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
       echo "  Phase 0c: Download golden base image"
@@ -277,9 +339,12 @@ build-image:
       echo "Base image: OK"
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 1: Packer build"
+      echo "  Phase 1: Packer build (${CUBEOS_VARIANT})"
       echo "  Started: $(date -u +%H:%M:%S)"
       echo "============================================================"
 
@@ -287,6 +352,8 @@ build-image:
 
       packer build \
         -var "version=${CUBEOS_VERSION}" \
+        -var "variant=${CUBEOS_VARIANT}" \
+        -var "image_size=${IMAGE_SIZE}" \
         -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
         -var "base_image_checksum_type=none" \
         packer/cubeos.pkr.hcl
@@ -295,9 +362,12 @@ build-image:
       echo "Packer build: OK ($(date -u +%H:%M:%S))"
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 1b: Pre-load Docker images into image"
+      echo "  Phase 1b: Pre-load Docker images into image (${CUBEOS_VARIANT})"
       echo "  Started: $(date -u +%H:%M:%S)"
       echo "============================================================"
 
@@ -387,9 +457,13 @@ build-image:
       # Phase 1c pushes these to the registry, but --pull never won't
       # query the registry. We must also have them in Docker's local
       # image cache with the localhost:5000/ prefix tag.
+      # Lite variant: skip curated images (only core images loaded).
       echo ""
-      echo "  Loading curated images into Docker cache (B85 fix)..."
       CURATED_LOADED=0
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        echo "  Lite variant: skipping curated image loading"
+      else
+      echo "  Loading curated images into Docker cache (B85 fix)..."
       for tarball in curated-images/*.tar; do
         [ -f "$tarball" ] || continue
         NAME=$(basename "$tarball" .tar)
@@ -423,6 +497,7 @@ build-image:
           fi
         done < skopeo/curated-apps.txt
       fi
+      fi  # end full-only curated block
 
       # ── Step 3c: Retag core images for localhost:5000 ─────────────
       # Registry-first: ALL images (except registry:2) get a localhost:5000/
@@ -495,9 +570,12 @@ build-image:
       echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 1c: Pre-populate local registry + ZIM content"
+      echo "  Phase 1c: Pre-populate local registry + ZIM content (${CUBEOS_VARIANT})"
       echo "  Started: $(date -u +%H:%M:%S)"
       echo "============================================================"
 
@@ -862,9 +940,12 @@ build-image:
       fi
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 1d: Post-Build File Validation (P1-21)"
+      echo "  Phase 1d: Post-Build File Validation (${CUBEOS_VARIANT})"
       echo "============================================================"
       # Loopback-mount the built image and verify critical files exist.
       # Catches missing boot scripts, broken configs, wrong version, etc.
@@ -987,9 +1068,12 @@ build-image:
       fi
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 2: Shrink + Compress"
+      echo "  Phase 2: Shrink + Compress (${CUBEOS_VARIANT})"
       echo "============================================================"
 
       # PiShrink
@@ -1017,18 +1101,28 @@ build-image:
       ls -lh ${IMAGE_NAME}.img
       xz -6 -T0 -v ${IMAGE_NAME}.img
 
-      # Checksums
+      # Checksums (standard + Pi Imager)
       echo "[4/5] Calculating checksums..."
       sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
       md5sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.md5
+      # Pi Imager needs both compressed and extracted checksums
+      # calculate-checksums.sh requires uncompressed .img — decompress temporarily
+      echo "[5/5] Generating Pi Imager checksums..."
+      xz -dk ${IMAGE_NAME}.img.xz  # decompress, keep .xz
+      chmod +x scripts/calculate-checksums.sh
+      bash scripts/calculate-checksums.sh ${IMAGE_NAME}
+      rm -f ${IMAGE_NAME}.img  # remove uncompressed copy
     - |
       set -e
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
+      export IMAGE_NAME
+
       echo ""
       echo "============================================================"
-      echo "  Phase 3: Upload to GitLab Package Registry"
+      echo "  Phase 3: Upload to GitLab Package Registry (${CUBEOS_VARIANT})"
       echo "============================================================"
 
-      echo "[5/5] Uploading..."
+      echo "Uploading ${IMAGE_NAME}..."
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${IMAGE_NAME}.img.xz \
            --connect-timeout 30 \
@@ -1050,9 +1144,10 @@ build-image:
 
       echo ""
       echo "============================================================"
-      echo "  CubeOS Release Image — Build Complete"
+      echo "  CubeOS Release Image — Build Complete (${CUBEOS_VARIANT})"
       echo "============================================================"
       echo "  Version   ${CUBEOS_VERSION}"
+      echo "  Variant   ${CUBEOS_VARIANT}"
       echo "  File      ${IMAGE_NAME}.img.xz"
       echo "  Size      $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
       echo "  SHA256    $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
@@ -1060,8 +1155,9 @@ build-image:
       echo "============================================================"
   artifacts:
     paths:
-      - "${IMAGE_NAME}.img.xz.sha256"
-      - "${IMAGE_NAME}.img.xz.md5"
+      - "cubeos-*.img.xz.sha256"
+      - "cubeos-*.img.xz.md5"
+      - "cubeos-*.img.sha256"
     expire_in: 30 days
   after_script:
     - docker rm -f cubeos-temp-registry 2>/dev/null || true
@@ -1077,25 +1173,36 @@ create-gitlab-release:
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
+  variables:
+    FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
+    LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
   script:
     - |
       echo "Creating GitLab release for ${CI_COMMIT_TAG}..."
 
-      # Download checksum from Package Registry (uploaded during build-image)
-      echo "Fetching checksum from Package Registry..."
+      # Download checksums from Package Registry (uploaded during build-image)
+      echo "Fetching checksums from Package Registry..."
       apk add --no-cache curl 2>/dev/null || true
 
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           -o ${IMAGE_NAME}.img.xz.sha256 \
+           -o ${FULL_IMAGE_NAME}.img.xz.sha256 \
            --connect-timeout 30 \
            --retry 3 \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${FULL_IMAGE_NAME}.img.xz.sha256"
 
-      CHECKSUM=$(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)
-      echo "SHA256: ${CHECKSUM}"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o ${LITE_IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${LITE_IMAGE_NAME}.img.xz.sha256"
 
-      if [ -z "$CHECKSUM" ]; then
-        echo "ERROR: Image not found in Package Registry."
+      FULL_CHECKSUM=$(cut -d' ' -f1 ${FULL_IMAGE_NAME}.img.xz.sha256)
+      LITE_CHECKSUM=$(cut -d' ' -f1 ${LITE_IMAGE_NAME}.img.xz.sha256)
+      echo "Full SHA256: ${FULL_CHECKSUM}"
+      echo "Lite SHA256: ${LITE_CHECKSUM}"
+
+      if [ -z "$FULL_CHECKSUM" ] || [ -z "$LITE_CHECKSUM" ]; then
+        echo "ERROR: Image(s) not found in Package Registry."
         echo "Did you push to main first? build-image must succeed before tagging."
         exit 1
       fi
@@ -1105,7 +1212,11 @@ create-gitlab-release:
     description: |
       ## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+      Flashable ARM64 images for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+
+      ### Variants
+      - **Full**: All services + offline content (4GB+ RAM recommended)
+      - **Lite**: Core platform only, install apps from App Store (2GB+ RAM)
 
       ### Quick Start
       1. Flash the .img.xz to SD card using Raspberry Pi Imager
@@ -1116,76 +1227,97 @@ create-gitlab-release:
 
       ### Default Credentials
       - Dashboard: admin / cubeos
-      - SSH: key-only (configure in wizard)
+      - SSH: cubeos / cubeos (or key-based if configured in Imager)
     assets:
       links:
-        - name: "${IMAGE_NAME}.img.xz"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
-        - name: "SHA256 Checksum"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+        - name: "cubeos-${CUBEOS_VERSION}-arm64.img.xz (Full)"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-arm64.img.xz"
+        - name: "cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz (Lite)"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz"
+        - name: "Full SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-arm64.img.xz.sha256"
+        - name: "Lite SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz.sha256"
 
 # =============================================================================
 # Create GitHub Release (mirror — tag push only, with binary upload)
 # =============================================================================
-# Alpha.14+: Image is ~1.4G (under GitHub's 2GB asset limit), so we upload
-# the image directly as a release asset for easy downloads.
+# Uploads both Full and Lite images + Pi Imager manifest as release assets.
 # =============================================================================
 create-github-release:
   stage: release
   image: alpine:latest
+  variables:
+    FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
+    LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
     - |
       set -e
-      apk add --no-cache curl jq
+      apk add --no-cache curl jq bash
 
       if [ -z "${GHCR_TOKEN:-}" ]; then
         echo "WARN: GHCR_TOKEN not set — skipping GitHub release."
         exit 0
       fi
 
-      IMAGE_FILE="${IMAGE_NAME}.img.xz"
-      CHECKSUM_FILE="${IMAGE_NAME}.img.xz.sha256"
-
-      # --- Step 1: Download image + checksum from GitLab Package Registry ---
+      # --- Step 1: Download both images + checksums from GitLab Package Registry ---
       echo "============================================================"
       echo "  Step 1: Download from GitLab Package Registry"
       echo "============================================================"
 
-      echo "Downloading ${CHECKSUM_FILE}..."
-      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           -o "${CHECKSUM_FILE}" \
-           --connect-timeout 30 \
-           --retry 3 \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}"
+      # Helper: download a file from Package Registry
+      download_pkg() {
+        local filename="$1"
+        echo "Downloading ${filename}..."
+        curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+             -o "${filename}" \
+             --connect-timeout 30 \
+             --max-time 3600 \
+             --retry 3 \
+             --retry-delay 60 \
+             "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${filename}"
+      }
 
-      CHECKSUM=$(cut -d' ' -f1 "${CHECKSUM_FILE}")
-      echo "SHA256: ${CHECKSUM}"
+      # Download checksums
+      download_pkg "${FULL_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${LITE_IMAGE_NAME}.img.xz.sha256"
 
-      if [ -z "$CHECKSUM" ]; then
-        echo "ERROR: Image not found in Package Registry."
-        echo "Did you push to main first? build-image must succeed before tagging."
+      FULL_CHECKSUM=$(cut -d' ' -f1 "${FULL_IMAGE_NAME}.img.xz.sha256")
+      LITE_CHECKSUM=$(cut -d' ' -f1 "${LITE_IMAGE_NAME}.img.xz.sha256")
+      echo "Full SHA256: ${FULL_CHECKSUM}"
+      echo "Lite SHA256: ${LITE_CHECKSUM}"
+
+      if [ -z "$FULL_CHECKSUM" ] || [ -z "$LITE_CHECKSUM" ]; then
+        echo "ERROR: Image(s) not found in Package Registry."
         exit 1
       fi
 
-      echo "Downloading ${IMAGE_FILE} (~1.4G)..."
-      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           -o "${IMAGE_FILE}" \
-           --connect-timeout 30 \
-           --max-time 3600 \
-           --retry 3 \
-           --retry-delay 60 \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}"
+      # Download images
+      download_pkg "${FULL_IMAGE_NAME}.img.xz"
+      download_pkg "${LITE_IMAGE_NAME}.img.xz"
 
-      echo "Downloaded: $(du -h ${IMAGE_FILE} | cut -f1)"
+      echo "Full: $(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "Lite: $(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1)"
 
-      # Verify checksum
-      echo "Verifying checksum..."
-      echo "${CHECKSUM}  ${IMAGE_FILE}" | sha256sum -c - || {
-        echo "ERROR: Checksum mismatch!"
-        exit 1
-      }
+      # Verify checksums
+      echo "Verifying checksums..."
+      echo "${FULL_CHECKSUM}  ${FULL_IMAGE_NAME}.img.xz" | sha256sum -c -
+      echo "${LITE_CHECKSUM}  ${LITE_IMAGE_NAME}.img.xz" | sha256sum -c -
+
+      # --- Step 1b: Generate Pi Imager manifest ---
+      echo "============================================================"
+      echo "  Step 1b: Generate Pi Imager manifest"
+      echo "============================================================"
+      # Decompress both images temporarily to calculate Pi Imager checksums
+      xz -dk ${FULL_IMAGE_NAME}.img.xz
+      xz -dk ${LITE_IMAGE_NAME}.img.xz
+      chmod +x scripts/calculate-checksums.sh scripts/update-manifest.sh
+      bash scripts/update-manifest.sh "${CUBEOS_VERSION}"
+      rm -f ${FULL_IMAGE_NAME}.img ${LITE_IMAGE_NAME}.img
+      echo "Manifest generated:"
+      cat imager/rpi-imager.json
 
       # --- Step 2: Create GitHub Release ---
       echo "============================================================"
@@ -1194,26 +1326,28 @@ create-github-release:
 
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+      Flashable ARM64 images for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
 
-      ### Download
+      ### Variants
+      | Variant | Size | Description |
+      |---------|------|-------------|
+      | **Full** | $(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1) | All services + offline content (4GB+ RAM) |
+      | **Lite** | $(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1) | Core platform only (2GB+ RAM) |
 
-      | File | Link |
-      |------|------|
-      | \`${IMAGE_FILE}\` | [Download from GitLab](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}) |
-      | SHA256 Checksum | [${CHECKSUM_FILE}](${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${CHECKSUM_FILE}) |
-
-      **SHA256:** \`${CHECKSUM}\`
+      ### Pi Imager
+      Add CubeOS to Raspberry Pi Imager with this custom repository URL:
+      \`\`\`
+      https://github.com/${GITHUB_REPO}/releases/download/${CI_COMMIT_TAG}/rpi-imager.json
+      \`\`\`
 
       ### Quick Start
-      1. Download \`${IMAGE_FILE}\` from Assets below
-      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) → Use custom
-      3. Boot the Pi — connect to the CubeOS WiFi AP
-      4. Open http://cubeos.cube and complete setup wizard
+      1. Flash the .img.xz to SD card using Raspberry Pi Imager
+      2. Boot the Pi — connect to the CubeOS WiFi AP
+      3. Open http://cubeos.cube and complete setup wizard
 
       ### Default Credentials
       - **SSH:** cubeos / cubeos
-      - **Dashboard:** admin / admin"
+      - **Dashboard:** admin / cubeos"
 
       echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
       RESPONSE=$(curl -s -w "\n%{http_code}" \
@@ -1245,7 +1379,6 @@ create-github-release:
         RELEASE_ID=$(echo "$EXISTING" | jq -r '.id')
         UPLOAD_URL=$(echo "$EXISTING" | jq -r '.upload_url' | sed 's/{?name,label}//')
 
-        # Update release body
         curl -s -X PATCH \
           -H "Authorization: token ${GHCR_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
@@ -1266,7 +1399,6 @@ create-github-release:
             -H "Authorization: token ${GHCR_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${ASSET_ID}" || true
         done
-
         echo "  Updated existing release (ID: ${RELEASE_ID})"
       else
         echo "  ERROR: Unexpected response."
@@ -1274,48 +1406,45 @@ create-github-release:
         exit 1
       fi
 
-      # --- Step 3: Upload image as release asset ---
+      # --- Step 3: Upload all assets ---
       echo "============================================================"
-      echo "  Step 3: Upload image to GitHub Release"
+      echo "  Step 3: Upload assets to GitHub Release"
       echo "============================================================"
-      echo "Uploading ${IMAGE_FILE} ($(du -h ${IMAGE_FILE} | cut -f1))..."
-      UPLOAD_RESP=$(curl -s -w "\n%{http_code}" \
-        --max-time 3600 \
-        -X POST \
-        -H "Authorization: token ${GHCR_TOKEN}" \
-        -H "Content-Type: application/x-xz" \
-        "${UPLOAD_URL}?name=${IMAGE_FILE}" \
-        --data-binary "@${IMAGE_FILE}")
 
-      UPLOAD_CODE=$(echo "$UPLOAD_RESP" | tail -1)
-      UPLOAD_BODY=$(echo "$UPLOAD_RESP" | sed '$d')
-      if [ "$UPLOAD_CODE" = "201" ]; then
-        echo "  Image uploaded: $(echo "$UPLOAD_BODY" | jq -r '.browser_download_url')"
-      else
-        echo "  ERROR uploading image (HTTP ${UPLOAD_CODE})"
-        echo "$UPLOAD_BODY" | jq . 2>/dev/null || echo "$UPLOAD_BODY"
-        exit 1
-      fi
+      upload_asset() {
+        local filename="$1" content_type="$2"
+        echo "Uploading ${filename} ($(du -h ${filename} | cut -f1))..."
+        local RESP CODE
+        RESP=$(curl -s -w "\n%{http_code}" \
+          --max-time 3600 \
+          -X POST \
+          -H "Authorization: token ${GHCR_TOKEN}" \
+          -H "Content-Type: ${content_type}" \
+          "${UPLOAD_URL}?name=${filename}" \
+          --data-binary "@${filename}")
+        CODE=$(echo "$RESP" | tail -1)
+        if [ "$CODE" = "201" ]; then
+          echo "  OK: ${filename}"
+        else
+          echo "  WARN: ${filename} upload failed (HTTP ${CODE})"
+        fi
+      }
 
-      # --- Step 4: Upload checksum as release asset ---
-      echo "Uploading ${CHECKSUM_FILE}..."
-      CHKSUM_RESP=$(curl -s -w "\n%{http_code}" \
-        -X POST \
-        -H "Authorization: token ${GHCR_TOKEN}" \
-        -H "Content-Type: text/plain" \
-        "${UPLOAD_URL}?name=${CHECKSUM_FILE}" \
-        --data-binary "@${CHECKSUM_FILE}")
+      # Full image + checksum
+      upload_asset "${FULL_IMAGE_NAME}.img.xz" "application/x-xz"
+      upload_asset "${FULL_IMAGE_NAME}.img.xz.sha256" "text/plain"
 
-      CHKSUM_CODE=$(echo "$CHKSUM_RESP" | tail -1)
-      if [ "$CHKSUM_CODE" = "201" ]; then
-        echo "  Checksum uploaded."
-      else
-        echo "  WARN: Checksum upload failed (HTTP ${CHKSUM_CODE}) — non-fatal."
-      fi
+      # Lite image + checksum
+      upload_asset "${LITE_IMAGE_NAME}.img.xz" "application/x-xz"
+      upload_asset "${LITE_IMAGE_NAME}.img.xz.sha256" "text/plain"
+
+      # Pi Imager manifest
+      upload_asset "imager/rpi-imager.json" "application/json"
 
       echo "============================================================"
       echo "  GitHub Release complete!"
       echo "  https://github.com/${GITHUB_REPO}/releases/tag/${CI_COMMIT_TAG}"
+      echo "  Pi Imager URL: https://github.com/${GITHUB_REPO}/releases/download/${CI_COMMIT_TAG}/rpi-imager.json"
       echo "============================================================"
   allow_failure: true
-  timeout: 60m
+  timeout: 120m

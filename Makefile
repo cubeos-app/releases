@@ -17,7 +17,7 @@
 #   make clean          — Remove build artifacts
 # =============================================================================
 
-VERSION       ?= 0.2.0-alpha.01
+VERSION       ?= 0.2.0-beta.01
 IMAGE_NAME     = cubeos-$(VERSION)-arm64
 DOCKER_IMAGES  = docker-images
 
