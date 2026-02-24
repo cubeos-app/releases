@@ -563,7 +563,7 @@ build-image:
 
       sync
       umount /mnt/cubeos-image
-      losetup -d "$LOOPDEV"
+      losetup -d "$LOOPDEV" || true
       rmdir /mnt/cubeos-image 2>/dev/null || true
 
       echo "Docker pre-load complete: ${LOADED} core + ${CURATED_LOADED} curated images baked into ${IMAGE_NAME}.img"
@@ -750,63 +750,83 @@ build-image:
         PUSHED=0
         PUSH_FAILED=0
 
-        # Read manifest to get repo:tag mapping for each tarball
-        while IFS= read -r line; do
-          [[ "$line" =~ ^[[:space:]]*# ]] && continue
-          [[ -z "${line// }" ]] && continue
+        if [ "$CUBEOS_VARIANT" = "full" ]; then
+          # Read manifest to get repo:tag mapping for each tarball
+          while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
 
-          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
-          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
-          FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
-          TARBALL="curated-images/${FILENAME}"
+            SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+            TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+            FILENAME=$(echo "$line" | cut -d'|' -f3 | xargs)
+            TARBALL="curated-images/${FILENAME}"
 
-          # Strip registry host prefix for the repo name in our local registry
-          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+            # Strip registry host prefix for the repo name in our local registry
+            REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
-          if [ ! -f "$TARBALL" ]; then
-            echo "  SKIP: ${TARBALL} not found"
-            PUSH_FAILED=$((PUSH_FAILED + 1))
-            continue
+            if [ ! -f "$TARBALL" ]; then
+              echo "  SKIP: ${TARBALL} not found"
+              PUSH_FAILED=$((PUSH_FAILED + 1))
+              continue
+            fi
+
+            echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
+            if skopeo copy \
+              --override-arch arm64 \
+              --override-os linux \
+              --dest-tls-verify=false \
+              "docker-archive:${TARBALL}" \
+              "docker://${REGISTRY_HOST}/${REPO_NAME}:${TAG}" 2>&1; then
+              echo "    OK"
+              PUSHED=$((PUSHED + 1))
+            else
+              echo "    FAILED"
+              PUSH_FAILED=$((PUSH_FAILED + 1))
+            fi
+          done < skopeo/curated-apps.txt
+
+          echo ""
+          echo "Curated registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
+
+          # B56: Fail build if any curated image failed to push — silent failures
+          # previously caused kiwix to show 0/1 replicas on boot.
+          if [ "$PUSH_FAILED" -gt 0 ]; then
+              echo "ERROR: ${PUSH_FAILED} curated images failed to push to registry!"
+              echo "Kiwix and other curated apps will not work on the built image."
+              docker stop cubeos-temp-registry 2>/dev/null || true
+              docker rm cubeos-temp-registry 2>/dev/null || true
+              sync
+              umount /mnt/cubeos-image
+              losetup -d "$LOOPDEV"
+              exit 1
           fi
+        else
+          echo "Lite variant: skipping curated image push"
+        fi
 
-          echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
-          if skopeo copy \
-            --override-arch arm64 \
-            --override-os linux \
-            --dest-tls-verify=false \
-            "docker-archive:${TARBALL}" \
-            "docker://${REGISTRY_HOST}/${REPO_NAME}:${TAG}" 2>&1; then
-            echo "    OK"
-            PUSHED=$((PUSHED + 1))
-          else
-            echo "    FAILED"
-            PUSH_FAILED=$((PUSH_FAILED + 1))
-          fi
-        done < skopeo/curated-apps.txt
-
-        echo ""
-        echo "Curated registry push results: ${PUSHED} pushed, ${PUSH_FAILED} failed"
         TOTAL_PUSHED=$((CORE_PUSHED + PUSHED))
         TOTAL_PUSH_FAILED=$((CORE_PUSH_FAILED + PUSH_FAILED))
-        echo "Total registry push: ${TOTAL_PUSHED} pushed, ${TOTAL_PUSH_FAILED} failed (9 core + 2 curated expected)"
-
-        # B56: Fail build if any curated image failed to push — silent failures
-        # previously caused kiwix to show 0/1 replicas on boot.
-        if [ "$PUSH_FAILED" -gt 0 ]; then
-            echo "ERROR: ${PUSH_FAILED} curated images failed to push to registry!"
-            echo "Kiwix and other curated apps will not work on the built image."
-            docker stop cubeos-temp-registry 2>/dev/null || true
-            docker rm cubeos-temp-registry 2>/dev/null || true
-            sync
-            umount /mnt/cubeos-image
-            losetup -d "$LOOPDEV"
-            exit 1
+        CORE_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/core-images.txt)
+        if [ "$CUBEOS_VARIANT" = "full" ]; then
+          CURATED_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/curated-apps.txt)
+          EXPECTED=$((CORE_COUNT + CURATED_COUNT))
+          echo "Total registry push: ${TOTAL_PUSHED} pushed, ${TOTAL_PUSH_FAILED} failed (${CORE_COUNT} core + ${CURATED_COUNT} curated = ${EXPECTED} expected)"
+        else
+          echo "Total registry push: ${TOTAL_PUSHED} pushed, ${TOTAL_PUSH_FAILED} failed (${CORE_COUNT} core expected)"
         fi
 
         # ── Step 5: Validate registry contents ─────────────────────────
-        # Validates ALL images (7 core + 2 curated = 9 total)
-        echo ""
-        echo "Validating registry contents (11 expected: 9 core + 2 curated)..."
+        CORE_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/core-images.txt)
+        if [ "$CUBEOS_VARIANT" = "full" ]; then
+          CURATED_COUNT=$(grep -cv '^\s*#\|^\s*$' skopeo/curated-apps.txt)
+          EXPECTED=$((CORE_COUNT + CURATED_COUNT))
+          echo ""
+          echo "Validating registry contents (${EXPECTED} expected: ${CORE_COUNT} core + ${CURATED_COUNT} curated)..."
+        else
+          EXPECTED=${CORE_COUNT}
+          echo ""
+          echo "Validating registry contents (${EXPECTED} expected: ${CORE_COUNT} core)..."
+        fi
         CATALOG=$(curl -sf "${REGISTRY_URL}/v2/_catalog" 2>/dev/null || echo '{"repositories":[]}')
         echo "  Catalog: ${CATALOG}"
 
@@ -853,24 +873,26 @@ build-image:
           fi
         done < skopeo/core-images.txt
 
-        # Validate curated images
-        echo "  --- Curated images ---"
-        while IFS= read -r line; do
-          [[ "$line" =~ ^[[:space:]]*# ]] && continue
-          [[ -z "${line// }" ]] && continue
+        # Validate curated images (full only)
+        if [ "$CUBEOS_VARIANT" = "full" ]; then
+          echo "  --- Curated images ---"
+          while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
 
-          SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
-          TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
-          REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
+            SOURCE_IMAGE=$(echo "$line" | cut -d'|' -f1 | xargs)
+            TAG=$(echo "$line" | cut -d'|' -f2 | xargs)
+            REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
-          if validate_image "$REPO_NAME" "$TAG"; then
-            VALID=$((VALID + 1))
-          else
-            INVALID=$((INVALID + 1))
-          fi
-        done < skopeo/curated-apps.txt
+            if validate_image "$REPO_NAME" "$TAG"; then
+              VALID=$((VALID + 1))
+            else
+              INVALID=$((INVALID + 1))
+            fi
+          done < skopeo/curated-apps.txt
+        fi
 
-        echo "  Validated: ${VALID}/11 images"
+        echo "  Validated: ${VALID}/${EXPECTED} images"
         if [ "$INVALID" -gt 0 ]; then
           echo "ERROR: ${INVALID} images failed validation!"
           docker stop cubeos-temp-registry 2>/dev/null || true
