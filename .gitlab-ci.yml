@@ -580,8 +580,8 @@ build-image:
       echo "============================================================"
 
       # Skip if no images at all (core + curated)
-      CORE_IMAGE_COUNT=$(ls docker-images/*.tar 2>/dev/null | wc -l)
-      CURATED_COUNT=$(ls curated-images/*.tar 2>/dev/null | wc -l)
+      CORE_IMAGE_COUNT=$(find docker-images -maxdepth 1 -name '*.tar' 2>/dev/null | wc -l || echo 0)
+      CURATED_COUNT=$(find curated-images -maxdepth 1 -name '*.tar' 2>/dev/null | wc -l || echo 0)
       if [ "$CORE_IMAGE_COUNT" -eq 0 ] && [ "$CURATED_COUNT" -eq 0 ]; then
         echo "No images found — skipping Phase 1c"
       else
@@ -1103,7 +1103,7 @@ build-image:
       wget -q -O pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh || echo "WARN PiShrink download failed, skipping"
       if [ -f pishrink.sh ]; then
         chmod +x pishrink.sh
-        bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN PiShrink failed (non-fatal)"
+        timeout 300 bash pishrink.sh -s ${IMAGE_NAME}.img || echo "WARN: PiShrink failed or timed out (non-fatal — zerofree runs next)"
       fi
 
       # Zerofree
