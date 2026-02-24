@@ -257,8 +257,8 @@ rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 # We wait for it to finish, then read any settings it applied.
 # =========================================================================
 if command -v cloud-init &>/dev/null; then
-    log "Waiting for cloud-init to complete (Pi Imager customizations)..."
-    cloud-init status --wait --long 2>/dev/null || true
+    log "Waiting for cloud-init to complete (Pi Imager customizations, 60s timeout)..."
+    timeout 60 cloud-init status --wait --long 2>/dev/null || true
     date +%s > "$HEARTBEAT"
 
     # Read hostname set by Pi Imager
