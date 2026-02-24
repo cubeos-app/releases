@@ -724,8 +724,12 @@ build-image:
             REPO_NAME=$(echo "$SOURCE_IMAGE" | sed 's|^docker\.io/||; s|^ghcr\.io/||')
 
             if [ ! -f "$TARBALL" ]; then
-              echo "  SKIP: ${TARBALL} not found"
-              CORE_PUSH_FAILED=$((CORE_PUSH_FAILED + 1))
+              if [ "$CUBEOS_VARIANT" = "lite" ]; then
+                echo "  SKIP (lite): ${TARBALL} not present — expected for lite variant"
+              else
+                echo "  SKIP: ${TARBALL} not found"
+                CORE_PUSH_FAILED=$((CORE_PUSH_FAILED + 1))
+              fi
               continue
             fi
 
