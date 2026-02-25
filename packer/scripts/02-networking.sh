@@ -171,11 +171,19 @@ ssid=CubeOS-Setup
 # hw_mode=g (2.4GHz) for maximum compatibility across all clients
 hw_mode=g
 channel=6
+# Regulatory domain — set explicitly in hostapd AND via cfg80211 modprobe.
+# Both are needed: cfg80211 sets the kernel regulatory db, country_code
+# tells hostapd to apply it to the phy. Without country_code here, the
+# phy stays at "country 99: DFS-UNSET" and txpower defaults to 31 dBm
+# which exceeds the regulatory limit and silently kills beacon transmission.
+country_code=NL
 ieee80211n=1
 ieee80211ac=0
-
-# Regulatory domain is handled by cfg80211 modprobe config, not hostapd.
-# See cfg80211.conf section below.
+# HT capabilities: HT20 + SHORT-GI-20 only.
+# BCM4345 (Pi 5 onboard WiFi) does NOT support HT40 on Band 1 (2.4GHz).
+# Setting HT40 here causes "Driver does not support configured HT capability"
+# and hostapd refuses to start.
+ht_capab=[SHORT-GI-20][DSSS_CCK-40]
 
 # ─── Security ───────────────────────────────────────────────
 wpa=2
@@ -189,6 +197,10 @@ macaddr_acl=0
 auth_algs=1
 ignore_broadcast_ssid=0
 max_num_sta=32
+
+# ─── Control interface (for hostapd_cli management) ────────
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0
 
 # ─── Logging ────────────────────────────────────────────────
 logger_syslog=-1

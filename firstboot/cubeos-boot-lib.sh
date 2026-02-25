@@ -248,6 +248,10 @@ configure_wifi_ap() {
 
     if systemctl start hostapd 2>/dev/null; then
         sleep 3
+        # Cap TX power to regulatory maximum (20 dBm for NL/ETSI on 2.4GHz).
+        # The BCM4345 driver defaults to 31 dBm which exceeds the regulatory
+        # limit and silently suppresses beacon transmission.
+        iw dev "${CUBEOS_AP_IFACE:-wlan0}" set txpower fixed 2000 2>/dev/null || true
         # Read live SSID from hostapd.conf (wizard may have changed it)
         local LIVE_SSID
         LIVE_SSID=$(grep '^ssid=' /etc/hostapd/hostapd.conf 2>/dev/null | cut -d= -f2)
@@ -261,6 +265,7 @@ configure_wifi_ap() {
             sleep 1
             systemctl restart hostapd 2>/dev/null || true
             sleep 2
+            iw dev "${CUBEOS_AP_IFACE:-wlan0}" set txpower fixed 2000 2>/dev/null || true
             if iw dev "${CUBEOS_AP_IFACE:-wlan0}" info 2>/dev/null | grep -q "type AP"; then
                 log_ok "WiFi AP recovered after restart: ${DISPLAY_SSID}"
                 return 0
