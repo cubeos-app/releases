@@ -6,12 +6,15 @@
 # Prerequisites:
 #   - Golden base image in GitLab Package Registry (see platforms/raspberrypi/base-image/README.md)
 #   - Docker with privileged mode support
-#   - skopeo (for ARM64 image downloads)
+#   - skopeo (for Docker image downloads)
 #
 # Usage:
 #   make download-base  — Download golden base from Package Registry
-#   make images         — Download ARM64 Docker images
-#   make build          — Build the full image
+#   make images         — Download Docker images via skopeo
+#   make build          — Build the Raspberry Pi image (default)
+#   make build-bananapi — Build the BananaPi image (placeholder)
+#   make build-pine64   — Build the Pine64 image (placeholder)
+#   make build-x86      — Build the x86_64 image (requires KVM)
 #   make compress       — Compress with xz
 #   make all            — Full pipeline (download-base + images + build + compress)
 #   make clean          — Remove build artifacts
@@ -30,7 +33,7 @@ BASE_FILE      = cubeos-base.img.xz
 GITLAB_URL    ?= https://gitlab.example.com
 GITLAB_PROJECT ?= products%2Fcubeos%2Freleases
 
-.PHONY: all download-base images build compress clean help
+.PHONY: all download-base images build build-bananapi build-pine64 build-x86 compress clean help
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -60,14 +63,14 @@ download-base:  ## Download golden base image from Package Registry
 		ls -lh $(BASE_FILE); \
 	fi
 
-images:  ## Download ARM64 Docker images via skopeo
-	@echo "=== Downloading ARM64 Docker images ==="
+images:  ## Download Docker images via skopeo
+	@echo "=== Downloading Docker images ==="
 	chmod +x skopeo/download-images.sh
 	./skopeo/download-images.sh $(DOCKER_IMAGES)
 
-build: $(BASE_FILE) $(DOCKER_IMAGES)  ## Build the image with Packer
-	@echo "=== Building CubeOS $(VERSION) image ==="
-	chmod +x platforms/raspberrypi/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+build: $(BASE_FILE) $(DOCKER_IMAGES)  ## Build the Raspberry Pi image (default)
+	@echo "=== Building CubeOS $(VERSION) Raspberry Pi image ==="
+	chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
 	docker run --rm --privileged \
 		-v /dev:/dev \
 		-v $(PWD):/build \
@@ -80,6 +83,44 @@ build: $(BASE_FILE) $(DOCKER_IMAGES)  ## Build the image with Packer
 		platforms/raspberrypi/packer.pkr.hcl
 	@echo "=== Image built: $(IMAGE_NAME).img ==="
 	ls -lh $(IMAGE_NAME).img
+
+build-bananapi:  ## Build BananaPi image (PLACEHOLDER — needs base image URL)
+	@echo "=== Building CubeOS $(VERSION) BananaPi image ==="
+	chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+	docker run --rm --privileged \
+		-v /dev:/dev \
+		-v $(PWD):/build \
+		-w /build \
+		mkaczanowski/packer-builder-arm:latest \
+		build \
+		-var "version=$(VERSION)" \
+		platforms/bananapi/packer.pkr.hcl
+	@echo "=== Image built: cubeos-$(VERSION)-bananapi-arm64.img ==="
+	ls -lh cubeos-$(VERSION)-bananapi-arm64.img
+
+build-pine64:  ## Build Pine64 image (PLACEHOLDER — needs base image URL)
+	@echo "=== Building CubeOS $(VERSION) Pine64 image ==="
+	chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+	docker run --rm --privileged \
+		-v /dev:/dev \
+		-v $(PWD):/build \
+		-w /build \
+		mkaczanowski/packer-builder-arm:latest \
+		build \
+		-var "version=$(VERSION)" \
+		platforms/pine64/packer.pkr.hcl
+	@echo "=== Image built: cubeos-$(VERSION)-pine64-arm64.img ==="
+	ls -lh cubeos-$(VERSION)-pine64-arm64.img
+
+build-x86:  ## Build x86_64 image (requires KVM + packer + QEMU)
+	@echo "=== Building CubeOS $(VERSION) x86_64 image ==="
+	chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+	packer init platforms/x86_64/packer.pkr.hcl
+	packer build \
+		-var "version=$(VERSION)" \
+		platforms/x86_64/packer.pkr.hcl
+	@echo "=== Image built in output-cubeos-x86/ ==="
+	ls -lh output-cubeos-x86/
 
 compress: $(IMAGE_NAME).img  ## Compress image with xz
 	@echo "=== Compressing $(IMAGE_NAME).img ==="
@@ -96,9 +137,10 @@ compress: $(IMAGE_NAME).img  ## Compress image with xz
 	cat $(IMAGE_NAME).img.xz.sha256
 
 clean:  ## Remove build artifacts
-	rm -f $(IMAGE_NAME).img $(IMAGE_NAME).img.xz $(IMAGE_NAME).img.xz.sha256 $(IMAGE_NAME).img.xz.md5
+	rm -f cubeos-*.img cubeos-*.img.xz cubeos-*.img.xz.sha256 cubeos-*.img.xz.md5
 	rm -f $(BASE_FILE)
 	rm -rf $(DOCKER_IMAGES)
+	rm -rf output-cubeos-x86
 	rm -f packer_cache/*
 	@echo "Cleaned."
 

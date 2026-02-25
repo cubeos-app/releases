@@ -46,10 +46,39 @@ build-image:
     entrypoint: [""]
   parallel:
     matrix:
-      - CUBEOS_VARIANT: "full"
+      # Raspberry Pi — builds with packer-builder-arm (chroot)
+      - CUBEOS_PLATFORM: "raspberrypi"
+        CUBEOS_VARIANT: "full"
+        CUBEOS_ARCH: "arm64"
         IMAGE_SIZE: "12G"
-      - CUBEOS_VARIANT: "lite"
+        PACKER_TEMPLATE: "platforms/raspberrypi/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "raspberrypi"
+        CUBEOS_VARIANT: "lite"
+        CUBEOS_ARCH: "arm64"
         IMAGE_SIZE: "10G"
+        PACKER_TEMPLATE: "platforms/raspberrypi/packer.pkr.hcl"
+      # BananaPi — DISABLED (placeholder, uncomment when base image + hardware verified)
+      # - CUBEOS_PLATFORM: "bananapi"
+      #   CUBEOS_VARIANT: "full"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "12G"
+      #   PACKER_TEMPLATE: "platforms/bananapi/packer.pkr.hcl"
+      # - CUBEOS_PLATFORM: "bananapi"
+      #   CUBEOS_VARIANT: "lite"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "10G"
+      #   PACKER_TEMPLATE: "platforms/bananapi/packer.pkr.hcl"
+      # Pine64 — DISABLED (placeholder, uncomment when base image + hardware verified)
+      # - CUBEOS_PLATFORM: "pine64"
+      #   CUBEOS_VARIANT: "full"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "12G"
+      #   PACKER_TEMPLATE: "platforms/pine64/packer.pkr.hcl"
+      # - CUBEOS_PLATFORM: "pine64"
+      #   CUBEOS_VARIANT: "lite"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "10G"
+      #   PACKER_TEMPLATE: "platforms/pine64/packer.pkr.hcl"
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -59,14 +88,25 @@ build-image:
     - |
       set -e
 
-      # ── Compute variant-specific IMAGE_NAME ──────────────────────────
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then
-        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"
+      # ── Compute platform + variant-specific IMAGE_NAME ─────────────
+      # Pi keeps backward-compatible names: cubeos-X.Y.Z-arm64
+      # Other platforms: cubeos-X.Y.Z-{platform}-{arch}
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+        PLATFORM_SUFFIX="arm64"
+      elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then
+        PLATFORM_SUFFIX="amd64"
       else
-        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"
+        PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"
       fi
-      export IMAGE_NAME
-      echo "VARIANT=${CUBEOS_VARIANT} IMAGE_NAME=${IMAGE_NAME} IMAGE_SIZE=${IMAGE_SIZE}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"
+      fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"
+      export DOCKER_ARCH
+      echo "PLATFORM=${CUBEOS_PLATFORM} VARIANT=${CUBEOS_VARIANT} ARCH=${DOCKER_ARCH} IMAGE_NAME=${IMAGE_NAME} IMAGE_SIZE=${IMAGE_SIZE}"
 
       echo "============================================================"
       echo "  CubeOS Release Pipeline — Phase 0: Setup (${CUBEOS_VARIANT})"
@@ -102,8 +142,10 @@ build-image:
     - |
       set -e
       # Re-export IMAGE_NAME (each script block is a new shell)
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -169,8 +211,11 @@ build-image:
       fi
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -182,14 +227,14 @@ build-image:
 
       # ── Core images (both variants) ──────────────────────────────────
       echo "[core] Pi-hole..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+      skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://docker.io/pihole/pihole:latest \
         docker-archive:docker-images/pihole.tar:pihole/pihole:latest
       IMG_COUNT=$((IMG_COUNT + 1))
       sleep 2
 
       echo "[core] Nginx Proxy Manager..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+      skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://docker.io/jc21/nginx-proxy-manager:latest \
         docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
       IMG_COUNT=$((IMG_COUNT + 1))
@@ -197,7 +242,7 @@ build-image:
 
       echo "[core] CubeOS API..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
-        --override-arch arm64 --override-os linux --retry-times 3 \
+        --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/api:latest \
         docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
       IMG_COUNT=$((IMG_COUNT + 1))
@@ -205,7 +250,7 @@ build-image:
 
       echo "[core] CubeOS HAL..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
-        --override-arch arm64 --override-os linux --retry-times 3 \
+        --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/hal:latest \
         docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
       IMG_COUNT=$((IMG_COUNT + 1))
@@ -213,14 +258,14 @@ build-image:
 
       echo "[core] CubeOS Dashboard..."
       skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
-        --override-arch arm64 --override-os linux --retry-times 3 \
+        --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://ghcr.io/cubeos-app/dashboard:latest \
         docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
       IMG_COUNT=$((IMG_COUNT + 1))
       sleep 2
 
       echo "[core] Docker Registry..."
-      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+      skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
         docker://docker.io/library/registry:2 \
         docker-archive:docker-images/registry.tar:library/registry:2
       IMG_COUNT=$((IMG_COUNT + 1))
@@ -230,25 +275,25 @@ build-image:
       if [ "$CUBEOS_VARIANT" = "full" ]; then
         echo "[full] CubeOS DocsIndex..."
         skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
-          --override-arch arm64 --override-os linux --retry-times 3 \
+          --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
           docker://ghcr.io/cubeos-app/cubeos-docsindex:latest \
           docker-archive:docker-images/cubeos-docsindex.tar:ghcr.io/cubeos-app/cubeos-docsindex:latest
         IMG_COUNT=$((IMG_COUNT + 1))
 
         echo "[full] Dozzle..."
-        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
           docker://docker.io/amir20/dozzle:latest \
           docker-archive:docker-images/dozzle.tar:amir20/dozzle:latest
         IMG_COUNT=$((IMG_COUNT + 1))
 
         echo "[full] Dufs (file browser)..."
-        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
           docker://docker.io/sigoden/dufs:latest \
           docker-archive:docker-images/dufs.tar:sigoden/dufs:latest
         IMG_COUNT=$((IMG_COUNT + 1))
 
         echo "[full] ChromaDB..."
-        skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
           docker://docker.io/chromadb/chroma:latest \
           docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
         IMG_COUNT=$((IMG_COUNT + 1))
@@ -262,8 +307,11 @@ build-image:
       echo "Docker images: OK (${IMG_COUNT} images for ${CUBEOS_VARIANT} variant)"
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -332,8 +380,11 @@ build-image:
       fi  # end full-only curated/ZIM block
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -351,8 +402,11 @@ build-image:
       echo "Base image: OK"
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -360,7 +414,7 @@ build-image:
       echo "  Started: $(date -u +%H:%M:%S)"
       echo "============================================================"
 
-      chmod +x platforms/raspberrypi/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+      chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
 
       packer build \
         -var "version=${CUBEOS_VERSION}" \
@@ -368,14 +422,17 @@ build-image:
         -var "image_size=${IMAGE_SIZE}" \
         -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
         -var "base_image_checksum_type=none" \
-        platforms/raspberrypi/packer.pkr.hcl
+        "${PACKER_TEMPLATE}"
 
       ls -lh ${IMAGE_NAME}.img
       echo "Packer build: OK ($(date -u +%H:%M:%S))"
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -388,7 +445,12 @@ build-image:
       echo "Loop device: $LOOPDEV"
       sleep 2
 
-      ROOT_PART="${LOOPDEV}p2"
+      # Pi has 2 partitions (p1=boot, p2=root); Armbian has 1 (p1=root)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+        ROOT_PART="${LOOPDEV}p2"
+      else
+        ROOT_PART="${LOOPDEV}p1"
+      fi
       if [ ! -b "$ROOT_PART" ]; then
         echo "ERROR: Root partition ${ROOT_PART} not found"
         losetup -d "$LOOPDEV"
@@ -397,7 +459,7 @@ build-image:
 
       mkdir -p /mnt/cubeos-image
       mount "$ROOT_PART" /mnt/cubeos-image
-      echo "Mounted root partition at /mnt/cubeos-image"
+      echo "Mounted root partition at /mnt/cubeos-image (${CUBEOS_PLATFORM})"
 
       # Ensure /var/lib/docker exists on the image
       mkdir -p /mnt/cubeos-image/var/lib/docker
@@ -582,8 +644,11 @@ build-image:
       echo "Phase 1b: OK ($(date -u +%H:%M:%S))"
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -602,7 +667,12 @@ build-image:
         echo "Loop device: $LOOPDEV"
         sleep 2
 
-        ROOT_PART="${LOOPDEV}p2"
+        # Pi has 2 partitions (p1=boot, p2=root); Armbian has 1 (p1=root)
+        if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+          ROOT_PART="${LOOPDEV}p2"
+        else
+          ROOT_PART="${LOOPDEV}p1"
+        fi
         if [ ! -b "$ROOT_PART" ]; then
           echo "ERROR: Root partition ${ROOT_PART} not found"
           losetup -d "$LOOPDEV"
@@ -611,7 +681,7 @@ build-image:
 
         mkdir -p /mnt/cubeos-image
         mount "$ROOT_PART" /mnt/cubeos-image
-        echo "Mounted root partition at /mnt/cubeos-image"
+        echo "Mounted root partition at /mnt/cubeos-image (${CUBEOS_PLATFORM})"
 
         # ── Step 2: Ensure registry data directory exists ──────────────
         mkdir -p /mnt/cubeos-image/cubeos/data/registry
@@ -735,7 +805,7 @@ build-image:
 
             echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
             if skopeo copy \
-              --override-arch arm64 \
+              --override-arch $DOCKER_ARCH \
               --override-os linux \
               --dest-tls-verify=false \
               "docker-archive:${TARBALL}" \
@@ -788,7 +858,7 @@ build-image:
 
             echo "  Pushing ${REPO_NAME}:${TAG} → registry..."
             if skopeo copy \
-              --override-arch arm64 \
+              --override-arch $DOCKER_ARCH \
               --override-os linux \
               --dest-tls-verify=false \
               "docker-archive:${TARBALL}" \
@@ -987,8 +1057,11 @@ build-image:
       fi
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -1002,12 +1075,20 @@ build-image:
       echo "Loop device: $LOOPDEV"
       sleep 2
 
-      ROOT_PART="${LOOPDEV}p2"
-      BOOT_PART="${LOOPDEV}p1"
+      # Pi has 2 partitions (p1=boot, p2=root); Armbian has 1 (p1=root)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+        ROOT_PART="${LOOPDEV}p2"
+        BOOT_PART="${LOOPDEV}p1"
+      else
+        ROOT_PART="${LOOPDEV}p1"
+        BOOT_PART=""
+      fi
       MOUNT_DIR="/mnt/cubeos-validate"
       mkdir -p "$MOUNT_DIR"
       mount -o ro "$ROOT_PART" "$MOUNT_DIR"
-      mount -o ro "$BOOT_PART" "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+      if [ -n "$BOOT_PART" ] && [ -b "$BOOT_PART" ]; then
+        mount -o ro "$BOOT_PART" "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+      fi
 
       VALIDATION_ERRORS=0
       val_check() {
@@ -1033,7 +1114,10 @@ build-image:
       echo "[2/6] Systemd & services..."
       val_check "Docker daemon.json"       "/etc/docker/daemon.json"
       val_check "Netplan config"           "/etc/netplan/01-cubeos.yaml"
-      val_check "hostapd config"           "/etc/hostapd/hostapd.conf"
+      # hostapd is Pi-only (BananaPi/Pine64 have no onboard WiFi)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+        val_check "hostapd config"           "/etc/hostapd/hostapd.conf"
+      fi
 
       echo ""
       echo "[3/6] Security hardening (Phase 1.3)..."
@@ -1096,7 +1180,9 @@ build-image:
       fi
 
       # Cleanup
-      umount "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+      if [ -n "${BOOT_PART:-}" ]; then
+        umount "$MOUNT_DIR/boot/firmware" 2>/dev/null || true
+      fi
       umount "$MOUNT_DIR"
       losetup -d "$LOOPDEV"
       rmdir "$MOUNT_DIR" 2>/dev/null || true
@@ -1115,8 +1201,11 @@ build-image:
       fi
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -1136,7 +1225,8 @@ build-image:
       LOOPDEV=$(losetup -fP --show ${IMAGE_NAME}.img)
       echo "Loop device: $LOOPDEV"
       sleep 2
-      ROOT_PART="${LOOPDEV}p2"
+      # Pi: p2=root; Armbian: p1=root
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then ROOT_PART="${LOOPDEV}p2"; else ROOT_PART="${LOOPDEV}p1"; fi
       if [ -b "$ROOT_PART" ]; then
         e2fsck -fy "$ROOT_PART" || true
         zerofree -v "$ROOT_PART" || echo "WARN zerofree failed (non-fatal)"
@@ -1161,8 +1251,11 @@ build-image:
       rm -f ${IMAGE_NAME}.img  # remove uncompressed copy
     - |
       set -e
-      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-arm64"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-arm64"; fi
-      export IMAGE_NAME
+      # Re-export IMAGE_NAME (each script block is a new shell)
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then PLATFORM_SUFFIX="arm64"; elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then PLATFORM_SUFFIX="amd64"; else PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"; fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"; else IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"; fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+      DOCKER_ARCH="${CUBEOS_ARCH:-arm64}"; export DOCKER_ARCH
 
       echo ""
       echo "============================================================"
@@ -1211,6 +1304,81 @@ build-image:
     - umount /mnt/cubeos-image 2>/dev/null || true
     - losetup -D 2>/dev/null || true
   timeout: 60m
+
+# =============================================================================
+# Build x86_64 Image (separate job — requires KVM runner + different CI image)
+# =============================================================================
+# x86_64 uses the QEMU builder (not packer-builder-arm chroot), so it needs
+# a different CI image and a runner with KVM support. Kept separate from the
+# Pi matrix to avoid breaking the proven Pi build pipeline.
+#
+# STATUS: Manual trigger only — x86_64 support is experimental.
+# =============================================================================
+build-image-x86:
+  stage: build
+  image: hashicorp/packer:latest
+  variables:
+    CUBEOS_PLATFORM: "x86_64"
+    CUBEOS_VARIANT: "full"
+    CUBEOS_ARCH: "amd64"
+    IMAGE_SIZE: "20G"
+    PACKER_TEMPLATE: "platforms/x86_64/packer.pkr.hcl"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - changes:
+        - platforms/x86_64/**/*
+        - shared/**/*
+      when: manual
+  tags:
+    - kvm
+  script:
+    - |
+      set -e
+      echo "============================================================"
+      echo "  CubeOS x86_64 Build (experimental)"
+      echo "============================================================"
+
+      apk add --no-cache qemu qemu-system-x86_64 qemu-img curl jq xz
+
+      packer init "${PACKER_TEMPLATE}"
+      packer build \
+        -var "version=${CUBEOS_VERSION}" \
+        -var "variant=${CUBEOS_VARIANT}" \
+        -var "image_size=${IMAGE_SIZE}" \
+        "${PACKER_TEMPLATE}"
+
+      # Output image is in output-cubeos-x86/
+      IMAGE_FILE=$(find output-cubeos-x86 -name "*.qcow2" | head -1)
+      if [ -z "$IMAGE_FILE" ]; then
+        echo "ERROR: No qcow2 image found in output-cubeos-x86/"
+        exit 1
+      fi
+
+      echo "Built: $IMAGE_FILE ($(du -h "$IMAGE_FILE" | cut -f1))"
+
+      # Compress
+      IMAGE_BASE=$(basename "$IMAGE_FILE" .qcow2)
+      xz -6 -T0 -v "$IMAGE_FILE"
+      sha256sum "${IMAGE_FILE}.xz" > "${IMAGE_FILE}.xz.sha256"
+
+      echo "Compressed: ${IMAGE_FILE}.xz ($(du -h "${IMAGE_FILE}.xz" | cut -f1))"
+
+      # Upload to Package Registry
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file "${IMAGE_FILE}.xz" \
+           --connect-timeout 30 \
+           --max-time 1800 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_BASE}.qcow2.xz"
+      echo "Uploaded to Package Registry."
+  artifacts:
+    paths:
+      - "output-cubeos-x86/*.xz.sha256"
+    expire_in: 30 days
+  timeout: 90m
+  allow_failure: true
 
 # =============================================================================
 # Create GitLab Release (tag push only — uses pre-built image from Package Registry)
