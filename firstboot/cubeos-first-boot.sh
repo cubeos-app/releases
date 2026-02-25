@@ -304,16 +304,19 @@ start_watchdog
 log "  $(free -h | awk '/^Mem:/{printf "RAM: total=%s avail=%s", $2, $7}') $(free -h | awk '/^Swap:/{printf "Swap: %s", $2}')"
 
 # =========================================================================
-# Step 2/9: Network interface
+# Step 2/9: Network interface detection + IP assignment
 # =========================================================================
 log_step "Step 2/9: Configuring network interface..."
 echo "2/9" > "$PROGRESS"
 
+# Detect interfaces first (sets CUBEOS_AP_IFACE, CUBEOS_ETH_IFACE, etc.)
+detect_interfaces
+
 # NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
-if ensure_ip_on_interface wlan0 "$GATEWAY_IP" 10; then
-    log_ok "wlan0 has ${GATEWAY_IP}"
+if ensure_ip_on_interface "${CUBEOS_AP_IFACE}" "$GATEWAY_IP" 10; then
+    log_ok "${CUBEOS_AP_IFACE} has ${GATEWAY_IP}"
 else
-    log_warn "Could not assign ${GATEWAY_IP} to wlan0 -- Swarm will use fallback"
+    log_warn "Could not assign ${GATEWAY_IP} to ${CUBEOS_AP_IFACE} -- Swarm will use fallback"
 fi
 
 # =========================================================================

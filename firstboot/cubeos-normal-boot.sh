@@ -81,10 +81,13 @@ log "Verifying ZRAM swap and watchdog..."
 ensure_zram
 start_watchdog
 
-# ── wlan0 IP ──────────────────────────────────────────────────────────
-log "Ensuring wlan0 has ${GATEWAY_IP}..."
-ip link set wlan0 up 2>/dev/null || true
-ip addr add "${GATEWAY_IP}/24" dev wlan0 2>/dev/null || true
+# ── Detect interfaces ────────────────────────────────────────────────
+detect_interfaces
+
+# ── AP interface IP ──────────────────────────────────────────────────
+log "Ensuring ${CUBEOS_AP_IFACE} has ${GATEWAY_IP}..."
+ip link set "${CUBEOS_AP_IFACE}" up 2>/dev/null || true
+ip addr add "${GATEWAY_IP}/24" dev "${CUBEOS_AP_IFACE}" 2>/dev/null || true
 # NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
 
 # ── Docker ────────────────────────────────────────────────────────────
