@@ -25,6 +25,7 @@ JWT_SECRET=$(openssl rand -hex 32)
 API_SECRET=$(openssl rand -hex 32)
 ENCRYPTION_KEY=$(openssl rand -hex 16)
 SESSION_SECRET=$(openssl rand -hex 32)
+HAL_CORE_KEY=$(openssl rand -hex 32)
 PIHOLE_PASSWORD="cubeos"
 
 cat > "$SECRETS_FILE" << EOF
@@ -38,7 +39,21 @@ CUBEOS_API_SECRET=${API_SECRET}
 CUBEOS_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 CUBEOS_SESSION_SECRET=${SESSION_SECRET}
 CUBEOS_PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
+
+# HAL per-caller ACL key (used by cubeos-api to authenticate with HAL)
+HAL_CORE_KEY=${HAL_CORE_KEY}
 EOF
+
+# ---------------------------------------------------------------------------
+# Write HAL ACL configuration file
+# ---------------------------------------------------------------------------
+HAL_ACL_DIR="/cubeos/coreapps/cubeos-hal/appdata"
+mkdir -p "$HAL_ACL_DIR"
+cat > "${HAL_ACL_DIR}/acl.json" << EOF
+{"keys":{"${HAL_CORE_KEY}":"core"}}
+EOF
+chmod 640 "${HAL_ACL_DIR}/acl.json"
+echo "[SECRETS] HAL ACL config written to ${HAL_ACL_DIR}/acl.json"
 
 # Restrict permissions — group-readable for docker group (gitlab-runner needs access for CI redeploys)
 chmod 640 "$SECRETS_FILE"
