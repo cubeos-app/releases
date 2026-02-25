@@ -1,0 +1,21 @@
+{
+    "channel": "dev",
+    "version": "0.2.0-beta.01",
+    "released_at": "2026-02-25T00:00:00Z",
+    "min_version": "0.1.0",
+    "compose_url": "https://get.cubeos.app/releases/0.2.0-beta.01/docker-compose.yml",
+    "compose_sha256": "placeholder-will-be-updated-by-ci",
+    "cli_url": "https://get.cubeos.app/releases/0.2.0-beta.01/cubeos-cli.sh",
+    "cli_sha256": "placeholder-will-be-updated-by-ci",
+    "changelog_url": "https://github.com/cubeos-app/releases/releases/tag/v0.2.0-beta.01",
+    "images": {
+        "ghcr.io/cubeos-app/api": "dev",
+        "ghcr.io/cubeos-app/hal": "dev",
+        "ghcr.io/cubeos-app/dashboard": "dev",
+        "ghcr.io/cubeos-app/cubeos-docsindex": "dev",
+        "pihole/pihole": "latest",
+        "jc21/nginx-proxy-manager": "latest",
+        "registry": "2",
+        "amir20/dozzle": "latest"
+    }
+}

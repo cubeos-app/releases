@@ -23,6 +23,7 @@ NPM_HTTP_PORT="${NPM_HTTP_PORT:-80}"
 NPM_HTTPS_PORT="${NPM_HTTPS_PORT:-443}"
 RESOLVE_DNS_ACTION=""  # "disable", "alternate", "skip"
 CUBEOS_WIFI_MANAGED="false"
+CUBEOS_AIRGAP_DIR="${CUBEOS_AIRGAP_DIR:-/cubeos/images}"
 ADMIN_PASSWORD=""
 PIHOLE_PASSWORD=""
 NPM_PASSWORD=""
@@ -313,9 +314,53 @@ preflight_existing() {
         local choice
         choice=$(prompt_user "  Choice: " "4")
         case "$choice" in
-            1) log_info "Not yet implemented — coming in Batch 7b"; exit 0 ;;
-            2) log_info "Not yet implemented — coming in Batch 7b"; exit 0 ;;
-            3) log_info "Not yet implemented — coming in Batch 7b"; exit 0 ;;
+            1)
+                if command -v cubeos &>/dev/null; then
+                    exec cubeos update
+                else
+                    log_error "cubeos CLI not found. Reinstall first (option 2)."
+                    exit 1
+                fi
+                ;;
+            2)
+                log_info "Reinstalling CubeOS (preserving data)..."
+                # Create config-only backup
+                if command -v cubeos &>/dev/null; then
+                    cubeos backup --exclude-data || true
+                fi
+                # Stop existing services
+                docker compose -f /cubeos/docker-compose.yml down 2>/dev/null || true
+                # Remove compose and systemd (will be regenerated)
+                rm -f /cubeos/docker-compose.yml
+                systemctl disable --now cubeos.service 2>/dev/null || true
+                rm -f /etc/systemd/system/cubeos.service
+                systemctl daemon-reload 2>/dev/null || true
+                # DON'T exit — fall through to normal install flow
+                # Secrets and dirs already exist, those functions are idempotent
+                return 0
+                ;;
+            3)
+                if command -v cubeos &>/dev/null; then
+                    exec cubeos uninstall
+                else
+                    # Inline minimal uninstall
+                    log_warn "cubeos CLI not found. Performing basic uninstall..."
+                    docker compose -f /cubeos/docker-compose.yml down 2>/dev/null || true
+                    docker swarm leave --force 2>/dev/null || true
+                    systemctl disable --now cubeos.service 2>/dev/null || true
+                    rm -f /etc/systemd/system/cubeos.service
+                    systemctl daemon-reload 2>/dev/null || true
+                    local remove_data
+                    remove_data=$(prompt_user "  Remove /cubeos/data/? [y/N]: " "n")
+                    if [ "$remove_data" = "y" ] || [ "$remove_data" = "Y" ]; then
+                        rm -rf /cubeos/
+                    else
+                        rm -rf /cubeos/config /cubeos/coreapps /cubeos/apps /cubeos/mounts /cubeos/backups /cubeos/docker-compose.yml /cubeos/.manifest
+                    fi
+                    log_ok "CubeOS uninstalled."
+                    exit 0
+                fi
+                ;;
             *) log_info "Exiting."; exit 0 ;;
         esac
     fi
@@ -1059,6 +1104,26 @@ pull_and_start() {
         log_info "Pulling container images (this may take several minutes)..."
         docker compose -f /cubeos/docker-compose.yml pull
         log_ok "All images pulled"
+    else
+        # Air-gap mode: load images from local tarballs
+        local airgap_dir="${CUBEOS_AIRGAP_DIR:-/cubeos/images}"
+        if [ -d "$airgap_dir" ]; then
+            log_info "Air-gap mode: loading images from $airgap_dir..."
+            local loaded=0
+            for tarball in "$airgap_dir"/*.tar; do
+                [ -f "$tarball" ] || continue
+                log_info "  Loading $(basename "$tarball")..."
+                docker load -i "$tarball" || log_warn "Failed to load: $tarball"
+                loaded=$((loaded + 1))
+            done
+            if [ $loaded -gt 0 ]; then
+                log_ok "Loaded $loaded image(s) from $airgap_dir"
+            else
+                log_warn "No .tar files found in $airgap_dir"
+            fi
+        else
+            log_warn "Air-gap mode: no images directory at $airgap_dir — expecting images pre-loaded"
+        fi
     fi
 
     log_info "Starting services..."
@@ -1141,6 +1206,30 @@ EOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# T7b-09: Install cubeos CLI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+install_cli() {
+    log_step "Installing cubeos CLI"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${script_dir}/cubeos-cli.sh" ]; then
+        cp "${script_dir}/cubeos-cli.sh" /usr/local/bin/cubeos
+    elif [ -f "/tmp/cubeos-cli.sh" ]; then
+        cp /tmp/cubeos-cli.sh /usr/local/bin/cubeos
+    else
+        # Download from GitHub if running via curl pipe
+        curl -fsSL "https://raw.githubusercontent.com/cubeos-app/releases/main/curl/cubeos-cli.sh" \
+            -o /usr/local/bin/cubeos 2>/dev/null || {
+            log_warn "Could not install cubeos CLI. Install manually later."
+            return 0
+        }
+    fi
+    chmod +x /usr/local/bin/cubeos
+    log_ok "cubeos CLI installed at /usr/local/bin/cubeos"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # T7a-23: Manifest file
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1152,6 +1241,7 @@ write_manifest() {
 /cubeos/config/defaults.env
 /cubeos/config/secrets.env
 /etc/systemd/system/cubeos.service
+/usr/local/bin/cubeos
 /cubeos/.manifest
 EOF
 
@@ -1179,7 +1269,6 @@ $(printf '\033[1;32m')
 |  Logs:       http://${SELECTED_IP}:${DOZZLE_PORT:-6012}
 |                                                              |
 |  Management: cubeos status|update|backup|uninstall           |
-|  (CLI coming in next release)                                |
 |                                                              |
 +--------------------------------------------------------------+
 $(printf '\033[0m')
@@ -1241,6 +1330,7 @@ main() {
 
     # ── Post-install ─────────────────────────────────────────────────────────
     install_systemd_service
+    install_cli
     write_manifest
     print_banner
 }
