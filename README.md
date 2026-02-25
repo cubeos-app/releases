@@ -34,7 +34,7 @@ CubeOS uses a **two-tier build system** for fast, reproducible images:
 
 ### Prerequisites
 
-1. **Golden base image** in GitLab Package Registry (see `base-image/README.md`)
+1. **Golden base image** in GitLab Package Registry (see `platforms/raspberrypi/base-image/README.md`)
 2. **CI variables** set in GitLab:
    - `GHCR_USER` — GitHub username for GHCR
    - `GHCR_TOKEN` — GitHub PAT with `read:packages` scope
@@ -158,7 +158,7 @@ xzcat cubeos-0.1.0-alpha-arm64.img.xz | sudo dd of=/dev/sdX bs=4M status=progres
 
 ## Rebuilding the Golden Base
 
-See `base-image/README.md`. In short:
+See `platforms/raspberrypi/base-image/README.md`. In short:
 
 ```bash
 ssh root@nllei01gpu01

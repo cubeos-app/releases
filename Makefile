@@ -4,7 +4,7 @@
 # Quick commands for local image building.
 #
 # Prerequisites:
-#   - Golden base image in GitLab Package Registry (see base-image/README.md)
+#   - Golden base image in GitLab Package Registry (see platforms/raspberrypi/base-image/README.md)
 #   - Docker with privileged mode support
 #   - skopeo (for ARM64 image downloads)
 #
