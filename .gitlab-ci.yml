@@ -23,17 +23,22 @@
 #   3. CI variable: GHCR_TOKEN (used for both GHCR pushes and GitHub API releases)
 #   4. Token access: releases project allowed to access coreapps project
 #
-# TIME: ~20 minutes per variant (build) + ~2 minutes (release on tag)
+# TIME: ~20 minutes per variant (build) + ~5 minutes (validate) + ~2 minutes (release on tag)
 # =============================================================================
 
 stages:
   - build
+  - validate    # Post-build filesystem inspection (QEMU mount, no boot)
   - release
 
 variables:
+  # CubeOS release version baked into images and used for Package Registry paths
   CUBEOS_VERSION: "0.2.0-beta.01"
+  # Golden base image version (monthly rebuild on GPU VM)
   BASE_VERSION: "3.0.0"
+  # Golden base image filename in Package Registry
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
+  # GitHub mirror repo for release asset uploads
   GITHUB_REPO: "cubeos-app/releases"
 
 # =============================================================================
@@ -1315,6 +1320,102 @@ build-image:
     - umount /mnt/cubeos-image 2>/dev/null || true
     - losetup -D 2>/dev/null || true
   timeout: 60m
+
+# =============================================================================
+# Post-Build Validation (downloads compressed image, mounts, inspects filesystem)
+# =============================================================================
+# Runs AFTER build uploads to Package Registry. Downloads the compressed image,
+# decompresses, loop-mounts, and validates critical files WITHOUT booting.
+# This is the gate between build and release — if validation fails, no release.
+# =============================================================================
+validate-image:
+  stage: validate
+  image: ubuntu:24.04
+  needs:
+    - job: build-image
+      artifacts: true
+  parallel:
+    matrix:
+      - CUBEOS_PLATFORM: "raspberrypi"
+        CUBEOS_VARIANT: "full"
+        CUBEOS_ARCH: "arm64"
+      - CUBEOS_PLATFORM: "raspberrypi"
+        CUBEOS_VARIANT: "lite"
+        CUBEOS_ARCH: "arm64"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - |
+      set -e
+
+      # ── Compute IMAGE_NAME (same logic as build-image) ─────────────
+      if [ "$CUBEOS_PLATFORM" = "raspberrypi" ]; then
+        PLATFORM_SUFFIX="arm64"
+      elif [ "$CUBEOS_PLATFORM" = "x86_64" ]; then
+        PLATFORM_SUFFIX="amd64"
+      else
+        PLATFORM_SUFFIX="${CUBEOS_PLATFORM}-arm64"
+      fi
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${PLATFORM_SUFFIX}"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${PLATFORM_SUFFIX}"
+      fi
+      export IMAGE_NAME PLATFORM_SUFFIX
+
+      echo "============================================================"
+      echo "  CubeOS Post-Build Validation"
+      echo "============================================================"
+      echo "  Platform: ${CUBEOS_PLATFORM}"
+      echo "  Variant:  ${CUBEOS_VARIANT}"
+      echo "  Image:    ${IMAGE_NAME}"
+      echo "============================================================"
+      echo ""
+
+      # ── Install tools ──────────────────────────────────────────────
+      apt-get update -q 2>&1 | tail -3
+      apt-get install -y -q xz-utils util-linux curl e2fsprogs 2>&1 | tail -5
+
+      # ── Download compressed image from Package Registry ────────────
+      echo "Downloading ${IMAGE_NAME}.img.xz from Package Registry..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${IMAGE_NAME}.img.xz" \
+           --connect-timeout 30 \
+           --max-time 3600 \
+           --retry 3 \
+           --retry-delay 10 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+      ls -lh "${IMAGE_NAME}.img.xz"
+      echo "Download: OK"
+
+      # ── Decompress ─────────────────────────────────────────────────
+      echo ""
+      echo "Decompressing ${IMAGE_NAME}.img.xz..."
+      xz -d "${IMAGE_NAME}.img.xz"
+      ls -lh "${IMAGE_NAME}.img"
+      echo "Decompress: OK"
+
+      # ── Run validation script ──────────────────────────────────────
+      echo ""
+      chmod +x scripts/validate-image.sh
+      export REPORT_FILE="${CI_PROJECT_DIR}/validation-report-${CUBEOS_VARIANT}.txt"
+      scripts/validate-image.sh \
+        "${IMAGE_NAME}.img" \
+        "${CUBEOS_PLATFORM}" \
+        "${CUBEOS_VARIANT}" \
+        "${CUBEOS_VERSION}"
+
+      echo ""
+      echo "Validation complete. Report saved to: ${REPORT_FILE}"
+  artifacts:
+    paths:
+      - "validation-report-*.txt"
+    when: always
+    expire_in: 30 days
+  timeout: 15m
 
 # =============================================================================
 # Build x86_64 Image (separate job — requires KVM runner + different CI image)
