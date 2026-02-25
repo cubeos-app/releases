@@ -582,8 +582,13 @@ echo "[02]   /home/cubeos/.ssh/ created with CI deploy key"
 # =========================================================================
 # AVAHI / mDNS -- cubeos.local discovery for wifi_client mode
 # =========================================================================
-echo "[02] Installing avahi-daemon for mDNS (cubeos.local)..."
-apt-get install -y avahi-daemon avahi-utils
+echo "[02] Checking avahi-daemon for mDNS (cubeos.local)..."
+# avahi-daemon + avahi-utils must be pre-installed in the golden base image.
+# The packer chroot has no DNS, so apt-get won't work here.
+if ! command -v avahi-daemon &>/dev/null; then
+    echo "[02]   WARNING: avahi-daemon not found — add avahi-daemon avahi-utils to the base image"
+    echo "[02]   mDNS (cubeos.local) discovery will not work until avahi is installed"
+fi
 
 # Configure avahi to publish cubeos.local
 mkdir -p /etc/avahi
