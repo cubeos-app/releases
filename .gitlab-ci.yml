@@ -1392,6 +1392,277 @@ build-image-x86:
   allow_failure: true
 
 # =============================================================================
+# Manual Armbian Platform Builds (placeholder — trigger individually from UI)
+# =============================================================================
+# These platforms have Packer templates but are NOT verified on hardware yet.
+# Base image URLs in their packer.pkr.hcl files are TODO placeholders.
+# To build: click "Play" on the specific platform job in GitLab CI/CD > Pipelines.
+# Each downloads its own Armbian base image — no golden base needed.
+# =============================================================================
+build-image-arm-manual:
+  stage: build
+  image:
+    name: mkaczanowski/packer-builder-arm:latest
+    entrypoint: [""]
+  parallel:
+    matrix:
+      - CUBEOS_PLATFORM: "bananapi"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "12G"
+        PACKER_TEMPLATE: "platforms/bananapi/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "bananapim4zero"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "12G"
+        PACKER_TEMPLATE: "platforms/bananapim4zero/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "pine64"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "12G"
+        PACKER_TEMPLATE: "platforms/pine64/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "orangepi5"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "12G"
+        PACKER_TEMPLATE: "platforms/orangepi5/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "rock5b"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "12G"
+        PACKER_TEMPLATE: "platforms/rock5b/packer.pkr.hcl"
+      - CUBEOS_PLATFORM: "quartz64b"
+        CUBEOS_ARCH: "arm64"
+        IMAGE_SIZE: "10G"
+        PACKER_TEMPLATE: "platforms/quartz64b/packer.pkr.hcl"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -e
+
+      echo "============================================================"
+      echo "  CubeOS Armbian Build — ${CUBEOS_PLATFORM} (${CUBEOS_VARIANT:-full})"
+      echo "============================================================"
+
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+
+      # Compute image name
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+      echo "Platform: ${CUBEOS_PLATFORM}"
+      echo "Image:    ${IMAGE_NAME}"
+      echo "Template: ${PACKER_TEMPLATE}"
+
+      # Validate CI variables
+      if [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
+        echo "ERROR: GHCR_USER and GHCR_TOKEN CI variables are required."
+        exit 1
+      fi
+
+      # QEMU binfmt for ARM64 emulation on x86 CI runner
+      mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
+      if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        echo "ERROR: QEMU aarch64 binfmt not registered on host!"
+        exit 1
+      fi
+      echo "QEMU aarch64 binfmt: OK"
+
+      # Install tools
+      apt-get update -q 2>&1 | tail -3 || true
+      apt-get install -y -q docker.io skopeo xz-utils zerofree e2fsprogs parted wget kpartx util-linux curl jq git zstd 2>&1 | tail -5
+
+    - |
+      set -e
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+
+      echo "============================================================"
+      echo "  Phase 0a: Clone coreapps repo"
+      echo "============================================================"
+
+      git clone --depth 1 \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/products/cubeos/coreapps.git" \
+        /tmp/coreapps-src
+
+      # Use full service list (same as Pi full variant)
+      SERVICES="pihole npm cubeos-api cubeos-hal cubeos-dashboard cubeos-docsindex registry dozzle terminal kiwix filebrowser chromadb"
+
+      mkdir -p coreapps-bundle
+      for svc in $SERVICES; do
+        if [ -d "/tmp/coreapps-src/${svc}/appconfig" ]; then
+          mkdir -p "coreapps-bundle/${svc}"
+          cp -r "/tmp/coreapps-src/${svc}/appconfig" "coreapps-bundle/${svc}/"
+          echo "  + ${svc}/appconfig"
+        fi
+      done
+
+      if [ -d "/tmp/coreapps-src/scripts" ]; then
+        cp -r /tmp/coreapps-src/scripts coreapps-bundle/
+        chmod +x coreapps-bundle/scripts/*.sh 2>/dev/null || true
+      fi
+      rm -rf /tmp/coreapps-src
+
+    - |
+      set -e
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+
+      echo "============================================================"
+      echo "  Phase 0b: Download ARM64 Docker images"
+      echo "============================================================"
+
+      mkdir -p docker-images
+
+      echo "[core] Pi-hole..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/pihole/pihole:latest \
+        docker-archive:docker-images/pihole.tar:pihole/pihole:latest
+      sleep 2
+
+      echo "[core] Nginx Proxy Manager..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/jc21/nginx-proxy-manager:latest \
+        docker-archive:docker-images/npm.tar:jc21/nginx-proxy-manager:latest
+      sleep 2
+
+      echo "[core] CubeOS API..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/api:latest \
+        docker-archive:docker-images/cubeos-api.tar:ghcr.io/cubeos-app/api:latest
+      sleep 2
+
+      echo "[core] CubeOS HAL..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/hal:latest \
+        docker-archive:docker-images/cubeos-hal.tar:ghcr.io/cubeos-app/hal:latest
+      sleep 2
+
+      echo "[core] CubeOS Dashboard..."
+      skopeo copy --src-creds "${GHCR_USER}:${GHCR_TOKEN}" \
+        --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://ghcr.io/cubeos-app/dashboard:latest \
+        docker-archive:docker-images/cubeos-dashboard.tar:ghcr.io/cubeos-app/dashboard:latest
+      sleep 2
+
+      echo "[core] Docker Registry..."
+      skopeo copy --override-arch arm64 --override-os linux --retry-times 3 \
+        docker://docker.io/library/registry:2 \
+        docker-archive:docker-images/registry.tar:library/registry:2
+
+      echo ""
+      ls -lh docker-images/
+      echo "Docker images: OK"
+
+    - |
+      set -e
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+
+      echo "============================================================"
+      echo "  Phase 1: Packer build (${CUBEOS_PLATFORM})"
+      echo "============================================================"
+
+      chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+
+      # NOTE: Armbian templates download their own base image via base_image_url
+      # in the Packer HCL — no golden base download needed (unlike Pi).
+      packer build \
+        -var "version=${CUBEOS_VERSION}" \
+        -var "variant=${CUBEOS_VARIANT:-full}" \
+        -var "image_size=${IMAGE_SIZE}" \
+        "${PACKER_TEMPLATE}"
+
+      ls -lh *.img
+      echo "Packer build: OK"
+
+    - |
+      set -e
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+
+      echo "============================================================"
+      echo "  Phase 2: Compress (${CUBEOS_PLATFORM})"
+      echo "============================================================"
+
+      ls -lh ${IMAGE_NAME}.img
+      xz -6 -T0 -v ${IMAGE_NAME}.img
+      sha256sum ${IMAGE_NAME}.img.xz > ${IMAGE_NAME}.img.xz.sha256
+
+      echo "Compressed: $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+      echo "SHA256: $(cat ${IMAGE_NAME}.img.xz.sha256)"
+
+    - |
+      set -e
+      CUBEOS_VARIANT="${CUBEOS_VARIANT:-full}"
+      if [ "$CUBEOS_VARIANT" = "lite" ]; then
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-lite-${CUBEOS_PLATFORM}-arm64"
+      else
+        IMAGE_NAME="cubeos-${CUBEOS_VERSION}-${CUBEOS_PLATFORM}-arm64"
+      fi
+      export IMAGE_NAME
+
+      echo "============================================================"
+      echo "  Phase 3: Upload to Package Registry (${CUBEOS_PLATFORM})"
+      echo "============================================================"
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz \
+           --connect-timeout 30 \
+           --max-time 1800 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-${CUBEOS_PLATFORM}/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
+      echo "  Image uploaded."
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-${CUBEOS_PLATFORM}/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz.sha256"
+      echo "  SHA256 uploaded."
+
+      echo ""
+      echo "============================================================"
+      echo "  Build Complete: ${CUBEOS_PLATFORM}"
+      echo "============================================================"
+      echo "  Version:  ${CUBEOS_VERSION}"
+      echo "  Platform: ${CUBEOS_PLATFORM}"
+      echo "  File:     ${IMAGE_NAME}.img.xz"
+      echo "  Size:     $(du -h ${IMAGE_NAME}.img.xz | cut -f1)"
+      echo "  SHA256:   $(cut -d' ' -f1 ${IMAGE_NAME}.img.xz.sha256)"
+      echo "============================================================"
+  artifacts:
+    paths:
+      - "cubeos-*.img.xz.sha256"
+    expire_in: 30 days
+  timeout: 60m
+
+# =============================================================================
 # Create GitLab Release (tag push only — uses pre-built image from Package Registry)
 # =============================================================================
 create-gitlab-release:
