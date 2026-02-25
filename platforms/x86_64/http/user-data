@@ -1,0 +1,40 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: cubeos
+    username: cubeos
+    # Password: cubeos (SHA-512 hash)
+    password: "$6$PQWYcwax6Di.zeTJ$FGRUTAlL5bDvEv4XKWamJB6UqEvFE2lmGVgp8vINvSeY07TT5.flDPND85Ys3erquk4TEPztC2h62IHb.jCex/"
+  ssh:
+    install-server: true
+    allow-pw: true
+  storage:
+    layout:
+      name: direct
+  packages:
+    - docker.io
+    - docker-compose-plugin
+    - fail2ban
+    - watchdog
+    - net-tools
+    - curl
+    - jq
+    - git
+    - htop
+    - iptables
+    - nftables
+    - util-linux
+    - avahi-daemon
+    - avahi-utils
+  late-commands:
+    - curtin in-target --target=/target -- systemctl enable docker
+    - curtin in-target --target=/target -- usermod -aG docker cubeos
+    - curtin in-target --target=/target -- bash -c 'echo "cubeos ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cubeos && chmod 440 /etc/sudoers.d/cubeos'
+  user-data:
+    disable_root: true
+    network:
+      config: disabled
