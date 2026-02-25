@@ -1,0 +1,14 @@
+[Unit]
+Description=CubeOS Container Platform
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker compose -f /cubeos/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f /cubeos/docker-compose.yml down
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
