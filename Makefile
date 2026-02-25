@@ -33,7 +33,7 @@ BASE_FILE      = cubeos-base.img.xz
 GITLAB_URL    ?= https://gitlab.example.com
 GITLAB_PROJECT ?= products%2Fcubeos%2Freleases
 
-.PHONY: all download-base images build build-bananapi build-pine64 build-x86 compress clean help
+.PHONY: all download-base images build build-bananapi build-bananapim4zero build-pine64 build-x86 compress clean help
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -97,6 +97,20 @@ build-bananapi:  ## Build BananaPi image (PLACEHOLDER — needs base image URL)
 		platforms/bananapi/packer.pkr.hcl
 	@echo "=== Image built: cubeos-$(VERSION)-bananapi-arm64.img ==="
 	ls -lh cubeos-$(VERSION)-bananapi-arm64.img
+
+build-bananapim4zero:  ## Build BPI-M4 Zero image (PLACEHOLDER — needs base image URL)
+	@echo "=== Building CubeOS $(VERSION) BPI-M4 Zero image ==="
+	chmod +x platforms/*/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
+	docker run --rm --privileged \
+		-v /dev:/dev \
+		-v $(PWD):/build \
+		-w /build \
+		mkaczanowski/packer-builder-arm:latest \
+		build \
+		-var "version=$(VERSION)" \
+		platforms/bananapim4zero/packer.pkr.hcl
+	@echo "=== Image built: cubeos-$(VERSION)-bananapim4zero-arm64.img ==="
+	ls -lh cubeos-$(VERSION)-bananapim4zero-arm64.img
 
 build-pine64:  ## Build Pine64 image (PLACEHOLDER — needs base image URL)
 	@echo "=== Building CubeOS $(VERSION) Pine64 image ==="

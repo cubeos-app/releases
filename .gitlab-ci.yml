@@ -68,6 +68,17 @@ build-image:
       #   CUBEOS_ARCH: "arm64"
       #   IMAGE_SIZE: "10G"
       #   PACKER_TEMPLATE: "platforms/bananapi/packer.pkr.hcl"
+      # BananaPi M4 Zero — DISABLED (placeholder, uncomment when base image + hardware verified)
+      # - CUBEOS_PLATFORM: "bananapim4zero"
+      #   CUBEOS_VARIANT: "full"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "12G"
+      #   PACKER_TEMPLATE: "platforms/bananapim4zero/packer.pkr.hcl"
+      # - CUBEOS_PLATFORM: "bananapim4zero"
+      #   CUBEOS_VARIANT: "lite"
+      #   CUBEOS_ARCH: "arm64"
+      #   IMAGE_SIZE: "10G"
+      #   PACKER_TEMPLATE: "platforms/bananapim4zero/packer.pkr.hcl"
       # Pine64 — DISABLED (placeholder, uncomment when base image + hardware verified)
       # - CUBEOS_PLATFORM: "pine64"
       #   CUBEOS_VARIANT: "full"
