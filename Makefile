@@ -67,7 +67,7 @@ images:  ## Download ARM64 Docker images via skopeo
 
 build: $(BASE_FILE) $(DOCKER_IMAGES)  ## Build the image with Packer
 	@echo "=== Building CubeOS $(VERSION) image ==="
-	chmod +x packer/scripts/*.sh firstboot/*.sh
+	chmod +x platforms/raspberrypi/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
 	docker run --rm --privileged \
 		-v /dev:/dev \
 		-v $(PWD):/build \
@@ -77,7 +77,7 @@ build: $(BASE_FILE) $(DOCKER_IMAGES)  ## Build the image with Packer
 		-var "version=$(VERSION)" \
 		-var "base_image_url=file:///build/$(BASE_FILE)" \
 		-var "base_image_checksum_type=none" \
-		packer/cubeos.pkr.hcl
+		platforms/raspberrypi/packer.pkr.hcl
 	@echo "=== Image built: $(IMAGE_NAME).img ==="
 	ls -lh $(IMAGE_NAME).img
 

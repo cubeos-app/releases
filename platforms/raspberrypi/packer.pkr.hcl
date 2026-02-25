@@ -114,7 +114,7 @@ build {
 
   # Phase 1: Networking (hostapd, NAT, cloud-init, netplan)
   provisioner "shell" {
-    script = "packer/scripts/02-networking.sh"
+    script = "platforms/raspberrypi/scripts/02-networking.sh"
   }
 
   # Phase 2: CubeOS structure + coreapps
@@ -139,7 +139,7 @@ build {
   }
 
   provisioner "shell" {
-    script           = "packer/scripts/04-cubeos.sh"
+    script           = "shared/scripts/04-cubeos.sh"
     environment_vars = [
       "CUBEOS_VERSION=${var.version}",
       "CUBEOS_VARIANT=${var.variant}",
@@ -156,11 +156,11 @@ build {
       "CUBEOS_VARIANT=${var.variant}",
     ]
     scripts = [
-      "packer/scripts/05-docker-preload.sh",
-      "packer/scripts/08-pihole-seed.sh",
-      "packer/scripts/06-firstboot-service.sh",
-      "packer/scripts/09-console-gui.sh",
-      "packer/scripts/07-cleanup.sh",
+      "shared/scripts/05-docker-preload.sh",
+      "shared/scripts/08-pihole-seed.sh",
+      "shared/scripts/06-firstboot-service.sh",
+      "platforms/raspberrypi/scripts/09-console-gui.sh",
+      "shared/scripts/07-cleanup.sh",
     ]
   }
 }

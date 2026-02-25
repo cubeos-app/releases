@@ -360,7 +360,7 @@ build-image:
       echo "  Started: $(date -u +%H:%M:%S)"
       echo "============================================================"
 
-      chmod +x packer/scripts/*.sh firstboot/*.sh
+      chmod +x platforms/raspberrypi/scripts/*.sh shared/scripts/*.sh firstboot/*.sh
 
       packer build \
         -var "version=${CUBEOS_VERSION}" \
@@ -368,7 +368,7 @@ build-image:
         -var "image_size=${IMAGE_SIZE}" \
         -var "base_image_url=file://${CI_PROJECT_DIR}/cubeos-base.img.xz" \
         -var "base_image_checksum_type=none" \
-        packer/cubeos.pkr.hcl
+        platforms/raspberrypi/packer.pkr.hcl
 
       ls -lh ${IMAGE_NAME}.img
       echo "Packer build: OK ($(date -u +%H:%M:%S))"

@@ -114,26 +114,32 @@ releases/
 ├── .gitlab-ci.yml                  # CI pipeline (download + build stages)
 ├── Makefile                        # Local build commands
 ├── rpi-imager.json                 # Raspberry Pi Imager manifest
-├── base-image/                     # Golden base (reference — built on GPU VM)
-│   ├── README.md                   # How to rebuild the golden base
-│   ├── cubeos-base.pkr.hcl        # Packer template (reference copy)
-│   └── scripts/
-│       ├── 01-ubuntu-base.sh       # Package installation (reference copy)
-│       └── 02-cleanup.sh           # Base cleanup (reference copy)
-├── packer/
-│   ├── cubeos.pkr.hcl              # Release image Packer config
-│   └── scripts/
-│       ├── 02-networking.sh        # Netplan, hostapd, NAT, sysctl
+├── platforms/
+│   ├── raspberrypi/                # Raspberry Pi image builder
+│   │   ├── packer.pkr.hcl         # Pi Packer config (source "arm")
+│   │   ├── scripts/
+│   │   │   ├── 02-networking.sh    # Pi-specific: hostapd, netplan, wlan0
+│   │   │   └── 09-console-gui.sh  # Pi-specific: framebuffer console
+│   │   └── base-image/             # Golden base (built on GPU VM)
+│   │       ├── cubeos-base.pkr.hcl
+│   │       └── scripts/
+│   ├── bananapi/                   # BananaPi M5/M7 (placeholder)
+│   ├── pine64/                     # Pine64 (placeholder)
+│   └── x86_64/                     # x86_64 Ubuntu Server (placeholder)
+├── shared/
+│   └── scripts/                    # Platform-agnostic build scripts
 │       ├── 04-cubeos.sh            # /cubeos dirs, compose files, MOTD
 │       ├── 05-docker-preload.sh    # Image tarball loading service
 │       ├── 06-firstboot-service.sh # systemd init + watchdog services
-│       └── 07-cleanup.sh           # Cache cleanup, zero free space
-├── firstboot/
+│       ├── 07-cleanup.sh           # Cache cleanup, zero free space
+│       └── 08-pihole-seed.sh      # Pi-hole gravity DB seeding
+├── firstboot/                      # Runtime boot scripts (all platforms)
 │   ├── cubeos-boot-detect.sh       # First vs normal boot detection
 │   ├── cubeos-first-boot.sh        # First boot orchestrator
 │   ├── cubeos-normal-boot.sh       # Normal boot script
 │   ├── cubeos-generate-ap-creds.sh # MAC-based WiFi credentials
 │   └── cubeos-generate-secrets.sh  # JWT/API secret generation
+├── curl/                           # Tier 2 installer (platform-agnostic)
 ├── skopeo/
 │   └── download-images.sh          # ARM64 Docker image downloader
 ├── configs/                        # Config templates (copied to /cubeos/config/)
