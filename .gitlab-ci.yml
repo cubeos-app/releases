@@ -32,6 +32,7 @@ stages:
   - boot-test   # QEMU boot verification (x86_64 only)
   - release
   - deploy      # Upload to releases server + update channel metadata
+  - publish     # Sync artifacts to other repos (install.sh → website)
 
 variables:
   # CubeOS release version baked into images and used for Package Registry paths
@@ -2313,3 +2314,28 @@ upload-releases:
     name: releases
     url: https://releases.cubeos.app
   timeout: 60m
+
+# =============================================================================
+# Sync install.sh to Website Repo
+# =============================================================================
+# Automatically copies releases/curl/install.sh → website/static/install.sh
+# on every push to main. The website CI then picks up the push and redeploys
+# get.cubeos.app automatically. No-op when install.sh hasn't changed.
+# =============================================================================
+sync-installer:
+  stage: publish
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - apk add --no-cache git
+    - |
+      git clone https://oauth2:${GITLAB_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
+      cp curl/install.sh /tmp/website/static/install.sh
+      cd /tmp/website
+      git config user.email "ci@cubeos.app"
+      git config user.name "CubeOS CI"
+      git add static/install.sh
+      # Only commit if there are changes
+      git diff --staged --quiet || git commit -m "chore: sync install.sh from releases $(git -C $CI_PROJECT_DIR rev-parse --short HEAD)"
+      git push origin main
