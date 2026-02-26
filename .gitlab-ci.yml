@@ -2325,6 +2325,7 @@ upload-releases:
 sync-installer:
   stage: publish
   image: alpine:latest
+  needs: []  # Run immediately — no dependency on build/validate/release stages
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
