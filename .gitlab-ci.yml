@@ -29,6 +29,7 @@
 stages:
   - build
   - validate    # Post-build filesystem inspection (QEMU mount, no boot)
+  - boot-test   # QEMU boot verification (x86_64 only)
   - release
   - deploy      # Upload to releases server + update channel metadata
 
@@ -1417,6 +1418,183 @@ validate-image:
     when: always
     expire_in: 30 days
   timeout: 15m
+
+# =============================================================================
+# QEMU Boot Test (x86_64 only — ARM64 emulation is too slow/flaky for CI)
+# =============================================================================
+# Downloads the x86_64 qcow2 image from Package Registry, boots it in QEMU
+# with KVM acceleration, and verifies the OS reaches a usable state by
+# monitoring serial console output for systemd targets or a login prompt.
+#
+# This is a real boot test, not just filesystem inspection. It catches issues
+# that validate-image cannot: broken GRUB, kernel panics, missing initramfs
+# modules, systemd dependency cycles, etc.
+#
+# Requires: KVM-capable runner (same as build-image-x86)
+# Time: ~3 minutes (download + decompress + 120s max boot wait)
+# =============================================================================
+boot-test-x86:
+  stage: boot-test
+  image: ubuntu:24.04
+  tags:
+    - kvm
+  needs:
+    - job: build-image-x86
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - |
+      set -e
+
+      IMAGE_NAME="cubeos-${CUBEOS_VERSION}-amd64"
+      IMAGE_FILE="${IMAGE_NAME}.qcow2"
+      SERIAL_LOG="${CI_PROJECT_DIR}/boot-test-serial.log"
+      TIMEOUT=120
+
+      echo "============================================================"
+      echo "  CubeOS x86_64 QEMU Boot Test"
+      echo "============================================================"
+      echo "  Image:   ${IMAGE_FILE}"
+      echo "  Timeout: ${TIMEOUT}s"
+      echo "============================================================"
+      echo ""
+
+      # ── Install QEMU ──────────────────────────────────────────────
+      echo "Installing QEMU..."
+      apt-get update -q 2>&1 | tail -3
+      apt-get install -y -q qemu-system-x86 qemu-utils xz-utils curl 2>&1 | tail -5
+      echo "  qemu-system-x86_64: $(qemu-system-x86_64 --version | head -1)"
+
+      # ── Verify KVM access ─────────────────────────────────────────
+      if [ -c /dev/kvm ]; then
+        echo "  KVM: available (/dev/kvm present)"
+        KVM_FLAGS="-enable-kvm -cpu host"
+      else
+        echo "  WARNING: /dev/kvm not found — using software emulation (slow)"
+        echo "  Boot test may timeout without KVM acceleration."
+        KVM_FLAGS=""
+      fi
+
+      # ── Download image from Package Registry ──────────────────────
+      echo ""
+      echo "Downloading ${IMAGE_FILE}.xz from Package Registry..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${IMAGE_FILE}.xz" \
+           --connect-timeout 30 \
+           --max-time 1800 \
+           --retry 3 \
+           --retry-delay 10 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_FILE}.xz"
+      ls -lh "${IMAGE_FILE}.xz"
+      echo "Download: OK"
+
+      # ── Decompress ────────────────────────────────────────────────
+      echo ""
+      echo "Decompressing ${IMAGE_FILE}.xz..."
+      xz -d "${IMAGE_FILE}.xz"
+      ls -lh "${IMAGE_FILE}"
+      echo "Decompress: OK"
+
+      # ── Boot QEMU ─────────────────────────────────────────────────
+      echo ""
+      echo "Booting QEMU..."
+      touch "${SERIAL_LOG}"
+
+      # shellcheck disable=SC2086
+      qemu-system-x86_64 \
+        -m 512 \
+        ${KVM_FLAGS} \
+        -drive file="${IMAGE_FILE}",format=qcow2,if=virtio \
+        -netdev user,id=net0 \
+        -device virtio-net-pci,netdev=net0 \
+        -display none \
+        -serial file:"${SERIAL_LOG}" \
+        -no-reboot \
+        -daemonize \
+        -pidfile /tmp/qemu.pid
+
+      QEMU_PID=$(cat /tmp/qemu.pid)
+      echo "  QEMU started (PID: ${QEMU_PID})"
+
+      # ── Poll serial output for boot success ───────────────────────
+      BOOT_SUCCESS=false
+      ELAPSED=0
+
+      while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
+
+        # Check if QEMU is still running
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+          echo "  QEMU exited after ${ELAPSED}s (possible kernel panic or reboot)"
+          break
+        fi
+
+        if [ -f "$SERIAL_LOG" ]; then
+          # Primary: systemd reached multi-user.target
+          if grep -qi "reached target.*multi.user" "$SERIAL_LOG" 2>/dev/null; then
+            echo "  SUCCESS: systemd reached multi-user.target (${ELAPSED}s)"
+            BOOT_SUCCESS=true
+            break
+          fi
+
+          # Secondary: login prompt visible
+          if grep -q "login:" "$SERIAL_LOG" 2>/dev/null; then
+            echo "  SUCCESS: login prompt detected (${ELAPSED}s)"
+            BOOT_SUCCESS=true
+            break
+          fi
+
+          # Progress indicator
+          LINE_COUNT=$(wc -l < "$SERIAL_LOG" 2>/dev/null || echo 0)
+          LAST_LINE=$(tail -1 "$SERIAL_LOG" 2>/dev/null | head -c 120 || true)
+          echo "  [${ELAPSED}s] ${LINE_COUNT} lines — ${LAST_LINE}"
+        fi
+      done
+
+      # ── Cleanup: always kill QEMU ─────────────────────────────────
+      echo ""
+      echo "Stopping QEMU..."
+      kill "$QEMU_PID" 2>/dev/null || true
+      sleep 2
+      kill -9 "$QEMU_PID" 2>/dev/null || true
+
+      # ── Show tail of serial log ───────────────────────────────────
+      echo ""
+      echo "============================================================"
+      echo "  Serial console output (last 50 lines)"
+      echo "============================================================"
+      tail -50 "$SERIAL_LOG" 2>/dev/null || echo "(no serial output captured)"
+
+      # ── Result ────────────────────────────────────────────────────
+      echo ""
+      echo "============================================================"
+      if $BOOT_SUCCESS; then
+        echo "  BOOT TEST: PASSED"
+        echo "============================================================"
+        exit 0
+      else
+        echo "  BOOT TEST: FAILED"
+        echo "============================================================"
+        echo ""
+        echo "  No success indicators detected within ${TIMEOUT}s."
+        echo "  Expected one of:"
+        echo "    - systemd multi-user.target reached"
+        echo "    - login prompt on serial console"
+        echo ""
+        echo "  Full serial log saved as CI artifact."
+        exit 1
+      fi
+  artifacts:
+    paths:
+      - "boot-test-serial.log"
+    when: always
+    expire_in: 7 days
+  timeout: 5m
 
 # =============================================================================
 # Build x86_64 Image (separate job — requires KVM runner + different CI image)
