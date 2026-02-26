@@ -41,6 +41,8 @@ GATEWAY_IP="10.42.24.1"
 SUBNET="10.42.24.0/24"
 OVERLAY_SUBNET="10.42.25.0/24"
 NETWORK_NAME="cubeos-network"
+HAL_OVERLAY_SUBNET="10.42.26.0/24"
+HAL_NETWORK_NAME="hal-internal"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
 DATA_DIR="/cubeos/data"
@@ -392,6 +394,82 @@ ensure_overlay_network() {
     done
     log_warn "${NETWORK_NAME} overlay creation failed after 5 attempts -- stacks may fail"
     return 1
+}
+
+# ── HAL-Internal Overlay Network ─────────────────────────────────────
+# Restricted overlay network for services authorized to access HAL.
+# Only cubeos-api joins this network — user apps never do.
+# HAL itself runs on host network (required for hardware access) and
+# is reachable via the gateway IP (10.42.24.1:6005). This network
+# provides an organizational boundary; ACL keys (X-HAL-Key) provide
+# the actual authentication layer.
+ensure_hal_internal_network() {
+    local NETWORK_SCOPE
+    NETWORK_SCOPE=$(docker network inspect "$HAL_NETWORK_NAME" --format '{{.Scope}}' 2>/dev/null || echo "none")
+    if [ "$NETWORK_SCOPE" = "local" ]; then
+        log "Removing local ${HAL_NETWORK_NAME} (wrong scope)..."
+        docker network rm "$HAL_NETWORK_NAME" 2>/dev/null || true
+        sleep 2
+        NETWORK_SCOPE="none"
+    fi
+
+    if [ "$NETWORK_SCOPE" = "swarm" ]; then
+        log_ok "${HAL_NETWORK_NAME} overlay already exists"
+        return 0
+    fi
+
+    local attempt sleep_time=2
+    for attempt in 1 2 3; do
+        log "  Creating ${HAL_NETWORK_NAME} overlay (attempt ${attempt}/3)..."
+        if docker network create \
+            --driver overlay \
+            --attachable \
+            --subnet "$HAL_OVERLAY_SUBNET" \
+            "$HAL_NETWORK_NAME" 2>&1; then
+            sleep 1
+            if docker network inspect "$HAL_NETWORK_NAME" &>/dev/null; then
+                log_ok "${HAL_NETWORK_NAME} overlay created (attempt ${attempt})"
+                return 0
+            fi
+        fi
+        log "  Attempt ${attempt} failed -- waiting ${sleep_time}s..."
+        sleep "$sleep_time"
+        sleep_time=$((sleep_time + 2))
+    done
+    log_warn "${HAL_NETWORK_NAME} overlay creation failed after 3 attempts"
+    return 1
+}
+
+# ── HAL Port Protection (iptables) ───────────────────────────────────
+# Block external access to HAL port 6005. Docker containers reach HAL
+# via the gateway IP, which is internal. External interfaces (eth0,
+# wlan0 station mode) should not expose HAL to the broader network.
+protect_hal_port() {
+    local HAL_PORT=6005
+    local CHAIN="CUBEOS_HAL"
+
+    # Create or flush the custom chain
+    iptables -N "$CHAIN" 2>/dev/null || iptables -F "$CHAIN"
+
+    # Allow localhost (healthchecks, local tools)
+    iptables -A "$CHAIN" -i lo -j ACCEPT
+
+    # Allow Docker bridge networks (containers reaching host via gateway)
+    iptables -A "$CHAIN" -i docker0 -j ACCEPT
+    iptables -A "$CHAIN" -i docker_gwbridge -j ACCEPT
+    iptables -A "$CHAIN" -i br-+ -j ACCEPT
+
+    # Allow from AP subnet (10.42.24.0/24 — host-network services)
+    iptables -A "$CHAIN" -s "${SUBNET}" -j ACCEPT
+
+    # Drop everything else (external networks)
+    iptables -A "$CHAIN" -j DROP
+
+    # Insert jump to our chain in INPUT (idempotent — remove first if exists)
+    iptables -D INPUT -p tcp --dport "$HAL_PORT" -j "$CHAIN" 2>/dev/null || true
+    iptables -I INPUT -p tcp --dport "$HAL_PORT" -j "$CHAIN"
+
+    log_ok "HAL port ${HAL_PORT} protected (external access blocked)"
 }
 
 # ── Pi-hole DNS Seeding ──────────────────────────────────────────────

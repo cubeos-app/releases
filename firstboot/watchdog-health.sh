@@ -21,6 +21,8 @@ ALERT_DIR="/cubeos/alerts"
 GATEWAY_IP="10.42.24.1"
 OVERLAY_SUBNET="10.42.25.0/24"
 NETWORK_NAME="cubeos-network"
+HAL_OVERLAY_SUBNET="10.42.26.0/24"
+HAL_NETWORK_NAME="hal-internal"
 COREAPPS_DIR="/cubeos/coreapps"
 CONFIG_DIR="/cubeos/config"
 
@@ -74,9 +76,11 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
         --task-history-limit 1 2>&1) && {
         log_fix "Swarm recovered: ${SWARM_OUTPUT}"
         FIXES=$((FIXES + 1))
-        # Recreate overlay
+        # Recreate overlays
         docker network create --driver overlay --attachable \
             --subnet "$OVERLAY_SUBNET" "$NETWORK_NAME" 2>/dev/null || true
+        docker network create --driver overlay --attachable \
+            --subnet "$HAL_OVERLAY_SUBNET" "$HAL_NETWORK_NAME" 2>/dev/null || true
     } || {
         log_warn "Swarm recovery failed: ${SWARM_OUTPUT}"
     }
@@ -91,6 +95,17 @@ if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK_NAME}$"; then
         log_fix "Recreated ${NETWORK_NAME}"
         FIXES=$((FIXES + 1))
     } || log_warn "Failed to recreate ${NETWORK_NAME}"
+fi
+
+# ── HAL-internal overlay network ─────────────────────────────────────
+if ! docker network ls --format '{{.Name}}' | grep -q "^${HAL_NETWORK_NAME}$"; then
+    log_warn "${HAL_NETWORK_NAME} overlay missing!"
+    ISSUES=$((ISSUES + 1))
+    docker network create --driver overlay --attachable \
+        --subnet "$HAL_OVERLAY_SUBNET" "$HAL_NETWORK_NAME" 2>/dev/null && {
+        log_fix "Recreated ${HAL_NETWORK_NAME}"
+        FIXES=$((FIXES + 1))
+    } || log_warn "Failed to recreate ${HAL_NETWORK_NAME}"
 fi
 
 # ── Compose services (pihole, npm, hal) ──────────────────────────────

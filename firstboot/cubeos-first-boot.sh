@@ -414,9 +414,10 @@ else
 fi
 date +%s > "$HEARTBEAT"
 
-# Create overlay network
+# Create overlay networks
 if [ "$SWARM_READY" = true ]; then
     ensure_overlay_network
+    ensure_hal_internal_network
 fi
 
 # ── Source image version pins for registry-first deploys ──────────
@@ -547,6 +548,9 @@ DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
     -f "${COREAPPS_DIR}/cubeos-hal/appconfig/docker-compose.yml" \
     up -d --pull never 2>&1 || log_warn "HAL deploy failed"
 wait_for "HAL" "curl -sf http://127.0.0.1:6005/health" 30 || log_warn "HAL not responding"
+
+# Protect HAL port from external access
+protect_hal_port
 
 # =========================================================================
 # Step 8/9: Swarm stacks

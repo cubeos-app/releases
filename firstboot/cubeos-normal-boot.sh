@@ -104,9 +104,10 @@ wait_for "Docker" "docker info" 30 || {
 if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     recover_swarm
 
-    # Recreate overlay network after Swarm recovery
+    # Recreate overlay networks after Swarm recovery
     if docker info 2>/dev/null | grep -q "Swarm: active"; then
         ensure_overlay_network
+        ensure_hal_internal_network
     fi
 fi
 
@@ -136,6 +137,9 @@ if ! container_running "cubeos-hal"; then
         up -d --pull never 2>/dev/null || log_warn "HAL force-start failed"
 fi
 
+# Protect HAL port from external access (idempotent — safe to re-apply)
+protect_hal_port
+
 # Pi-hole health via DNS check (more reliable, tests actual functionality)
 wait_for "Pi-hole DNS" "dig cubeos.cube @127.0.0.1 +short +time=2 +tries=1" 30 1 || true
 
@@ -161,9 +165,10 @@ fi
 if docker info 2>/dev/null | grep -q "Swarm: active"; then
     log "Verifying Swarm stacks..."
 
-    # T07: Ensure overlay network exists before checking stacks
-    # Network can be GC'd if no services reference it after reboot
+    # T07: Ensure overlay networks exist before checking stacks
+    # Networks can be GC'd if no services reference them after reboot
     ensure_overlay_network
+    ensure_hal_internal_network
 
     for stack in $SWARM_STACKS; do
         if docker stack ls 2>/dev/null | grep -q "^${stack} "; then

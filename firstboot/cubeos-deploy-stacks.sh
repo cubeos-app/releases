@@ -17,6 +17,8 @@ set -euo pipefail
 GATEWAY_IP="10.42.24.1"
 OVERLAY_SUBNET="10.42.25.0/24"
 NETWORK_NAME="cubeos-network"
+HAL_OVERLAY_SUBNET="10.42.26.0/24"
+HAL_NETWORK_NAME="hal-internal"
 CONFIG_DIR="/cubeos/config"
 COREAPPS_DIR="/cubeos/coreapps"
 
@@ -89,6 +91,15 @@ for i in $(seq 1 30); do
     sleep 1
 done
 echo "[RECOVER] ${NETWORK_NAME} overlay ready."
+
+# ── Ensure hal-internal overlay network ────────────────────────────────
+HAL_NET_EXISTS=$(docker network ls --format '{{.Name}}' | grep -c "^${HAL_NETWORK_NAME}$" || true)
+if [ "$HAL_NET_EXISTS" -eq 0 ]; then
+    echo "[RECOVER] Creating ${HAL_NETWORK_NAME} overlay network..."
+    docker network create --driver overlay --attachable \
+        --subnet "$HAL_OVERLAY_SUBNET" "$HAL_NETWORK_NAME" 2>/dev/null || true
+fi
+echo "[RECOVER] ${HAL_NETWORK_NAME} overlay ready."
 
 # ── Ensure compose services ─────────────────────────────────────────
 echo "[RECOVER] Ensuring compose services..."
