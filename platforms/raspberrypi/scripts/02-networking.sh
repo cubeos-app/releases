@@ -628,36 +628,7 @@ AVAHI_CONF
 systemctl disable avahi-daemon 2>/dev/null || true
 echo "[02] avahi-daemon installed (disabled at boot -- started by boot scripts in client modes)"
 
-# =========================================================================
-# WIFI WATCHDOG -- monitors wifi_client connectivity
-# =========================================================================
-echo "[02] Installing WiFi watchdog service..."
-install -m 755 /tmp/firstboot/cubeos-wifi-watchdog.sh /usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
-
-cat > /etc/systemd/system/cubeos-wifi-watchdog.service << 'UNIT'
-[Unit]
-Description=CubeOS WiFi Client Watchdog
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
-UNIT
-
-cat > /etc/systemd/system/cubeos-wifi-watchdog.timer << 'TIMER'
-[Unit]
-Description=CubeOS WiFi Client Watchdog Timer
-
-[Timer]
-OnBootSec=120
-OnUnitActiveSec=60
-AccuracySec=10
-
-[Install]
-WantedBy=timers.target
-TIMER
-
-systemctl enable cubeos-wifi-watchdog.timer
-echo "[02] WiFi watchdog timer enabled (checks every 60s, reverts after 5 failures)"
+# WiFi watchdog is installed by 06-firstboot-service.sh (Phase 3)
+# because it needs /tmp/cubeos-firstboot/ which is copied in Phase 2.
 
 echo "[02] Network configuration complete."

@@ -56,6 +56,44 @@ else
     exit 1
 fi
 
+# WiFi watchdog — monitors wifi_client connectivity, reverts after 5 failures
+if [ -f "${FIRSTBOOT_SRC}/cubeos-wifi-watchdog.sh" ]; then
+    cp "${FIRSTBOOT_SRC}/cubeos-wifi-watchdog.sh" /usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
+    chmod +x /usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
+    echo "[06]   Installed cubeos-wifi-watchdog.sh → /usr/local/lib/cubeos/"
+else
+    echo "[06]   WARNING: cubeos-wifi-watchdog.sh not found in ${FIRSTBOOT_SRC}"
+fi
+
+# ---------------------------------------------------------------------------
+# cubeos-wifi-watchdog.service + timer — WiFi client connectivity monitor
+# ---------------------------------------------------------------------------
+cat > /etc/systemd/system/cubeos-wifi-watchdog.service << 'WIFI_WD_SVC'
+[Unit]
+Description=CubeOS WiFi Client Watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/cubeos/cubeos-wifi-watchdog.sh
+WIFI_WD_SVC
+
+cat > /etc/systemd/system/cubeos-wifi-watchdog.timer << 'WIFI_WD_TMR'
+[Unit]
+Description=CubeOS WiFi Client Watchdog Timer
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+WIFI_WD_TMR
+
+systemctl enable cubeos-wifi-watchdog.timer
+echo "[06]   WiFi watchdog timer enabled (checks every 60s, reverts after 5 failures)"
+
 # ---------------------------------------------------------------------------
 # cubeos-init.service — main boot orchestrator
 # ---------------------------------------------------------------------------

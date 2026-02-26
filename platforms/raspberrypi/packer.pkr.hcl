@@ -44,7 +44,7 @@
 
 variable "version" {
   type    = string
-  default = "0.2.0-beta.01"
+  default = "0.2.0-beta.02"
 }
 
 variable "variant" {
