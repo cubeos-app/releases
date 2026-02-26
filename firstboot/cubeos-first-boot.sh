@@ -312,6 +312,16 @@ echo "2/9" > "$PROGRESS"
 # Detect interfaces first (sets CUBEOS_AP_IFACE, CUBEOS_ETH_IFACE, etc.)
 detect_interfaces
 
+# T6c-09: Determine default network mode from detected hardware.
+# Decision tree: WiFi+Eth→wifi_router, WiFi-only→offline_hotspot,
+# Eth-only→eth_client, Neither→offline_hotspot (safe fallback).
+CUBEOS_DEFAULT_MODE=$(determine_default_mode)
+log "Hardware-detected default mode: ${CUBEOS_DEFAULT_MODE}"
+
+# Write netplan for the hardware-detected default mode.
+# Takes effect on next boot; runtime IP assignment below handles current boot.
+write_netplan_for_mode "${CUBEOS_DEFAULT_MODE}"
+
 # NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
 if ensure_ip_on_interface "${CUBEOS_AP_IFACE}" "$GATEWAY_IP" 10; then
     log_ok "${CUBEOS_AP_IFACE} has ${GATEWAY_IP}"
@@ -449,10 +459,10 @@ wait_for "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 90 1 || log_warn "Pi-
 # Seed custom DNS — uses shared CORE_DNS_HOSTS array
 seed_pihole_dns
 
-# Configure Pi-hole DHCP for default offline_hotspot mode (Batch 2)
+# T6c-09: Configure Pi-hole DHCP for the hardware-detected default mode.
 # Must run after Pi-hole is healthy — DHCP is disabled by default since
 # FTLCONF_dhcp_active was removed from env vars in Batch 1.
-configure_pihole_dhcp "offline_hotspot"
+configure_pihole_dhcp "${CUBEOS_DEFAULT_MODE}"
 
 # =========================================================================
 # Step 6/9: WiFi AP

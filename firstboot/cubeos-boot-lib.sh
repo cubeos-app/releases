@@ -563,6 +563,7 @@ detect_interfaces() {
     export CUBEOS_WIFI_CLIENT_IFACE="${usb_wifi:-${ap_iface:-wlan0}}"
     export CUBEOS_BUILTIN_WIFI="${builtin_wifi:-}"
     export CUBEOS_USB_WIFI="${usb_wifi:-}"
+    export CUBEOS_DETECTED_ETH="${eth_iface:-}"
 
     # Write to config file for containers to read
     mkdir -p /cubeos/config
@@ -573,15 +574,26 @@ CUBEOS_WAN_INTERFACE=${CUBEOS_UPLINK_IFACE}
 CUBEOS_WIFI_CLIENT_INTERFACE=${CUBEOS_WIFI_CLIENT_IFACE}
 HAL_DEFAULT_WIFI_INTERFACE=${CUBEOS_AP_IFACE}
 HAL_NAT_INTERFACE=${CUBEOS_UPLINK_IFACE}
+CUBEOS_DETECTED_ETH=${CUBEOS_DETECTED_ETH}
+CUBEOS_BUILTIN_WIFI=${CUBEOS_BUILTIN_WIFI}
 IFACES_EOF
 
     log "Interface roles: AP=${CUBEOS_AP_IFACE} Uplink=${CUBEOS_UPLINK_IFACE} WiFi-Client=${CUBEOS_WIFI_CLIENT_IFACE}"
 }
 
-# Determine best default mode based on detected hardware
+# Determine best default mode based on detected hardware.
+# T6c-09: Uses raw detection values (CUBEOS_BUILTIN_WIFI, CUBEOS_DETECTED_ETH)
+# which are empty when hardware is absent, unlike CUBEOS_AP_IFACE/CUBEOS_ETH_IFACE
+# which always have safe fallbacks (wlan0/eth0).
+#
+# Decision tree:
+#   WiFi + Ethernet → wifi_router   (AP + internet via eth)
+#   WiFi only       → offline_hotspot (AP, air-gapped)
+#   Ethernet only   → eth_client    (no AP, DHCP client)
+#   Neither         → offline_hotspot (safe fallback)
 determine_default_mode() {
-    local has_wifi="${CUBEOS_AP_IFACE:+yes}"
-    local has_eth="${CUBEOS_ETH_IFACE:+yes}"
+    local has_wifi="${CUBEOS_BUILTIN_WIFI:+yes}"
+    local has_eth="${CUBEOS_DETECTED_ETH:+yes}"
 
     if [ -n "$has_wifi" ] && [ -n "$has_eth" ]; then
         echo "wifi_router"
