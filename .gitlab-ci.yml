@@ -34,6 +34,7 @@ stages:
   - release
   - deploy      # Upload to releases server + update channel metadata
   - publish     # Sync artifacts to other repos (install.sh → website)
+  - tag         # Tag all repos on release (mirrors to GitHub automatically)
 
 variables:
   # CubeOS release version baked into images and used for Package Registry paths
@@ -2615,3 +2616,58 @@ sync-installer:
       git diff --staged --quiet || git commit -m "chore: sync install.sh from releases $(git -C $CI_PROJECT_DIR rev-parse --short HEAD)"
       git push origin main
   allow_failure: true
+
+# =============================================================================
+# Tag all repos — creates version tags across all 10 CubeOS GitLab projects.
+# Tags mirror to GitHub automatically via existing GitLab mirror configuration.
+# =============================================================================
+tag-all-repos:
+  stage: tag
+  image: alpine:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+  needs:
+    - job: upload-to-dmz
+      artifacts: false
+  script:
+    - apk add --no-cache curl jq
+    - |
+      TAG="v${CUBEOS_VERSION}"
+      echo "Tagging all repos with ${TAG}"
+
+      for PROJECT_ID in 13 14 16 19 20 22 23 24 25 26; do
+        SHA=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "https://gitlab.nuclearlighters.net/api/v4/projects/${PROJECT_ID}/repository/branches/main" \
+          | jq -r '.commit.id')
+
+        if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+          echo "WARNING: Could not get SHA for project ${PROJECT_ID}, skipping"
+          continue
+        fi
+
+        # Skip if tag already exists
+        EXISTS=$(curl -s --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "https://gitlab.nuclearlighters.net/api/v4/projects/${PROJECT_ID}/repository/tags/${TAG}" \
+          | jq -r '.name // empty')
+        if [ -n "$EXISTS" ]; then
+          echo "  project ${PROJECT_ID}: ${TAG} already exists, skipping"
+          continue
+        fi
+
+        RESULT=$(curl -sf -X POST \
+          --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          --header "Content-Type: application/json" \
+          "https://gitlab.nuclearlighters.net/api/v4/projects/${PROJECT_ID}/repository/tags" \
+          -d "{\"tag_name\": \"${TAG}\", \"ref\": \"${SHA}\", \"message\": \"CubeOS ${TAG} release\"}" \
+          | jq -r '.name // empty')
+
+        if [ -n "$RESULT" ]; then
+          echo "  project ${PROJECT_ID} tagged at ${SHA:0:8}"
+        else
+          echo "  ERROR: Failed to tag project ${PROJECT_ID}"
+          exit 1
+        fi
+      done
+
+      echo "All 10 repos tagged with ${TAG} — will mirror to GitHub automatically"
