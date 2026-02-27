@@ -2377,30 +2377,53 @@ create-github-release:
       echo "  Step 2: Create GitHub Release"
       echo "============================================================"
 
+      FULL_SIZE=$(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1)
+      LITE_SIZE=$(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1)
+      FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_IMAGE_NAME}.img.xz"
+      LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_IMAGE_NAME}.img.xz"
+      CHECKSUMS_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/checksums.sha256"
+
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 images for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04 based).
 
-      ### Variants
-      | Variant | Size | Description |
-      |---------|------|-------------|
-      | **Full** | $(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1) | All services + offline content (4GB+ RAM) |
-      | **Lite** | $(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1) | Core platform only (2GB+ RAM) |
+      ### Download
+
+      | File | Link | Size |
+      |------|------|------|
+      | Full image (all services) | [${FULL_IMAGE_NAME}.img.xz](${FULL_URL}) | ${FULL_SIZE} |
+      | Lite image (minimal) | [${LITE_IMAGE_NAME}.img.xz](${LITE_URL}) | ${LITE_SIZE} |
+      | SHA256 checksums | [checksums.sha256](${CHECKSUMS_URL}) | |
+
+      ### Quick Start
+
+      1. Download the Full image above
+      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — Use custom image
+      3. Boot the Pi — connect to the **CubeOS** WiFi AP (password: cubeos123)
+      4. Open **http://cubeos.cube** and complete the setup wizard
+
+      ### Install on x86/ARM64 Linux
+
+      \`\`\`bash
+      curl -fsSL https://get.cubeos.app | sudo bash
+      \`\`\`
 
       ### Pi Imager
+
       Add CubeOS to Raspberry Pi Imager with this custom repository URL:
       \`\`\`
       https://github.com/${GITHUB_REPO}/releases/download/${CI_COMMIT_TAG}/rpi-imager.json
       \`\`\`
 
-      ### Quick Start
-      1. Flash the .img.xz to SD card using Raspberry Pi Imager
-      2. Boot the Pi — connect to the CubeOS WiFi AP
-      3. Open http://cubeos.cube and complete setup wizard
-
       ### Default Credentials
+
       - **SSH:** cubeos / cubeos
-      - **Dashboard:** admin / cubeos"
+      - **Dashboard:** admin / cubeos
+      - **WiFi AP:** CubeOS-{serial} / cubeos123
+
+      ### What's New
+
+      See [CHANGELOG](https://github.com/${GITHUB_REPO}/blob/main/CHANGELOG.md) for details."
 
       echo "Creating GitHub release for ${CI_COMMIT_TAG} on ${GITHUB_REPO}..."
       RESPONSE=$(curl -s -w "\n%{http_code}" \
