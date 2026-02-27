@@ -5,28 +5,29 @@
 # Emergency recovery and network management console accessible via HDMI+keyboard
 # on tty1. Auto-launched after login on tty1; SSH sessions are NOT affected.
 #
-# Tasks: T21 (main TUI), T23 (SQLite helpers), T24 (apply_network_mode integration)
-# Batch: Network Modes Batch 5
-#
-# Alpha.23 Batch 5:
-#   B90: Removed set -euo pipefail, added explicit error handling + trap.
-#        Replaced python3 SQLite with sqlite3 CLI (removes python3 dependency).
-#   B91: Changed LOG_FILE from /dev/null to /var/log/cubeos-console.log.
-#        Added console_log() with timestamps. Added log rotation (1MB max).
-#
 # Features:
-#   1. Switch between all 5 network modes with WiFi/static IP prompts
+#   1. Switch between all 6 network modes with WiFi/static IP prompts
 #   2. Configure static IP for the current mode's upstream interface
-#   3. Update WiFi credentials (SSID + password)
-#   4. View system status (network, Docker, resources)
-#   5. Emergency reset to OFFLINE mode (safe default)
-#   6. Clean reboot
+#   3. Access Point settings (SSID + password)
+#   4. Update upstream WiFi credentials (SSID + password)
+#   5. View system status (network, Docker, resources)
+#   6. Emergency reset to offline_hotspot (safe default)
+#   7. Factory reset (wipe all data, return to first-boot)
+#   8. Clean reboot
+#
+# Network modes (Phase 6a):
+#   offline_hotspot  — AP only, no internet (air-gapped)
+#   wifi_router      — AP + upstream via Ethernet
+#   wifi_bridge      — AP bridged to upstream WiFi
+#   android_tether   — AP + upstream via USB tether
+#   eth_client       — Ethernet only, no AP
+#   wifi_client      — WiFi station only, no AP
 #
 # Dependencies: whiptail (pre-installed on Ubuntu), sqlite3 CLI
 # Sources cubeos-boot-lib.sh for apply_network_mode() and shared constants.
 # =============================================================================
 
-# B90: Only set -u (catch unset variables). Do NOT use -e (whiptail returns
+# Only set -u (catch unset variables). Do NOT use -e (whiptail returns
 # non-zero on Cancel/Escape) or -o pipefail (causes spurious failures in
 # subshells gathering system info).
 set -u
@@ -34,6 +35,7 @@ set -u
 # ── Constants ────────────────────────────────────────────────────────────────
 readonly DB_PATH="/cubeos/data/cubeos.db"
 readonly BOOT_LIB="/usr/local/bin/cubeos-boot-lib.sh"
+readonly HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
 readonly TITLE="CubeOS System Console"
 readonly WT_WIDTH=72
 readonly WT_HEIGHT=20
@@ -41,7 +43,7 @@ readonly WT_LIST_HEIGHT=10
 readonly CONSOLE_LOG="/var/log/cubeos-console.log"
 readonly CONSOLE_LOG_MAX_BYTES=1048576  # 1MB
 
-# ── B91: Console Logging ────────────────────────────────────────────────────
+# ── Console Logging ──────────────────────────────────────────────────────────
 
 # Rotate log if over 1MB — truncate to last 500 lines.
 rotate_console_log() {
@@ -73,7 +75,7 @@ console_log "Session started (PID=$$, TTY=$(tty 2>/dev/null || echo unknown))"
 
 # ── Source boot-lib for apply_network_mode() and helpers ─────────────────────
 if [ -f "$BOOT_LIB" ]; then
-    # B91: Direct boot-lib log output to the console log file (not /dev/null).
+    # Direct boot-lib log output to the console log file (not /dev/null).
     # boot-lib's log() writes to LOG_FILE and stderr.
     export LOG_FILE="$CONSOLE_LOG"
     # shellcheck source=/usr/local/bin/cubeos-boot-lib.sh
@@ -84,7 +86,7 @@ else
     exit 1
 fi
 
-# ── B90: Unexpected Exit Trap ───────────────────────────────────────────────
+# ── Unexpected Exit Trap ─────────────────────────────────────────────────────
 # If the script exits unexpectedly (signal, unset variable with set -u),
 # show an error dialog so the user isn't left staring at a blank screen.
 # Normal exits (menu "Exit to Shell", reboot) set CLEAN_EXIT=1 first.
@@ -105,7 +107,7 @@ cleanup_trap() {
 
 trap cleanup_trap EXIT
 
-# ── SQLite Helpers (T23 — B90 rewrite: sqlite3 CLI) ────────────────────────
+# ── SQLite Helpers ───────────────────────────────────────────────────────────
 # Read/write to SQLite using the sqlite3 CLI (no python3 dependency).
 # These functions provide safe access to the network_config table.
 
@@ -124,21 +126,20 @@ db_read_network_config() {
     CON_STATIC_DNS2=""
 
     if [ ! -f "$DB_PATH" ]; then
-        CON_MODE="offline"
+        CON_MODE="offline_hotspot"
         return 0
     fi
 
-    # B90: Use sqlite3 CLI with | separator. Each field on one line.
     local db_output
     db_output=$(sqlite3 -separator '|' "$DB_PATH" \
         "SELECT mode, wifi_ssid, wifi_password, use_static_ip, static_ip_address, static_ip_netmask, static_ip_gateway, static_dns_primary, static_dns_secondary FROM network_config WHERE id = 1;" 2>/dev/null) || {
         console_log_error "db_read_network_config: sqlite3 query failed"
-        CON_MODE="offline"
+        CON_MODE="offline_hotspot"
         return 0
     }
 
     if [ -z "$db_output" ]; then
-        CON_MODE="offline"
+        CON_MODE="offline_hotspot"
         return 0
     fi
 
@@ -146,7 +147,7 @@ db_read_network_config() {
     local IFS='|'
     # shellcheck disable=SC2086
     set -- $db_output
-    CON_MODE="${1:-offline}"
+    CON_MODE="${1:-offline_hotspot}"
     CON_SSID="${2:-}"
     CON_PASSWORD="${3:-}"
     CON_USE_STATIC="${4:-0}"
@@ -162,7 +163,7 @@ db_read_network_config() {
         *) CON_USE_STATIC="0" ;;
     esac
 
-    CON_MODE="${CON_MODE:-offline}"
+    CON_MODE="${CON_MODE:-offline_hotspot}"
 }
 
 # Write network mode + WiFi credentials to SQLite.
@@ -177,7 +178,6 @@ db_write_mode() {
         return 1
     fi
 
-    # B90: Use sqlite3 CLI with parameterized-style escaping.
     # Single quotes in values are escaped by doubling them (SQL standard).
     local esc_ssid="${ssid//\'/\'\'}"
     local esc_password="${password//\'/\'\'}"
@@ -269,27 +269,55 @@ validate_ipv4() {
 
 # ── Display Helpers ──────────────────────────────────────────────────────────
 
-# Human-readable mode name
+# Human-readable mode name for the 6 CubeOS network modes.
 mode_label() {
     case "$1" in
-        offline)      echo "Offline (AP Only)" ;;
-        online_eth)   echo "Online via Ethernet" ;;
-        online_wifi)  echo "Online via WiFi" ;;
-        server_eth)   echo "Server via Ethernet" ;;
-        server_wifi)  echo "Server via WiFi" ;;
-        *)            echo "$1" ;;
+        offline_hotspot) echo "Offline Hotspot" ;;
+        wifi_router)     echo "WiFi Router" ;;
+        wifi_bridge)     echo "WiFi Bridge" ;;
+        android_tether)  echo "Android Tether" ;;
+        eth_client)      echo "Ethernet Client" ;;
+        wifi_client)     echo "WiFi Client" ;;
+        *)               echo "$1" ;;
     esac
 }
 
-# Get the upstream interface for a given mode
+# Get the upstream interface for a given mode (matches boot-lib).
 mode_interface() {
     case "$1" in
-        online_eth|server_eth) echo "eth0" ;;
-        online_wifi)           echo "wlan1" ;;
-        server_wifi)           echo "wlan0" ;;
-        offline)               echo "none" ;;
-        *)                     echo "unknown" ;;
+        wifi_router|eth_client) echo "eth0" ;;
+        wifi_bridge)            echo "wlan1" ;;
+        wifi_client)            echo "wlan0" ;;
+        android_tether)         echo "usb0" ;;
+        offline_hotspot)        echo "none" ;;
+        *)                      echo "unknown" ;;
     esac
+}
+
+# Returns 0 if the mode runs an AP (hostapd), 1 otherwise.
+mode_has_ap() {
+    case "$1" in
+        offline_hotspot|wifi_router|wifi_bridge|android_tether) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Returns 0 if the mode needs upstream WiFi credentials.
+mode_needs_wifi() {
+    case "$1" in
+        wifi_router|wifi_bridge|wifi_client) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Get current AP SSID from hostapd.conf.
+get_ap_ssid() {
+    grep '^ssid=' "$HOSTAPD_CONF" 2>/dev/null | cut -d= -f2
+}
+
+# Get current AP password from hostapd.conf.
+get_ap_password() {
+    grep '^wpa_passphrase=' "$HOSTAPD_CONF" 2>/dev/null | cut -d= -f2
 }
 
 # Get current IP on an interface
@@ -298,7 +326,7 @@ get_interface_ip() {
     ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1
 }
 
-# ── Apply Changes (T24) ─────────────────────────────────────────────────────
+# ── Apply Changes ───────────────────────────────────────────────────────────
 # After writing to SQLite, call the same boot-lib functions used at boot time
 # to apply netplan + hostapd + NAT changes.
 
@@ -321,11 +349,9 @@ apply_changes() {
         fi
         echo 80
         # For AP modes, restart hostapd to pick up any changes
-        case "$mode" in
-            offline|online_eth|online_wifi)
-                systemctl restart hostapd 2>/dev/null || true
-                ;;
-        esac
+        if mode_has_ap "$mode"; then
+            systemctl restart hostapd 2>/dev/null || true
+        fi
         echo 100
     } | whiptail --title "$TITLE" --gauge "Applying network configuration..." 8 $WT_WIDTH 0
 
@@ -354,11 +380,12 @@ menu_network_mode() {
     choice=$(whiptail --title "$TITLE — Network Mode" \
         --menu "Current mode: ${current}\n\nSelect a network mode:" \
         $WT_HEIGHT $WT_WIDTH $WT_LIST_HEIGHT \
-        "offline"      "Offline (AP Only) — air-gapped, no internet" \
-        "online_eth"   "Online via Ethernet — AP + NAT via eth0" \
-        "online_wifi"  "Online via WiFi — AP + NAT via USB dongle" \
-        "server_eth"   "Server via Ethernet — no AP, eth0 client" \
-        "server_wifi"  "Server via WiFi — no AP, wlan0 client" \
+        "offline_hotspot" "Offline Hotspot — air-gapped, AP only" \
+        "wifi_router"     "WiFi Router — AP + upstream via Ethernet" \
+        "wifi_bridge"     "WiFi Bridge — transparent bridge via WiFi" \
+        "eth_client"      "Ethernet Client — no AP, eth0 only" \
+        "wifi_client"     "WiFi Client — no AP, connect to WiFi" \
+        "android_tether"  "Android Tether — AP + upstream via USB" \
         3>&1 1>&2 2>&3) || { console_log "menu: Network Mode cancelled"; return 0; }
 
     local new_mode="$choice"
@@ -367,10 +394,10 @@ menu_network_mode() {
 
     console_log "menu: Network Mode selected=${new_mode}"
 
-    # WiFi modes require SSID + password
-    if [ "$new_mode" = "online_wifi" ] || [ "$new_mode" = "server_wifi" ]; then
-        ssid=$(whiptail --title "$TITLE — WiFi Credentials" \
-            --inputbox "Enter WiFi network name (SSID):" \
+    # Modes with upstream WiFi require SSID + password
+    if mode_needs_wifi "$new_mode"; then
+        ssid=$(whiptail --title "$TITLE — Upstream WiFi Credentials" \
+            --inputbox "Enter upstream WiFi network name (SSID):" \
             10 $WT_WIDTH "${CON_SSID}" \
             3>&1 1>&2 2>&3) || return 0
 
@@ -379,14 +406,15 @@ menu_network_mode() {
             return 0
         fi
 
-        password=$(whiptail --title "$TITLE — WiFi Credentials" \
+        password=$(whiptail --title "$TITLE — Upstream WiFi Credentials" \
             --passwordbox "Enter WiFi password for '${ssid}':" \
             10 $WT_WIDTH \
             3>&1 1>&2 2>&3) || return 0
     fi
 
-    # Non-OFFLINE modes: ask DHCP vs static
-    if [ "$new_mode" != "offline" ]; then
+    # Modes with an upstream interface: ask DHCP vs static
+    # offline_hotspot has no upstream; android_tether gets DHCP from phone
+    if [ "$new_mode" != "offline_hotspot" ] && [ "$new_mode" != "android_tether" ]; then
         local ip_choice
         ip_choice=$(whiptail --title "$TITLE — IP Configuration" \
             --menu "How should the upstream interface get its IP?" \
@@ -401,7 +429,7 @@ menu_network_mode() {
             db_clear_static_ip
         fi
     else
-        # OFFLINE has no upstream — clear static IP
+        # No upstream — clear static IP
         db_clear_static_ip
     fi
 
@@ -411,7 +439,7 @@ menu_network_mode() {
     local confirm_msg="Switch network mode?\n\n"
     confirm_msg+="  New mode:  $(mode_label "$new_mode")\n"
     [ -n "$ssid" ] && confirm_msg+="  WiFi SSID: ${ssid}\n"
-    confirm_msg+="  Interface: ${iface}\n"
+    [ "$iface" != "none" ] && confirm_msg+="  Interface: ${iface}\n"
 
     db_read_network_config  # re-read to get static IP state after prompt
     if [ "${CON_USE_STATIC}" = "1" ] && [ -n "${CON_STATIC_IP}" ]; then
@@ -432,7 +460,7 @@ menu_network_mode() {
         return 0
     fi
 
-    # Apply changes via boot-lib (T24)
+    # Apply changes via boot-lib
     apply_changes "$new_mode"
 }
 
@@ -447,9 +475,9 @@ menu_static_ip() {
         return 0
     fi
 
-    if [ "$CON_MODE" = "offline" ]; then
+    if [ "$CON_MODE" = "offline_hotspot" ] || [ "$CON_MODE" = "android_tether" ]; then
         whiptail --title "$TITLE" --msgbox \
-            "Static IP is not available in OFFLINE mode.\n\nOFFLINE mode has no upstream interface." \
+            "Static IP is not available in $(mode_label "$CON_MODE") mode.\n\nThis mode has no configurable upstream interface." \
             10 $WT_WIDTH
         return 0
     fi
@@ -575,7 +603,111 @@ prompt_static_ip() {
 }
 
 
-# ── Menu 3: WiFi Credentials ────────────────────────────────────────────────
+# ── Menu 3: Access Point Settings ────────────────────────────────────────────
+
+menu_ap_settings() {
+    console_log "menu: Access Point Settings"
+
+    db_read_network_config
+
+    if ! mode_has_ap "$CON_MODE"; then
+        whiptail --title "$TITLE" --msgbox \
+            "Access Point is not active in $(mode_label "$CON_MODE") mode.\n\nSwitch to a mode with AP (e.g. Offline Hotspot,\nWiFi Router) to configure the access point." \
+            10 $WT_WIDTH
+        return 0
+    fi
+
+    local current_ssid current_pass masked_pass
+    current_ssid=$(get_ap_ssid)
+    current_pass=$(get_ap_password)
+    current_ssid="${current_ssid:-(unknown)}"
+
+    masked_pass="(not set)"
+    if [ -n "$current_pass" ]; then
+        masked_pass="$(echo "$current_pass" | sed 's/./*/g')"
+    fi
+
+    local info="Current Access Point Settings\n\n"
+    info+="  SSID:     ${current_ssid}\n"
+    info+="  Password: ${masked_pass}\n"
+
+    local choice
+    choice=$(whiptail --title "$TITLE — Access Point Settings" \
+        --menu "$info" \
+        16 $WT_WIDTH 3 \
+        "ssid"     "Change AP network name (SSID)" \
+        "password" "Change AP password" \
+        "back"     "Back to main menu" \
+        3>&1 1>&2 2>&3) || return 0
+
+    case "$choice" in
+        ssid)
+            local new_ssid
+            new_ssid=$(whiptail --title "$TITLE — AP SSID" \
+                --inputbox "Enter new AP network name (SSID):\n\n(1-32 characters, visible to WiFi clients)" \
+                12 $WT_WIDTH "${current_ssid}" \
+                3>&1 1>&2 2>&3) || return 0
+
+            if [ -z "$new_ssid" ]; then
+                whiptail --title "$TITLE" --msgbox "SSID cannot be empty." 8 $WT_WIDTH
+                return 0
+            fi
+            if [ "${#new_ssid}" -gt 32 ]; then
+                whiptail --title "$TITLE" --msgbox "SSID too long (max 32 characters)." 8 $WT_WIDTH
+                return 0
+            fi
+
+            whiptail --title "$TITLE — Confirm" --yesno \
+                "Change AP SSID?\n\n  Old: ${current_ssid}\n  New: ${new_ssid}\n\nHostapd will be restarted.\nConnected WiFi clients will be disconnected." \
+                14 $WT_WIDTH || return 0
+
+            sed -i "s/^ssid=.*/ssid=${new_ssid}/" "$HOSTAPD_CONF" 2>/dev/null || {
+                whiptail --title "$TITLE" --msgbox "Failed to update hostapd.conf" 8 $WT_WIDTH
+                return 0
+            }
+            systemctl restart hostapd 2>/dev/null || true
+            console_log "AP SSID changed: ${current_ssid} -> ${new_ssid}"
+
+            whiptail --title "$TITLE" --msgbox \
+                "AP SSID changed to: ${new_ssid}\n\nReconnect WiFi clients to the new network name." \
+                10 $WT_WIDTH
+            ;;
+        password)
+            local new_pass
+            new_pass=$(whiptail --title "$TITLE — AP Password" \
+                --inputbox "Enter new AP password:\n\n(8-63 characters, WPA2)" \
+                12 $WT_WIDTH "" \
+                3>&1 1>&2 2>&3) || return 0
+
+            if [ "${#new_pass}" -lt 8 ]; then
+                whiptail --title "$TITLE" --msgbox "Password too short (minimum 8 characters)." 8 $WT_WIDTH
+                return 0
+            fi
+            if [ "${#new_pass}" -gt 63 ]; then
+                whiptail --title "$TITLE" --msgbox "Password too long (maximum 63 characters)." 8 $WT_WIDTH
+                return 0
+            fi
+
+            whiptail --title "$TITLE — Confirm" --yesno \
+                "Change AP password?\n\nHostapd will be restarted.\nConnected WiFi clients will be disconnected." \
+                12 $WT_WIDTH || return 0
+
+            sed -i "s/^wpa_passphrase=.*/wpa_passphrase=${new_pass}/" "$HOSTAPD_CONF" 2>/dev/null || {
+                whiptail --title "$TITLE" --msgbox "Failed to update hostapd.conf" 8 $WT_WIDTH
+                return 0
+            }
+            systemctl restart hostapd 2>/dev/null || true
+            console_log "AP password changed"
+
+            whiptail --title "$TITLE" --msgbox \
+                "AP password changed.\n\nReconnect WiFi clients with the new password." \
+                10 $WT_WIDTH
+            ;;
+    esac
+}
+
+
+# ── Menu 4: WiFi Credentials (upstream) ─────────────────────────────────────
 
 menu_wifi_creds() {
     console_log "menu: WiFi Credentials"
@@ -586,11 +718,11 @@ menu_wifi_creds() {
         masked_pw="$(echo "$CON_PASSWORD" | sed 's/./*/g')"
     fi
 
-    local info="Saved WiFi Credentials\n\n"
+    local info="Saved Upstream WiFi Credentials\n\n"
     info+="  SSID:     ${CON_SSID:-(not set)}\n"
     info+="  Password: ${masked_pw}\n\n"
     info+="These credentials are used when switching to\n"
-    info+="ONLINE_WIFI or SERVER_WIFI mode."
+    info+="WiFi Router, WiFi Bridge, or WiFi Client mode."
 
     local choice
     choice=$(whiptail --title "$TITLE — WiFi Credentials" \
@@ -605,7 +737,7 @@ menu_wifi_creds() {
     local ssid password
 
     ssid=$(whiptail --title "$TITLE — WiFi Credentials" \
-        --inputbox "Enter WiFi network name (SSID):" \
+        --inputbox "Enter upstream WiFi network name (SSID):" \
         10 $WT_WIDTH "${CON_SSID}" \
         3>&1 1>&2 2>&3) || return 0
 
@@ -630,13 +762,12 @@ menu_wifi_creds() {
 }
 
 
-# ── Menu 4: System Status ───────────────────────────────────────────────────
+# ── Menu 5: System Status ───────────────────────────────────────────────────
 
 menu_system_status() {
     console_log "menu: System Status"
     db_read_network_config
 
-    # B90: Each command wrapped individually — failures show "N/A" instead of crashing
     local mode_str
     mode_str=$(mode_label "$CON_MODE")
     local uptime_str
@@ -648,13 +779,21 @@ menu_system_status() {
     wlan0_ip=$(get_interface_ip wlan0)
     wlan1_ip=$(get_interface_ip wlan1)
 
+    # AP SSID (if AP mode)
+    local ap_ssid_str=""
+    if mode_has_ap "$CON_MODE"; then
+        local ap_ssid
+        ap_ssid=$(get_ap_ssid)
+        ap_ssid_str=" (${ap_ssid:-unknown})"
+    fi
+
     # Internet connectivity
     local internet="No"
     if ping -c1 -W2 1.1.1.1 &>/dev/null; then
         internet="Yes"
     fi
 
-    # Docker status — B90: each subcommand guarded
+    # Docker status
     local docker_status="Not running"
     local swarm_services="0"
     local running_containers="0"
@@ -664,11 +803,13 @@ menu_system_status() {
         running_containers=$(docker ps -q 2>/dev/null | wc -l || echo "0")
     fi
 
-    # Memory + Disk — B90: guard against missing commands
+    # Memory + Disk
     local mem_info
     mem_info=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s / %s (%.0f%%)", $3, $2, $3/$2*100}' || echo "N/A")
-    local disk_info
-    disk_info=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s (%s)", $3, $2, $5}' || echo "N/A")
+    local disk_root
+    disk_root=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s (%s)", $3, $2, $5}' || echo "N/A")
+    local disk_data
+    disk_data=$(du -sh /cubeos/data 2>/dev/null | awk '{print $1}' || echo "N/A")
 
     # CPU temperature
     local cpu_temp="N/A"
@@ -684,7 +825,7 @@ menu_system_status() {
     status_text+="  NETWORK\n"
     status_text+="  Mode:       ${mode_str}\n"
     status_text+="  eth0:       ${eth0_ip:-down}\n"
-    status_text+="  wlan0:      ${wlan0_ip:-down}\n"
+    status_text+="  wlan0:      ${wlan0_ip:-down}${ap_ssid_str}\n"
     status_text+="  wlan1:      ${wlan1_ip:-down}\n"
     status_text+="  Internet:   ${internet}\n"
     status_text+="\n"
@@ -697,43 +838,44 @@ menu_system_status() {
     status_text+="  Uptime:     ${uptime_str}\n"
     status_text+="  CPU Temp:   ${cpu_temp}\n"
     status_text+="  Memory:     ${mem_info}\n"
-    status_text+="  Disk:       ${disk_info}"
+    status_text+="  Disk /:     ${disk_root}\n"
+    status_text+="  Data:       ${disk_data}"
 
-    whiptail --title "$TITLE — System Status" --msgbox "$status_text" 22 $WT_WIDTH
+    whiptail --title "$TITLE — System Status" --msgbox "$status_text" 24 $WT_WIDTH
 }
 
 
-# ── Menu 5: Reset to Offline ────────────────────────────────────────────────
+# ── Menu 6: Reset to Offline Hotspot ─────────────────────────────────────────
 
 menu_reset_offline() {
-    console_log "menu: Reset to Offline"
+    console_log "menu: Reset to Offline Hotspot"
 
-    whiptail --title "$TITLE — Reset to Offline" --yesno \
-        "EMERGENCY RESET\n\nThis will:\n\n  - Switch to OFFLINE mode (AP only)\n  - Clear static IP overrides\n  - Restart WiFi access point\n  - Disable NAT/forwarding\n\nThe CubeOS AP will be available immediately after reset.\nConnect via WiFi to http://cubeos.cube\n\nProceed?" \
+    whiptail --title "$TITLE — Reset to Offline Hotspot" --yesno \
+        "EMERGENCY RESET\n\nThis will:\n\n  - Switch to Offline Hotspot mode (AP only)\n  - Clear static IP overrides\n  - Restart WiFi access point\n  - Disable NAT/forwarding\n\nThe CubeOS AP will be available immediately after reset.\nConnect via WiFi to http://cubeos.cube\n\nProceed?" \
         18 $WT_WIDTH || return 0
 
-    console_log "menu: Reset to Offline CONFIRMED — applying"
+    console_log "menu: Reset to Offline Hotspot CONFIRMED — applying"
 
-    # Write OFFLINE to DB, clear static IP and WiFi state
-    if ! db_write_mode "offline" "" ""; then
-        whiptail --title "$TITLE" --msgbox "Failed to write offline mode to database." 10 $WT_WIDTH
+    # Write offline_hotspot to DB, clear static IP and WiFi state
+    if ! db_write_mode "offline_hotspot" "" ""; then
+        whiptail --title "$TITLE" --msgbox "Failed to write offline_hotspot mode to database." 10 $WT_WIDTH
         return 0
     fi
     db_clear_static_ip
 
-    # Apply via boot-lib (T24)
+    # Apply via boot-lib
     {
         echo 10
         # Stop hostapd before reconfiguration
         systemctl stop hostapd 2>/dev/null || true
         echo 20
-        # Apply network mode (writes OFFLINE netplan, disables NAT)
+        # Apply network mode (writes offline_hotspot netplan, disables NAT)
         if ! apply_network_mode 2>>"$CONSOLE_LOG"; then
             console_log_error "reset_offline: apply_network_mode failed"
         fi
         echo 50
-        # Configure Pi-hole for OFFLINE (DHCP on all interfaces)
-        if ! configure_pihole_dhcp "offline" 2>>"$CONSOLE_LOG"; then
+        # Configure Pi-hole for offline_hotspot (DHCP on all interfaces)
+        if ! configure_pihole_dhcp "offline_hotspot" 2>>"$CONSOLE_LOG"; then
             console_log_error "reset_offline: configure_pihole_dhcp failed"
         fi
         echo 70
@@ -743,17 +885,79 @@ menu_reset_offline() {
         # Flush any stale iptables NAT rules
         iptables -t nat -F POSTROUTING 2>/dev/null || true
         echo 100
-    } | whiptail --title "$TITLE" --gauge "Resetting to OFFLINE mode..." 8 $WT_WIDTH 0
+    } | whiptail --title "$TITLE" --gauge "Resetting to Offline Hotspot..." 8 $WT_WIDTH 0
 
-    console_log "menu: Reset to Offline completed"
+    console_log "menu: Reset to Offline Hotspot completed"
 
     whiptail --title "$TITLE" --msgbox \
-        "Reset to OFFLINE complete.\n\nThe WiFi access point should now be available.\nConnect to the CubeOS WiFi network and open\nhttp://cubeos.cube in your browser." \
+        "Reset to Offline Hotspot complete.\n\nThe WiFi access point should now be available.\nConnect to the CubeOS WiFi network and open\nhttp://cubeos.cube in your browser." \
         12 $WT_WIDTH
 }
 
 
-# ── Menu 6: Reboot ──────────────────────────────────────────────────────────
+# ── Menu 7: Factory Reset ───────────────────────────────────────────────────
+
+menu_factory_reset() {
+    console_log "menu: Factory Reset"
+
+    whiptail --title "$TITLE — Factory Reset" --yesno \
+        "FACTORY RESET\n\nThis will PERMANENTLY:\n\n  - Stop and remove ALL Docker stacks\n  - Delete the database and all app data\n  - Remove the setup completion flag\n  - Reset AP to default SSID and password\n\nThe device will reboot into first-boot setup.\nAll configuration and installed apps will be lost.\n\nAre you sure?" \
+        20 $WT_WIDTH || return 0
+
+    # Require typing RESET to confirm
+    local confirm
+    confirm=$(whiptail --title "$TITLE — Factory Reset — FINAL CONFIRMATION" \
+        --inputbox "Type RESET to confirm factory reset:" \
+        10 $WT_WIDTH "" \
+        3>&1 1>&2 2>&3) || return 0
+
+    if [ "$confirm" != "RESET" ]; then
+        whiptail --title "$TITLE" --msgbox "Factory reset cancelled.\n\nYou must type exactly RESET to confirm." 10 $WT_WIDTH
+        console_log "menu: Factory Reset cancelled (wrong confirmation: '${confirm}')"
+        return 0
+    fi
+
+    console_log "menu: Factory Reset CONFIRMED — executing"
+
+    {
+        echo 5
+        # Stop all Docker stacks gracefully
+        docker stack ls --format '{{.Name}}' 2>/dev/null | while read -r stack; do
+            docker stack rm "$stack" 2>/dev/null || true
+        done
+        echo 30
+        sleep 5
+        echo 50
+        # Remove app data (preserve system dirs)
+        rm -rf /cubeos/data/apps/ 2>/dev/null || true
+        echo 60
+        # Remove setup flag and DB — triggers first-boot on next boot
+        rm -f /cubeos/data/.setup_complete
+        rm -f /cubeos/data/cubeos.db
+        echo 70
+        # Reset hostapd to default SSID based on serial number
+        local SERIAL
+        SERIAL=$(grep Serial /proc/cpuinfo 2>/dev/null | awk '{print $3}' | tail -c 7 | tr '[:lower:]' '[:upper:]')
+        SERIAL="${SERIAL:-000000}"
+        sed -i "s/^ssid=.*/ssid=CubeOS-${SERIAL}/" "$HOSTAPD_CONF" 2>/dev/null || true
+        sed -i "s/^wpa_passphrase=.*/wpa_passphrase=cubeos123/" "$HOSTAPD_CONF" 2>/dev/null || true
+        echo 90
+        # Log the reset
+        console_log "Factory reset completed — rebooting"
+        echo 100
+    } | whiptail --title "$TITLE" --gauge "Performing factory reset..." 8 $WT_WIDTH 0
+
+    whiptail --title "$TITLE — Factory Reset" --msgbox \
+        "Factory reset complete.\n\nThe device will now reboot into\nfirst-boot setup." \
+        10 $WT_WIDTH
+
+    CLEAN_EXIT=1
+    sync
+    systemctl reboot
+}
+
+
+# ── Menu 8: Reboot ──────────────────────────────────────────────────────────
 
 menu_reboot() {
     console_log "menu: Reboot"
@@ -797,13 +1001,15 @@ main_menu() {
             $WT_HEIGHT $WT_WIDTH $WT_LIST_HEIGHT \
             "1" "Network Mode" \
             "2" "Static IP Configuration" \
-            "3" "WiFi Credentials" \
-            "4" "System Status" \
-            "5" "Reset to Offline (Safe Mode)" \
-            "6" "Reboot" \
-            "7" "Exit to Shell" \
+            "3" "Access Point Settings" \
+            "4" "WiFi Credentials (upstream)" \
+            "5" "System Status" \
+            "6" "Reset to Offline (Safe Mode)" \
+            "7" "Factory Reset" \
+            "8" "Reboot" \
+            "9" "Exit to Shell" \
             3>&1 1>&2 2>&3) || {
-            # B90: ESC/Cancel in main menu = exit gracefully (not crash)
+            # ESC/Cancel in main menu = exit gracefully (not crash)
             console_log "menu: Main menu cancelled (ESC/Cancel)"
             break
         }
@@ -811,11 +1017,13 @@ main_menu() {
         case "$choice" in
             1) menu_network_mode ;;
             2) menu_static_ip ;;
-            3) menu_wifi_creds ;;
-            4) menu_system_status ;;
-            5) menu_reset_offline ;;
-            6) menu_reboot ;;
-            7) console_log "menu: Exit to Shell"; break ;;
+            3) menu_ap_settings ;;
+            4) menu_wifi_creds ;;
+            5) menu_system_status ;;
+            6) menu_reset_offline ;;
+            7) menu_factory_reset ;;
+            8) menu_reboot ;;
+            9) console_log "menu: Exit to Shell"; break ;;
         esac
     done
 }
@@ -836,14 +1044,14 @@ if ! command -v whiptail &>/dev/null; then
     exit 1
 fi
 
-# B90: Check for sqlite3 CLI (replaces python3 dependency)
+# Check for sqlite3 CLI
 if ! command -v sqlite3 &>/dev/null; then
     echo "ERROR: sqlite3 not found. Cannot access database."
     echo "Install with: apt-get install sqlite3"
     exit 1
 fi
 
-# B93: Wait for boot messages to settle before launching whiptail.
+# Wait for boot messages to settle before launching whiptail.
 # systemd prints [OK] status lines to tty1 during startup. If the console
 # launches too early, these messages overlay the whiptail menu. A brief
 # pause + double clear ensures a clean screen.
