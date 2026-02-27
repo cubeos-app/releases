@@ -9,11 +9,12 @@
 #   1. Switch between all 6 network modes with WiFi/static IP prompts
 #   2. Configure static IP for the current mode's upstream interface
 #   3. Access Point settings (SSID + password)
-#   4. Update upstream WiFi credentials (SSID + password)
-#   5. View system status (network, Docker, resources)
-#   6. Emergency reset to offline_hotspot (safe default)
-#   7. Factory reset (wipe all data, return to first-boot)
-#   8. Clean reboot
+#   4. Access Profile (standard/advanced/all_in_one)
+#   5. Update upstream WiFi credentials (SSID + password)
+#   6. View system status (network, Docker, resources)
+#   7. Emergency reset to offline_hotspot (safe default)
+#   8. Factory reset (wipe all data, return to first-boot)
+#   9. Clean reboot
 #
 # Network modes (Phase 6a):
 #   offline_hotspot  — AP only, no internet (air-gapped)
@@ -707,7 +708,116 @@ menu_ap_settings() {
 }
 
 
-# ── Menu 4: WiFi Credentials (upstream) ─────────────────────────────────────
+# ── Menu 4: Access Profile ──────────────────────────────────────────────────
+
+# Read access profile from system_config key-value table.
+# Returns "standard" if not set or on error.
+db_read_access_profile() {
+    if [ ! -f "$DB_PATH" ]; then
+        echo "standard"
+        return 0
+    fi
+    local profile
+    profile=$(sqlite3 "$DB_PATH" \
+        "SELECT value FROM system_config WHERE key = 'access_profile';" 2>/dev/null) || {
+        echo "standard"
+        return 0
+    }
+    echo "${profile:-standard}"
+}
+
+# Write access profile to system_config key-value table.
+# Args: $1=profile (standard|advanced|all_in_one)
+db_write_access_profile() {
+    local profile="$1"
+    if [ ! -f "$DB_PATH" ]; then
+        console_log_error "db_write_access_profile: database not found"
+        return 1
+    fi
+    sqlite3 "$DB_PATH" \
+        "INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES ('access_profile', '${profile}', datetime('now'));" 2>/dev/null || {
+        console_log_error "db_write_access_profile: sqlite3 update failed (profile=${profile})"
+        return 1
+    }
+    console_log "db_write_access_profile: profile=${profile}"
+}
+
+# Human-readable label for access profile.
+profile_label() {
+    case "$1" in
+        standard)    echo "Standard (IP:port access only)" ;;
+        advanced)    echo "Advanced (External NPM + Pi-hole)" ;;
+        all_in_one)  echo "All-in-One (CubeOS manages all)" ;;
+        *)           echo "Standard (default)" ;;
+    esac
+}
+
+menu_access_profile() {
+    console_log "menu: Access Profile"
+
+    local current_profile
+    current_profile=$(db_read_access_profile)
+    local human_name
+    human_name=$(profile_label "$current_profile")
+
+    local choice
+    choice=$(whiptail --title "$TITLE — Access Profile" \
+        --menu "Current: ${human_name}\n\nHow should CubeOS manage app access?" \
+        18 $WT_WIDTH 4 \
+        "1" "Standard    — Apps via IP:port, no DNS/proxy" \
+        "2" "Advanced    — Use your existing NPM + Pi-hole" \
+        "3" "All-in-One  — CubeOS manages DNS, DHCP, proxy" \
+        "4" "Back" \
+        3>&1 1>&2 2>&3) || return 0
+
+    case "$choice" in
+        1)
+            if ! db_write_access_profile "standard"; then
+                whiptail --title "$TITLE — Error" --msgbox \
+                    "Failed to update access profile.\nCheck: ${CONSOLE_LOG}" 8 $WT_WIDTH
+                return 0
+            fi
+            console_log "Access profile changed to: standard"
+            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
+                "Profile set to: Standard\n\nApps are accessed via IP:port.\nNo DNS records or reverse proxy created.\n\nChanges apply to new app installs.\nExisting apps are not affected." \
+                12 $WT_WIDTH
+            ;;
+        2)
+            whiptail --title "$TITLE — Advanced Profile" --msgbox \
+                "Advanced profile uses your existing NPM and\nPi-hole for DNS and reverse proxy.\n\nConfigure credentials in the web dashboard:\nSettings > Network > Access Profile\n\nSetting profile to Advanced now." \
+                12 $WT_WIDTH
+            if ! db_write_access_profile "advanced"; then
+                whiptail --title "$TITLE — Error" --msgbox \
+                    "Failed to update access profile.\nCheck: ${CONSOLE_LOG}" 8 $WT_WIDTH
+                return 0
+            fi
+            console_log "Access profile changed to: advanced"
+            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
+                "Profile set to: Advanced\n\nChanges apply to new app installs.\nExisting apps are not affected." \
+                10 $WT_WIDTH
+            ;;
+        3)
+            if ! whiptail --title "$TITLE — All-in-One Profile" --yesno \
+                "All-in-One mode enables CubeOS DHCP on your\nnetwork.\n\nWARNING: This may conflict with your existing\nrouter or DHCP server.\n\nOnly use this if CubeOS is your primary\nnetwork device.\n\nContinue?" \
+                14 $WT_WIDTH; then
+                return 0
+            fi
+            if ! db_write_access_profile "all_in_one"; then
+                whiptail --title "$TITLE — Error" --msgbox \
+                    "Failed to update access profile.\nCheck: ${CONSOLE_LOG}" 8 $WT_WIDTH
+                return 0
+            fi
+            console_log "Access profile changed to: all_in_one"
+            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
+                "Profile set to: All-in-One\n\nCubeOS will manage DNS, DHCP, and reverse\nproxy for all apps.\n\nChanges apply to new app installs.\nExisting apps are not affected." \
+                12 $WT_WIDTH
+            ;;
+        4) return 0 ;;
+    esac
+}
+
+
+# ── Menu 5: WiFi Credentials (upstream) ─────────────────────────────────────
 
 menu_wifi_creds() {
     console_log "menu: WiFi Credentials"
@@ -762,7 +872,7 @@ menu_wifi_creds() {
 }
 
 
-# ── Menu 5: System Status ───────────────────────────────────────────────────
+# ── Menu 6: System Status ───────────────────────────────────────────────────
 
 menu_system_status() {
     console_log "menu: System Status"
@@ -821,9 +931,14 @@ menu_system_status() {
         fi
     fi
 
+    # Access profile
+    local profile_str
+    profile_str=$(db_read_access_profile)
+
     local status_text=""
     status_text+="  NETWORK\n"
     status_text+="  Mode:       ${mode_str}\n"
+    status_text+="  Profile:    ${profile_str}\n"
     status_text+="  eth0:       ${eth0_ip:-down}\n"
     status_text+="  wlan0:      ${wlan0_ip:-down}${ap_ssid_str}\n"
     status_text+="  wlan1:      ${wlan1_ip:-down}\n"
@@ -845,7 +960,7 @@ menu_system_status() {
 }
 
 
-# ── Menu 6: Reset to Offline Hotspot ─────────────────────────────────────────
+# ── Menu 7: Reset to Offline Hotspot ─────────────────────────────────────────
 
 menu_reset_offline() {
     console_log "menu: Reset to Offline Hotspot"
@@ -895,7 +1010,7 @@ menu_reset_offline() {
 }
 
 
-# ── Menu 7: Factory Reset ───────────────────────────────────────────────────
+# ── Menu 8: Factory Reset ───────────────────────────────────────────────────
 
 menu_factory_reset() {
     console_log "menu: Factory Reset"
@@ -957,7 +1072,7 @@ menu_factory_reset() {
 }
 
 
-# ── Menu 8: Reboot ──────────────────────────────────────────────────────────
+# ── Menu 9: Reboot ──────────────────────────────────────────────────────────
 
 menu_reboot() {
     console_log "menu: Reboot"
@@ -998,16 +1113,17 @@ main_menu() {
         local choice
         choice=$(whiptail --title "$TITLE" \
             --menu "Mode: ${current_mode} | AP: ${ap_ip}\n" \
-            $WT_HEIGHT $WT_WIDTH $WT_LIST_HEIGHT \
-            "1" "Network Mode" \
-            "2" "Static IP Configuration" \
-            "3" "Access Point Settings" \
-            "4" "WiFi Credentials (upstream)" \
-            "5" "System Status" \
-            "6" "Reset to Offline (Safe Mode)" \
-            "7" "Factory Reset" \
-            "8" "Reboot" \
-            "9" "Exit to Shell" \
+            22 $WT_WIDTH 10 \
+            "1"  "Network Mode" \
+            "2"  "Static IP Configuration" \
+            "3"  "Access Point Settings" \
+            "4"  "Access Profile" \
+            "5"  "WiFi Credentials (upstream)" \
+            "6"  "System Status" \
+            "7"  "Reset to Offline (Safe Mode)" \
+            "8"  "Factory Reset" \
+            "9"  "Reboot" \
+            "10" "Exit to Shell" \
             3>&1 1>&2 2>&3) || {
             # ESC/Cancel in main menu = exit gracefully (not crash)
             console_log "menu: Main menu cancelled (ESC/Cancel)"
@@ -1015,15 +1131,16 @@ main_menu() {
         }
 
         case "$choice" in
-            1) menu_network_mode ;;
-            2) menu_static_ip ;;
-            3) menu_ap_settings ;;
-            4) menu_wifi_creds ;;
-            5) menu_system_status ;;
-            6) menu_reset_offline ;;
-            7) menu_factory_reset ;;
-            8) menu_reboot ;;
-            9) console_log "menu: Exit to Shell"; break ;;
+            1)  menu_network_mode ;;
+            2)  menu_static_ip ;;
+            3)  menu_ap_settings ;;
+            4)  menu_access_profile ;;
+            5)  menu_wifi_creds ;;
+            6)  menu_system_status ;;
+            7)  menu_reset_offline ;;
+            8)  menu_factory_reset ;;
+            9)  menu_reboot ;;
+            10) console_log "menu: Exit to Shell"; break ;;
         esac
     done
 }
