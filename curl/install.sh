@@ -7,8 +7,8 @@
 # Docker Swarm single-node, all services via Docker Compose.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CUBEOS_INSTALLER_VERSION="0.2.0-beta.02"
-CUBEOS_VERSION="0.2.0-beta.02"
+CUBEOS_INSTALLER_VERSION="0.2.0-beta.03"
+CUBEOS_VERSION="0.2.0-beta.03"
 
 # ─── Globals (set during pre-flight) ─────────────────────────────────────────
 ARCH=""
