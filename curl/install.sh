@@ -1082,11 +1082,19 @@ connectivity_test() {
         return
     fi
 
-    if curl -fsSL --connect-timeout 10 "https://ghcr.io/v2/" &>/dev/null || \
-       curl -fsSL --connect-timeout 10 "https://registry.hub.docker.com/v2/" &>/dev/null; then
+    # Registry roots return 401/405 — any HTTP response means reachable.
+    # Only fail on connection timeout/refused (http_code 000).
+    local http_code
+    http_code=$(curl -s --max-time 10 --connect-timeout 5 -o /dev/null -w "%{http_code}" "https://ghcr.io/v2/" 2>/dev/null)
+    if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
         log_ok "Container registry reachable"
     else
-        log_fatal "Cannot reach container registry. Check internet connection or set CUBEOS_SKIP_DOWNLOAD=true for air-gap mode"
+        http_code=$(curl -s --max-time 10 --connect-timeout 5 -o /dev/null -w "%{http_code}" "https://registry.hub.docker.com/v2/" 2>/dev/null)
+        if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+            log_ok "Container registry reachable (fallback)"
+        else
+            log_fatal "Cannot reach container registry. Check internet connection or set CUBEOS_SKIP_DOWNLOAD=true for air-gap mode"
+        fi
     fi
 }
 
