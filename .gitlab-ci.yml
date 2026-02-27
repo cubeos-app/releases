@@ -2183,19 +2183,17 @@ update-website-links:
     - |
       set -e
 
-      if [ -z "${CI_DEPLOY_TOKEN:-}" ] && [ -z "${GITLAB_PUSH_TOKEN:-}" ]; then
-        echo "WARN: No push token configured (CI_DEPLOY_TOKEN / GITLAB_PUSH_TOKEN)"
-        echo "Skipping website update. Set a token with push access to the website repo."
-        exit 0
+      if [ -z "$GITLAB_TOKEN" ]; then
+        echo "ERROR: GITLAB_TOKEN not set"
+        exit 1
       fi
-
-      PUSH_TOKEN="${CI_DEPLOY_TOKEN:-${GITLAB_PUSH_TOKEN}}"
+      TOKEN="$GITLAB_TOKEN"
 
       echo "============================================================"
       echo "  Update website download links to ${CUBEOS_VERSION}"
       echo "============================================================"
 
-      git clone --depth 1 https://oauth2:${PUSH_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
+      git clone --depth 1 https://oauth2:${TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
       cd /tmp/website
 
       # Write release metadata that website templates can read
@@ -2602,14 +2600,12 @@ sync-installer:
   script:
     - apk add --no-cache git
     - |
-      # Use CI_DEPLOY_TOKEN or GITLAB_PUSH_TOKEN for cross-project push access
-      PUSH_TOKEN="${CI_DEPLOY_TOKEN:-${GITLAB_PUSH_TOKEN:-${GITLAB_TOKEN:-}}}"
-      if [ -z "$PUSH_TOKEN" ]; then
-        echo "ERROR: No push token available (CI_DEPLOY_TOKEN / GITLAB_PUSH_TOKEN / GITLAB_TOKEN)"
-        echo "Set a CI variable with push access to the website repo."
+      if [ -z "$GITLAB_TOKEN" ]; then
+        echo "ERROR: GITLAB_TOKEN not set"
         exit 1
       fi
-      git clone https://oauth2:${PUSH_TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
+      TOKEN="$GITLAB_TOKEN"
+      git clone https://oauth2:${TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
       cp curl/install.sh /tmp/website/static/install.sh
       cd /tmp/website
       git config user.email "ci@cubeos.app"
