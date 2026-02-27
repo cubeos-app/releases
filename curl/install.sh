@@ -678,6 +678,7 @@ USER_PORT_END=6999
 
 # Directory Paths
 CUBEOS_DATA_DIR=/cubeos/data
+DATABASE_PATH=/cubeos/data/cubeos.db
 CUBEOS_CONFIG_DIR=/cubeos/config
 CUBEOS_APPS_DIR=/cubeos/apps
 CUBEOS_COREAPPS_DIR=/cubeos/coreapps
