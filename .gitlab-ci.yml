@@ -4,8 +4,8 @@
 # Builds flashable ARM64 images (Full + Lite) from the golden base image.
 #
 # WORKFLOW (build once, release later):
-#   1. Push to main  → build-image runs (~20 min each), uploads to Package Registry
-#   2. Verify green  → test the images if needed
+#   1. Push script changes → only lint + sync-installer (if install.sh changed)
+#   2. Push "chore: bump version to vX.Y.Z" → build-image + full release chain
 #   3. Tag (git tag v0.1.0-alpha.10 && git push --tags)
 #      → release jobs run (~2 min), create GitLab + GitHub releases
 #      → NO rebuild — release jobs download the already-built images
@@ -25,6 +25,19 @@
 #
 # TIME: ~20 minutes per variant (build) + ~5 minutes (validate) + ~2 minutes (release on tag)
 # =============================================================================
+
+# Pipeline creation rules — skip pipeline entirely when there's no work to do.
+# Without this, non-matching pushes create empty pipelines that show as "failed".
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'                                  # Tag push → release jobs
+    - if: '$CI_COMMIT_MESSAGE =~ /^chore: bump version to /'        # Version bump → full build chain
+    - if: '$CI_PIPELINE_SOURCE == "web"'                             # Manual web trigger
+    - if: '$CI_PIPELINE_SOURCE == "api"'                             # API trigger
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - curl/install.sh                                            # install.sh change → sync-installer
+    - when: never                                                    # Everything else → no pipeline
 
 stages:
   - build
