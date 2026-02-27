@@ -237,28 +237,33 @@ cmd_status() {
     swarm_nodes=$(docker info --format '{{.Swarm.Nodes}}' 2>/dev/null || echo "0")
     printf "  ${BOLD}Swarm:${NC}    %s (%s node%s)\n" "$swarm_state" "$swarm_nodes" "$([ "$swarm_nodes" != "1" ] && echo "s")"
 
-    # Uptime
+    # Uptime — try cubeos.service first (Tier 1), fall back to /proc/uptime (Tier 2/container)
     local uptime_str="unknown"
+    local diff=0
     if systemctl is-active cubeos.service &>/dev/null; then
         local start_ts
         start_ts=$(systemctl show cubeos.service --property=ActiveEnterTimestamp --value 2>/dev/null || echo "")
         if [ -n "$start_ts" ]; then
-            local start_epoch now_epoch diff
+            local start_epoch now_epoch
             start_epoch=$(date -d "$start_ts" +%s 2>/dev/null || echo "0")
             now_epoch=$(date +%s)
             if [ "$start_epoch" -gt 0 ]; then
                 diff=$((now_epoch - start_epoch))
-                local days=$((diff / 86400))
-                local hours=$(( (diff % 86400) / 3600 ))
-                local mins=$(( (diff % 3600) / 60 ))
-                if [ $days -gt 0 ]; then
-                    uptime_str="${days}d ${hours}h ${mins}m"
-                elif [ $hours -gt 0 ]; then
-                    uptime_str="${hours}h ${mins}m"
-                else
-                    uptime_str="${mins}m"
-                fi
             fi
+        fi
+    elif [ -f /proc/uptime ]; then
+        diff=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo "0")
+    fi
+    if [ "$diff" -gt 0 ]; then
+        local days=$((diff / 86400))
+        local hours=$(( (diff % 86400) / 3600 ))
+        local mins=$(( (diff % 3600) / 60 ))
+        if [ $days -gt 0 ]; then
+            uptime_str="${days}d ${hours}h ${mins}m"
+        elif [ $hours -gt 0 ]; then
+            uptime_str="${hours}h ${mins}m"
+        else
+            uptime_str="${mins}m"
         fi
     fi
     printf "  ${BOLD}Uptime:${NC}   %s\n" "$uptime_str"
