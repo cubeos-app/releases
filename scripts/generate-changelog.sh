@@ -64,6 +64,16 @@ declare -A REPOS=(
 # Ordered list for consistent output
 REPO_ORDER=("API" "Dashboard" "HAL" "Core Apps" "Releases")
 
+# GitHub mirror slugs (repo display name → GitHub repo slug)
+# Links point to public GitHub mirrors since GitLab is self-hosted/private
+declare -A GITHUB_SLUGS=(
+  ["API"]="cubeos-app/api"
+  ["Dashboard"]="cubeos-app/dashboard"
+  ["HAL"]="cubeos-app/hal"
+  ["Core Apps"]="cubeos-app/coreapps"
+  ["Releases"]="cubeos-app/releases"
+)
+
 # Commit type labels (conventional commit prefix → display name)
 declare -A TYPE_LABELS=(
   ["feat"]="Features"
@@ -205,21 +215,23 @@ generate_version_entry() {
     local commit_count
     commit_count=$(echo "$commits" | jq 'length')
 
+    local github_slug="${GITHUB_SLUGS[$repo_name]}"
+
     for i in $(seq 0 $(( commit_count - 1 ))); do
-      local message short_id web_url
+      local message short_id
       message=$(echo "$commits" | jq -r ".[$i].message")
       short_id=$(echo "$commits" | jq -r ".[$i].short_id")
-      web_url=$(echo "$commits" | jq -r ".[$i].web_url")
 
       local parsed
       parsed=$(parse_commit "$message") || continue
 
-      local ctype entry_text
+      local ctype entry_text commit_url
       ctype=$(echo "$parsed" | cut -d'|' -f1)
       entry_text=$(echo "$parsed" | cut -d'|' -f2-)
 
-      # Append commit link
-      entry_text="${entry_text} ([${short_id}](${web_url}))"
+      # Link to public GitHub mirror (GitLab is self-hosted, not internet-accessible)
+      commit_url="https://github.com/${github_slug}/commit/${short_id}"
+      entry_text="${entry_text} ([${short_id}](${commit_url}))"
 
       if [ -n "${typed_entries[$ctype]:-}" ]; then
         typed_entries[$ctype]="${typed_entries[$ctype]}"$'\n'"- ${entry_text}"
