@@ -714,6 +714,57 @@ except: pass
 }
 
 # =============================================================================
+# WiFi AP Whitelist/Blacklist Check
+# =============================================================================
+# Checks if a USB WiFi adapter is whitelisted or blacklisted for AP mode.
+# Reads HAL's JSON files at /cubeos/config/wifi-ap-{whitelist,blacklist}.json
+# Returns: "whitelisted", "blacklisted", or "" (unknown)
+check_wifi_ap_list() {
+    local iface="$1"
+
+    # Read USB device IDs from sysfs
+    local device_path
+    device_path=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || return 0
+
+    # Walk up to find idVendor/idProduct
+    local vid="" pid="" path="$device_path"
+    for _ in 1 2 3 4 5; do
+        if [ -f "${path}/idVendor" ] && [ -f "${path}/idProduct" ]; then
+            vid=$(cat "${path}/idVendor" 2>/dev/null | tr -d '[:space:]')
+            pid=$(cat "${path}/idProduct" 2>/dev/null | tr -d '[:space:]')
+            break
+        fi
+        path=$(dirname "$path")
+        [ "$path" = "/" ] && break
+    done
+
+    [ -z "$vid" ] || [ -z "$pid" ] && return 0
+
+    # Check whitelist
+    if [ -f "/cubeos/config/wifi-ap-whitelist.json" ]; then
+        if grep -q "\"vendor_id\".*\"${vid}\"" /cubeos/config/wifi-ap-whitelist.json 2>/dev/null &&
+           grep -q "\"product_id\".*\"${pid}\"" /cubeos/config/wifi-ap-whitelist.json 2>/dev/null; then
+            log "  USB WiFi ${vid}:${pid} found in AP whitelist"
+            echo "whitelisted"
+            return 0
+        fi
+    fi
+
+    # Check blacklist
+    if [ -f "/cubeos/config/wifi-ap-blacklist.json" ]; then
+        if grep -q "\"vendor_id\".*\"${vid}\"" /cubeos/config/wifi-ap-blacklist.json 2>/dev/null &&
+           grep -q "\"product_id\".*\"${pid}\"" /cubeos/config/wifi-ap-blacklist.json 2>/dev/null; then
+            log "  USB WiFi ${vid}:${pid} found in AP blacklist"
+            echo "blacklisted"
+            return 0
+        fi
+    fi
+
+    # Unknown — will be tested by HAL on first DetectInterfaces call
+    echo ""
+}
+
+# =============================================================================
 # Interface Detection — replaces all hardcoded wlan0/wlan1/eth0 references
 # =============================================================================
 # Sets: CUBEOS_AP_IFACE, CUBEOS_UPLINK_IFACE, CUBEOS_ETH_IFACE, CUBEOS_WIFI_CLIENT_IFACE
@@ -777,11 +828,24 @@ detect_interfaces() {
         fi
     done
 
-    # Role assignment: AP = built-in WiFi (or only WiFi if just one)
-    if [ -n "$builtin_wifi" ]; then
+    # Role assignment: prefer USB WiFi for AP (better performance than built-in)
+    # Check whitelist/blacklist from HAL's AP capability testing
+    local usb_wifi_ap_ok=""
+    if [ -n "$usb_wifi" ]; then
+        usb_wifi_ap_ok=$(check_wifi_ap_list "$usb_wifi")
+    fi
+
+    if [ -n "$usb_wifi" ] && [ "$usb_wifi_ap_ok" != "blacklisted" ]; then
+        # USB WiFi available and not blacklisted — prefer for AP
+        ap_iface="$usb_wifi"
+        log "  AP role: USB WiFi ($usb_wifi) — preferred for performance"
+    elif [ -n "$builtin_wifi" ]; then
+        # Fallback to built-in WiFi
         ap_iface="$builtin_wifi"
+        log "  AP role: built-in WiFi ($builtin_wifi)"
     elif [ ${#wifi_ifaces[@]} -eq 1 ]; then
         ap_iface="${wifi_ifaces[0]}"
+        log "  AP role: only WiFi ($ap_iface)"
     fi
 
     # Default uplink is ethernet (wifi_router mode default)
@@ -807,6 +871,7 @@ HAL_DEFAULT_WIFI_INTERFACE=${CUBEOS_AP_IFACE}
 HAL_NAT_INTERFACE=${CUBEOS_UPLINK_IFACE}
 CUBEOS_DETECTED_ETH=${CUBEOS_DETECTED_ETH}
 CUBEOS_BUILTIN_WIFI=${CUBEOS_BUILTIN_WIFI}
+CUBEOS_USB_WIFI=${CUBEOS_USB_WIFI}
 IFACES_EOF
 
     log "Interface roles: AP=${CUBEOS_AP_IFACE} Uplink=${CUBEOS_UPLINK_IFACE} WiFi-Client=${CUBEOS_WIFI_CLIENT_IFACE}"
