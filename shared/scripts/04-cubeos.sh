@@ -167,6 +167,7 @@ CHROMADB_HOST=10.42.24.1
 CUBEOS_ACCESS_PROFILE=standard
 CUBEOS_NETWORK_MODE=
 CUBEOS_TIER=full
+CUBEOS_PRECONFIG_SOURCE=none
 
 # ===================
 # User Apps (6100-6999)
@@ -391,6 +392,7 @@ cp /tmp/cubeos-firstboot/cubeos-generate-secrets.sh  /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-generate-ap-creds.sh /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-deploy-stacks.sh     /usr/local/bin/
 cp /tmp/cubeos-firstboot/cubeos-diagnose.sh          /usr/local/bin/
+cp /tmp/cubeos-firstboot/detect-preconfiguration.sh  /usr/local/bin/
 
 chmod +x /usr/local/bin/cubeos-*.sh
 

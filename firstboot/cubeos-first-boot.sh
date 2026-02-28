@@ -250,47 +250,78 @@ start_dead_mans_switch
 rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
 
 # =========================================================================
-# Step 0: Wait for cloud-init (Pi Imager customizations)
+# Step 0: Pre-configuration detection (Pi Imager, Armbian, custom.toml, LXC)
 # =========================================================================
-# Pi Imager writes cloud-init user-data to /boot/firmware/user-data.
-# cloud-init handles: hostname, SSH authorized_keys, user creation.
-# We wait for it to finish, then read any settings it applied.
+# Detects and extracts settings from flashing tools. Writes
+# /cubeos/config/preconfiguration.json. cloud-init wait happens inside
+# the detection script if cloud-init is present.
 # =========================================================================
-if command -v cloud-init &>/dev/null; then
-    log "Waiting for cloud-init to complete (Pi Imager customizations, 60s timeout)..."
-    timeout 60 cloud-init status --wait --long 2>/dev/null || true
-    date +%s > "$HEARTBEAT"
+PRECONFIG_DETECTED=false
+PRECONFIG_SOURCE="none"
 
-    # Read hostname set by Pi Imager
-    IMAGER_HOSTNAME=$(cloud-init query local-hostname 2>/dev/null || echo "")
-    if [ -n "$IMAGER_HOSTNAME" ] && [ "$IMAGER_HOSTNAME" != "cubeos" ]; then
-        log "Pi Imager set hostname to: $IMAGER_HOSTNAME"
-        hostnamectl set-hostname "$IMAGER_HOSTNAME" 2>/dev/null || true
+log_step "Step 0: Detecting pre-configuration..."
+if bash "${SCRIPT_DIR}/detect-preconfiguration.sh" 2>&1 | while IFS= read -r line; do log "  $line"; done; then
+    if [ -f /cubeos/config/preconfiguration.json ]; then
+        PRECONFIG_DETECTED=true
+        PRECONFIG_SOURCE=$(jq -r '.source' /cubeos/config/preconfiguration.json 2>/dev/null || echo "none")
+        log_ok "Pre-configuration detected: source=$PRECONFIG_SOURCE"
     fi
-
-    # Read WiFi credentials set by Pi Imager (for wifi_bridge mode)
-    # Pi Imager configures WiFi CLIENT — CubeOS uses WiFi as ACCESS POINT.
-    # Store Imager WiFi as the default upstream for wifi_bridge mode.
-    if [ -f /boot/firmware/network-config ]; then
-        IMAGER_WIFI_SSID=$(grep -A5 'wifis:' /boot/firmware/network-config 2>/dev/null | grep -oP '(?<=")[^"]+(?=":)' | head -1 || echo "")
-        IMAGER_WIFI_PASS=$(grep -A10 'wifis:' /boot/firmware/network-config 2>/dev/null | grep 'password:' | awk '{print $2}' | tr -d '"' || echo "")
-
-        if [ -n "$IMAGER_WIFI_SSID" ]; then
-            log "Pi Imager WiFi detected: $IMAGER_WIFI_SSID (stored for wifi_bridge mode)"
-            install -d -o cubeos -g cubeos /cubeos/config/wifi
-            cat > /cubeos/config/wifi/imager-wifi.env << IMAGER_WIFI
-UPSTREAM_SSID=${IMAGER_WIFI_SSID}
-UPSTREAM_PASSWORD=${IMAGER_WIFI_PASS}
-IMAGER_WIFI
-            chmod 600 /cubeos/config/wifi/imager-wifi.env
-        fi
-    fi
-
-    # SSH keys are handled automatically by cloud-init — no action needed
-    log_ok "cloud-init processing complete"
 else
-    log "cloud-init not found — skipping Pi Imager customization check"
+    log "No pre-configuration detected -- using default CubeOS flow"
 fi
+date +%s > "$HEARTBEAT"
+
+# Apply pre-configured network (swap foreign netplan with CubeOS curated)
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    apply_preconfigured_network
+    date +%s > "$HEARTBEAT"
+fi
+
+# Disable cloud-init permanently (after extraction)
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    disable_cloud_init_permanently
+fi
+
+# Respect pre-configured hostname
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    PRECONFIG_HOSTNAME=$(jq -r '.hostname // ""' /cubeos/config/preconfiguration.json 2>/dev/null)
+    if [ -n "$PRECONFIG_HOSTNAME" ] && [ "$PRECONFIG_HOSTNAME" != "cubeos" ]; then
+        log "Respecting pre-configured hostname: $PRECONFIG_HOSTNAME"
+        hostnamectl set-hostname "$PRECONFIG_HOSTNAME" 2>/dev/null || true
+    fi
+fi
+
+# Respect pre-configured timezone
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    PRECONFIG_TZ=$(jq -r '.timezone // ""' /cubeos/config/preconfiguration.json 2>/dev/null)
+    if [ -n "$PRECONFIG_TZ" ]; then
+        log "Respecting pre-configured timezone: $PRECONFIG_TZ"
+        timedatectl set-timezone "$PRECONFIG_TZ" 2>/dev/null || true
+    fi
+fi
+
+# Store WiFi creds for wifi_bridge mode (backward compat with existing flow)
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    PRECONFIG_WIFI_SSID=$(jq -r '.wifi.ssid // ""' /cubeos/config/preconfiguration.json 2>/dev/null)
+    PRECONFIG_WIFI_PASS=$(jq -r '.wifi.password // ""' /cubeos/config/preconfiguration.json 2>/dev/null)
+    if [ -n "$PRECONFIG_WIFI_SSID" ]; then
+        log "Storing WiFi credentials for wifi_bridge mode: $PRECONFIG_WIFI_SSID"
+        install -d -o cubeos -g cubeos /cubeos/config/wifi
+        cat > /cubeos/config/wifi/imager-wifi.env << IMAGER_WIFI
+UPSTREAM_SSID=${PRECONFIG_WIFI_SSID}
+UPSTREAM_PASSWORD=${PRECONFIG_WIFI_PASS}
+IMAGER_WIFI
+        chmod 600 /cubeos/config/wifi/imager-wifi.env
+    fi
+fi
+
+# Write preconfig source to defaults.env
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    sed -i "s/^CUBEOS_PRECONFIG_SOURCE=.*/CUBEOS_PRECONFIG_SOURCE=$PRECONFIG_SOURCE/" "${CONFIG_DIR}/defaults.env" 2>/dev/null || \
+        echo "CUBEOS_PRECONFIG_SOURCE=$PRECONFIG_SOURCE" >> "${CONFIG_DIR}/defaults.env"
+fi
+
+log_ok "Step 0 complete (preconfig=$PRECONFIG_SOURCE)"
 
 # =========================================================================
 # Step 1/9: ZRAM Swap + Watchdog
@@ -314,14 +345,28 @@ detect_interfaces
 enforce_bluetooth_coexistence
 
 # T6c-09: Determine default network mode from detected hardware.
-# Decision tree: WiFi+Eth→wifi_router, WiFi-only→offline_hotspot,
-# Eth-only→eth_client, Neither→offline_hotspot (safe fallback).
+# Pre-configuration overrides hardware detection if WiFi was configured.
 CUBEOS_DEFAULT_MODE=$(determine_default_mode)
 log "Hardware-detected default mode: ${CUBEOS_DEFAULT_MODE}"
 
-# Write netplan for the hardware-detected default mode.
+# Pre-configuration override: use detected network mode hint
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    PRECONFIG_MODE=$(jq -r '.network_mode_hint // ""' /cubeos/config/preconfiguration.json 2>/dev/null)
+    if [ -n "$PRECONFIG_MODE" ]; then
+        log "Pre-configuration overrides mode: ${CUBEOS_DEFAULT_MODE} -> ${PRECONFIG_MODE}"
+        CUBEOS_DEFAULT_MODE="$PRECONFIG_MODE"
+        # Write to defaults.env for other components
+        sed -i "s/^CUBEOS_NETWORK_MODE=.*/CUBEOS_NETWORK_MODE=$CUBEOS_DEFAULT_MODE/" "${CONFIG_DIR}/defaults.env" 2>/dev/null || \
+            echo "CUBEOS_NETWORK_MODE=$CUBEOS_DEFAULT_MODE" >> "${CONFIG_DIR}/defaults.env"
+    fi
+fi
+
+# Write netplan for the resolved mode (hardware-detected or preconfig-overridden).
 # Takes effect on next boot; runtime IP assignment below handles current boot.
-write_netplan_for_mode "${CUBEOS_DEFAULT_MODE}"
+# For wifi_client: netplan was already applied in Step 0 by apply_preconfigured_network.
+if [ "$CUBEOS_DEFAULT_MODE" != "wifi_client" ] && [ "$CUBEOS_DEFAULT_MODE" != "eth_client" ] || [ "$PRECONFIG_DETECTED" != "true" ]; then
+    write_netplan_for_mode "${CUBEOS_DEFAULT_MODE}"
+fi
 
 # NOTE: netplan apply deliberately omitted — deadlocks against Docker bridges + hostapd.
 if ensure_ip_on_interface "${CUBEOS_AP_IFACE}" "$GATEWAY_IP" 10; then
@@ -472,17 +517,23 @@ configure_pihole_dhcp "${CUBEOS_DEFAULT_MODE}"
 log_step "Step 6/9: Starting WiFi Access Point..."
 echo "6/9" > "$PROGRESS"
 
-source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
-systemctl unmask hostapd 2>/dev/null || true
-
-# B1 fix: Ensure SSID was set (in case AP creds failed in Step 3)
-if grep -q "ssid=CubeOS-Setup" /etc/hostapd/hostapd.conf; then
-    log_warn "SSID still at default -- running AP creds generation"
-    /usr/local/bin/cubeos-generate-ap-creds.sh 2>/dev/null || true
+# Skip WiFi AP for server modes (wifi_client, eth_client from preconfig)
+if [ "$CUBEOS_DEFAULT_MODE" = "wifi_client" ] || [ "$CUBEOS_DEFAULT_MODE" = "eth_client" ]; then
+    log "Skipping WiFi AP -- server mode ($CUBEOS_DEFAULT_MODE), no AP needed"
+    systemctl mask hostapd 2>/dev/null || true
+else
     source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
-fi
+    systemctl unmask hostapd 2>/dev/null || true
 
-configure_wifi_ap
+    # B1 fix: Ensure SSID was set (in case AP creds failed in Step 3)
+    if grep -q "ssid=CubeOS-Setup" /etc/hostapd/hostapd.conf; then
+        log_warn "SSID still at default -- running AP creds generation"
+        /usr/local/bin/cubeos-generate-ap-creds.sh 2>/dev/null || true
+        source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
+    fi
+
+    configure_wifi_ap
+fi
 
 # =========================================================================
 # Step 7/9: NPM + HAL
@@ -636,11 +687,29 @@ fi
 
 source "${CONFIG_DIR}/ap.env" 2>/dev/null || true
 log ""
-log "  WiFi:      ${CUBEOS_AP_SSID:-CubeOS-Setup} / ${CUBEOS_AP_KEY:-cubeos-setup}"
-log "  Dashboard: http://cubeos.cube  or  http://${GATEWAY_IP}"
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    log "  Pre-config: ${PRECONFIG_SOURCE}"
+    log "  Mode:      ${CUBEOS_DEFAULT_MODE}"
+    if [ "$CUBEOS_DEFAULT_MODE" = "wifi_client" ] || [ "$CUBEOS_DEFAULT_MODE" = "eth_client" ]; then
+        local_ip=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[^/]+' | head -1 || echo "${GATEWAY_IP}")
+        local_hostname=$(jq -r '.hostname // "cubeos"' /cubeos/config/preconfiguration.json 2>/dev/null)
+        log "  Dashboard: http://${local_hostname}.local:6011  or  http://${local_ip}:6011"
+    else
+        log "  WiFi:      ${CUBEOS_AP_SSID:-CubeOS-Setup} / ${CUBEOS_AP_KEY:-cubeos-setup}"
+        log "  Dashboard: http://cubeos.cube  or  http://${GATEWAY_IP}"
+    fi
+else
+    log "  WiFi:      ${CUBEOS_AP_SSID:-CubeOS-Setup} / ${CUBEOS_AP_KEY:-cubeos-setup}"
+    log "  Dashboard: http://cubeos.cube  or  http://${GATEWAY_IP}"
+fi
 log "  Login:     admin / cubeos"
 log ""
 log "============================================================"
+
+# Setup Imager users from pre-configuration (add to cubeos group)
+if [ "$PRECONFIG_DETECTED" = "true" ]; then
+    setup_users_from_preconfig
+fi
 
 # Start watchdog monitoring now that all services are deployed
 systemctl enable cubeos-watchdog.timer 2>/dev/null || true
@@ -655,7 +724,9 @@ chown cubeos:cubeos "$PROVISIONED_FLAG"
 log "Provisioned flag created -- next boot will run normal-boot.sh"
 
 # Disable cloud-init on subsequent boots (prevents timeout delays on air-gapped operation)
-touch /etc/cloud/cloud-init.disabled
+# Pre-configuration detection (Step 0) already does comprehensive disable for cloud-init source,
+# but this catch-all ensures cloud-init is always disabled regardless of preconfig source.
+touch /etc/cloud/cloud-init.disabled 2>/dev/null || true
 log "Cloud-init disabled for subsequent boots"
 
 rm -f "$HEARTBEAT" "$PROGRESS" /tmp/cubeos-swarm-ready

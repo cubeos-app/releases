@@ -955,10 +955,19 @@ menu_system_status() {
     local profile_str
     profile_str=$(db_read_access_profile)
 
+    # Pre-configuration source
+    local preconfig_source="none"
+    if [ -f /cubeos/config/preconfiguration.json ]; then
+        preconfig_source=$(jq -r '.source // "none"' /cubeos/config/preconfiguration.json 2>/dev/null || echo "none")
+    fi
+
     local status_text=""
     status_text+="  NETWORK\n"
     status_text+="  Mode:       ${mode_str}\n"
     status_text+="  Profile:    ${profile_str}\n"
+    if [ "$preconfig_source" != "none" ]; then
+        status_text+="  Pre-config: ${preconfig_source}\n"
+    fi
     status_text+="  eth0:       ${eth0_ip:-down}\n"
     status_text+="  wlan0:      ${wlan0_ip:-down}${ap_ssid_str}\n"
     status_text+="  wlan1:      ${wlan1_ip:-down}\n"

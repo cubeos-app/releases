@@ -1661,3 +1661,167 @@ is_server_mode() {
         *) return 1 ;;
     esac
 }
+
+# =============================================================================
+# Pre-Configuration Support (v0.2.0-beta.06)
+# =============================================================================
+# Functions for adopting settings from Pi Imager, Armbian, custom.toml, and LXC.
+# Called by first-boot after detect-preconfiguration.sh writes preconfiguration.json.
+
+# Swap cloud-init/Armbian netplan with CubeOS curated netplan.
+# Called AFTER detection, BEFORE services start.
+# CRITICAL: This causes a brief network reconnection. Must complete before wizard.
+apply_preconfigured_network() {
+    local preconfig="/cubeos/config/preconfiguration.json"
+
+    if [ ! -f "$preconfig" ]; then
+        log "No preconfiguration.json -- skipping network swap"
+        return 0
+    fi
+
+    local source wifi_ssid wifi_password network_mode_hint
+    source=$(jq -r '.source' "$preconfig")
+    wifi_ssid=$(jq -r '.wifi.ssid // ""' "$preconfig")
+    wifi_password=$(jq -r '.wifi.password // ""' "$preconfig")
+    network_mode_hint=$(jq -r '.network_mode_hint // "wifi_router"' "$preconfig")
+
+    if [ "$source" = "none" ]; then
+        log "No pre-configuration -- keeping default netplan"
+        return 0
+    fi
+
+    log "Applying pre-configured network: mode=$network_mode_hint, ssid=$wifi_ssid"
+
+    # Step 1: Delete ALL foreign netplan files (cloud-init, Armbian, etc.)
+    # Keep only CubeOS-generated netplan files (contain "CubeOS" marker)
+    local cubeos_marker="CubeOS"
+    for f in /etc/netplan/*.yaml /etc/netplan/*.yml; do
+        [ -f "$f" ] || continue
+        if ! grep -q "$cubeos_marker" "$f" 2>/dev/null; then
+            log "Removing foreign netplan: $f"
+            rm -f "$f"
+        fi
+    done
+
+    # Step 2: Write CubeOS curated netplan for the detected mode
+    # Ensure interfaces are detected for write_netplan_for_mode
+    if [ -z "${CUBEOS_AP_IFACE:-}" ]; then
+        detect_interfaces
+    fi
+
+    if [ "$network_mode_hint" = "wifi_client" ] && [ -n "$wifi_ssid" ]; then
+        write_netplan_for_mode "wifi_client" "$wifi_ssid" "$wifi_password"
+    elif [ "$network_mode_hint" = "eth_client" ]; then
+        write_netplan_for_mode "eth_client"
+    else
+        # Default -- wifi_router (AP mode, same as no-preconfig)
+        write_netplan_for_mode "wifi_router"
+    fi
+
+    # Step 3: Apply netplan
+    log "Applying CubeOS netplan..."
+    netplan apply 2>&1 | while IFS= read -r line; do log "  netplan: $line"; done
+
+    # Step 4: Wait for network connectivity to stabilize
+    if [ "$network_mode_hint" = "wifi_client" ] || [ "$network_mode_hint" = "eth_client" ]; then
+        log "Waiting for network connectivity..."
+        local max_wait=60
+        local waited=0
+        while [ $waited -lt $max_wait ]; do
+            if ip -4 addr show scope global 2>/dev/null | grep -q "inet "; then
+                local ip
+                ip=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[^/]+' | head -1)
+                log_ok "Network connected: $ip (waited ${waited}s)"
+                return 0
+            fi
+            sleep 2
+            waited=$((waited + 2))
+            # Update heartbeat if tracking
+            [ -f "${HEARTBEAT:-/dev/null}" ] && date +%s > "$HEARTBEAT"
+        done
+
+        # Timeout -- fall back to AP mode
+        log_warn "Network connectivity timeout after ${max_wait}s. Falling back to AP mode."
+
+        # Update preconfiguration to note the failure
+        local tmp
+        tmp=$(mktemp)
+        jq '.network_mode_hint = "wifi_router" | .wifi_connect_failed = true' "$preconfig" > "$tmp" && mv "$tmp" "$preconfig"
+        chmod 640 "$preconfig"
+
+        write_netplan_for_mode "wifi_router"
+        netplan apply 2>&1 | while IFS= read -r line; do log "  netplan: $line"; done
+    fi
+
+    return 0
+}
+
+# Permanently disable cloud-init after extracting pre-configuration.
+# MUST be called after detect-preconfiguration.sh but before reboot.
+disable_cloud_init_permanently() {
+    local preconfig="/cubeos/config/preconfiguration.json"
+    local source
+    source=$(jq -r '.source // "none"' "$preconfig" 2>/dev/null || echo "none")
+
+    if [ "$source" != "cloud-init" ]; then
+        log "Source is not cloud-init ($source) -- skipping cloud-init disable"
+        return 0
+    fi
+
+    log "Disabling cloud-init permanently..."
+
+    # Method 1: Create the disable marker file
+    touch /etc/cloud/cloud-init.disabled
+
+    # Method 2: Mask the services
+    systemctl mask cloud-init.service 2>/dev/null || true
+    systemctl mask cloud-init-local.service 2>/dev/null || true
+    systemctl mask cloud-config.service 2>/dev/null || true
+    systemctl mask cloud-final.service 2>/dev/null || true
+
+    # Method 3: Clean cloud-init state (prevents re-run)
+    cloud-init clean --logs 2>/dev/null || true
+
+    # Rename user-data and network-config to prevent confusion
+    for f in user-data network-config meta-data; do
+        if [ -f "/boot/firmware/$f" ]; then
+            mv "/boot/firmware/$f" "/boot/firmware/${f}.cubeos-processed" 2>/dev/null || true
+        fi
+    done
+
+    log_ok "cloud-init permanently disabled"
+}
+
+# Ensure cubeos system user exists and Imager user is in the cubeos group.
+# cloud-init creates the Imager user; this adds them to the cubeos group.
+setup_users_from_preconfig() {
+    local preconfig="/cubeos/config/preconfiguration.json"
+
+    if [ ! -f "$preconfig" ]; then
+        return 0
+    fi
+
+    local source
+    source=$(jq -r '.source // "none"' "$preconfig")
+    if [ "$source" = "none" ]; then
+        return 0
+    fi
+
+    # Get Imager usernames from preconfiguration
+    local users
+    users=$(jq -r '.users[]?.name // empty' "$preconfig" 2>/dev/null)
+
+    for username in $users; do
+        [ -z "$username" ] && continue
+        [ "$username" = "cubeos" ] && continue
+
+        # Check if user exists (cloud-init should have created them)
+        if id "$username" &>/dev/null; then
+            log "Adding Imager user '$username' to cubeos group..."
+            usermod -aG cubeos "$username" 2>/dev/null || log_warn "Failed to add $username to cubeos group"
+            log_ok "Imager user '$username' added to cubeos group"
+        else
+            log "Imager user '$username' does not exist yet -- cloud-init may not have run"
+        fi
+    done
+}
