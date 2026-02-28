@@ -277,7 +277,7 @@ if command -v cloud-init &>/dev/null; then
 
         if [ -n "$IMAGER_WIFI_SSID" ]; then
             log "Pi Imager WiFi detected: $IMAGER_WIFI_SSID (stored for wifi_bridge mode)"
-            mkdir -p /cubeos/config/wifi
+            install -d -o cubeos -g cubeos /cubeos/config/wifi
             cat > /cubeos/config/wifi/imager-wifi.env << IMAGER_WIFI
 UPSTREAM_SSID=${IMAGER_WIFI_SSID}
 UPSTREAM_PASSWORD=${IMAGER_WIFI_PASS}
@@ -497,10 +497,10 @@ ensure_dns_resolver
 # allowing /cubeos-log and /cubeos-boot.html to be served directly by nginx
 # (exact-match locations take priority over the proxy_pass).
 NPM_DATA="${COREAPPS_DIR}/npm/appdata/data"
-mkdir -p "${NPM_DATA}/nginx/custom"
+install -d -o cubeos -g cubeos "${NPM_DATA}/nginx/custom"
 # B35: Pre-create default_www so the volume mount overlay has a valid parent directory.
 # This ensures the "Congratulations" page is never shown, even during NPM initialization.
-mkdir -p "${NPM_DATA}/nginx/default_www"
+install -d -o cubeos -g cubeos "${NPM_DATA}/nginx/default_www"
 cat > "${NPM_DATA}/nginx/custom/server_proxy.conf" << 'NGINX'
 # CubeOS boot page and log serving endpoints (Alpha.17)
 # Injected into all proxy host server blocks via NPM custom include.
@@ -649,8 +649,9 @@ log_ok "Watchdog monitoring started"
 
 # B37: Create .provisioned flag (services deployed, ready for wizard).
 # Wizard completion is tracked separately in DB by API.
-mkdir -p "$(dirname "$PROVISIONED_FLAG")"
+install -d -o cubeos -g cubeos "$(dirname "$PROVISIONED_FLAG")"
 touch "$PROVISIONED_FLAG"
+chown cubeos:cubeos "$PROVISIONED_FLAG"
 log "Provisioned flag created -- next boot will run normal-boot.sh"
 
 # Disable cloud-init on subsequent boots (prevents timeout delays on air-gapped operation)

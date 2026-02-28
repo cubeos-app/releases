@@ -67,9 +67,9 @@ mkdir -p /cubeos/data/watchdog
 mkdir -p /cubeos/alerts
 mkdir -p /cubeos/static
 
-# Correct ownership
-chown -R root:root /cubeos
-chown -R cubeos:cubeos /cubeos/coreapps
+# Correct ownership — cubeos user owns the entire tree.
+# The cubeos user is created earlier in 02-networking.sh (Phase 1).
+chown -R cubeos:cubeos /cubeos
 chmod 755 /cubeos
 
 # Symlink for backward compatibility
