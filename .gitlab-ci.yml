@@ -1989,8 +1989,10 @@ upload-to-dmz:
   needs:
     - job: "validate-image: [raspberrypi, full, arm64]"
       artifacts: false
+      optional: true
     - job: "validate-image: [raspberrypi, lite, arm64]"
       artifacts: false
+      optional: true
   before_script:
     - apk add --no-cache openssh-client rsync curl jq
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
