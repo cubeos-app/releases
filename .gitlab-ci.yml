@@ -2193,6 +2193,7 @@ update-website-links:
   needs:
     - job: upload-to-dmz
       artifacts: true
+      optional: true
   script:
     - apk add --no-cache git curl
     - |
@@ -2207,6 +2208,16 @@ update-website-links:
       echo "============================================================"
       echo "  Update website download links to ${CUBEOS_VERSION}"
       echo "============================================================"
+
+      # Compute URLs from CUBEOS_VERSION directly so this job does not
+      # depend on upload-to-dmz's dotenv artifact for correctness.
+      FULL_FILENAME="cubeos-${CUBEOS_VERSION}-arm64.img.xz"
+      LITE_FILENAME="cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz"
+      FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}"
+      LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}"
+
+      echo "  Full: ${FULL_URL}"
+      echo "  Lite: ${LITE_URL}"
 
       git clone --depth 1 https://oauth2:${TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
       cd /tmp/website
