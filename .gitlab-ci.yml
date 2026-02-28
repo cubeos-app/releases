@@ -51,7 +51,7 @@ stages:
 
 variables:
   # CubeOS release version baked into images and used for Package Registry paths
-  CUBEOS_VERSION: "0.2.0-beta.03"
+  CUBEOS_VERSION: "0.2.0-beta.04"
   # Golden base image version (monthly rebuild on GPU VM)
   BASE_VERSION: "3.0.0"
   # Golden base image filename in Package Registry
