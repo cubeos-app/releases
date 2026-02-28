@@ -14,6 +14,12 @@
 #   - Watchdog management
 #   - Network mode (6 distinct netplan templates)
 #
+# v14 — beta.05:
+#   - Migrated all Pi-hole config from docker exec pihole-FTL --config to v6 REST API
+#   - Added wait_for_pihole_api(), pihole_api_login(), pihole_api_set_dhcp(), etc.
+#   - configure_pihole_dhcp() now uses REST API with 5-retry, verification, toml fallback
+#   - seed_pihole_dns() now uses REST API bulk sync with custom.list fallback
+#
 # v13 — ALPHA.23 (Batch 2):
 #   - B82: seed_pihole_dns() rewritten to use pihole-FTL --config dns.hosts
 #     (JSON array persisted to pihole.toml). custom.list kept as fallback.
@@ -472,12 +478,150 @@ protect_hal_port() {
     log_ok "HAL port ${HAL_PORT} protected (external access blocked)"
 }
 
+# ── Pi-hole v6 REST API Helpers ──────────────────────────────────────
+# These functions replace ALL docker exec pihole-FTL --config usage.
+# Pi-hole v6 uses a REST API at http://127.0.0.1:6001/api/
+# See CLAUDE.md "Pi-hole v6 REST API Quick Reference" for full details.
+
+# Wait for Pi-hole FTL to be fully ready (config engine, not just web UI).
+# Uses the unauthenticated /api/info/login endpoint which only returns 200
+# when FTL is ready. This replaces the old "curl /admin/" health check.
+wait_for_pihole_api() {
+    local max_attempts="${1:-30}"
+    local sleep_interval="${2:-3}"
+    log "Waiting for Pi-hole FTL API to be ready..."
+    for i in $(seq 1 "$max_attempts"); do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:6001/api/info/login" 2>/dev/null)
+        if [ "$HTTP_CODE" = "200" ]; then
+            log_ok "Pi-hole FTL API ready (attempt $i/$max_attempts)"
+            return 0
+        fi
+        log "Pi-hole FTL API not ready (HTTP $HTTP_CODE), retrying in ${sleep_interval}s... ($i/$max_attempts)"
+        sleep "$sleep_interval"
+    done
+    log_warn "Pi-hole FTL API not ready after $max_attempts attempts"
+    return 1
+}
+
+# Get Pi-hole API session ID for authenticated operations.
+# Reads password from CUBEOS_PIHOLE_PASSWORD env var or /cubeos/config/secrets.env.
+# Usage: SID=$(pihole_api_login) || { log_warn "login failed"; return 1; }
+pihole_api_login() {
+    local password="${CUBEOS_PIHOLE_PASSWORD:-}"
+    if [ -z "$password" ]; then
+        # Try to read from secrets.env
+        if [ -f /cubeos/config/secrets.env ]; then
+            password=$(grep -oP '^CUBEOS_PIHOLE_PASSWORD=\K.*' /cubeos/config/secrets.env 2>/dev/null || true)
+        fi
+    fi
+    if [ -z "$password" ]; then
+        # Fallback to default Pi-hole password
+        password="cubeos"
+    fi
+
+    local response
+    response=$(curl -s -X POST "http://127.0.0.1:6001/api/auth" \
+        -H "Content-Type: application/json" \
+        -d "{\"password\":\"${password}\"}" 2>/dev/null)
+
+    local sid
+    sid=$(echo "$response" | jq -r '.session.sid // empty' 2>/dev/null)
+    if [ -z "$sid" ]; then
+        log_warn "Pi-hole API login failed: $response"
+        return 1
+    fi
+    echo "$sid"
+}
+
+# Set Pi-hole DHCP active state via REST API.
+# Usage: pihole_api_set_dhcp <true|false> <sid>
+pihole_api_set_dhcp() {
+    local active="$1"
+    local sid="$2"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PUT "http://127.0.0.1:6001/api/config/dhcp/active/${active}" \
+        -H "X-FTL-SID: ${sid}" 2>/dev/null)
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "204" ]; then
+        return 0
+    fi
+    log_warn "Pi-hole API set DHCP active=$active failed (HTTP $http_code)"
+    return 1
+}
+
+# Read Pi-hole DHCP active state via REST API.
+# Returns "true" or "false" on stdout.
+pihole_api_get_dhcp() {
+    local sid="$1"
+    local response
+    response=$(curl -s "http://127.0.0.1:6001/api/config/dhcp/active" \
+        -H "X-FTL-SID: ${sid}" 2>/dev/null)
+    echo "$response" | jq -r '.config.dhcp.active // "unknown"' 2>/dev/null
+}
+
+# Set Pi-hole dnsmasq_lines via REST API (PATCH with wrapped JSON).
+# Usage: pihole_api_set_dnsmasq_lines <sid> <json_array_string>
+# Example: pihole_api_set_dnsmasq_lines "$sid" '["address=/cubeos.cube/10.42.24.1","no-dhcp-interface=eth0"]'
+pihole_api_set_dnsmasq_lines() {
+    local sid="$1"
+    local json_array="$2"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PATCH "http://127.0.0.1:6001/api/config/misc/dnsmasq_lines" \
+        -H "Content-Type: application/json" \
+        -H "X-FTL-SID: ${sid}" \
+        -d "{\"config\":{\"misc\":{\"dnsmasq_lines\":${json_array}}}}" 2>/dev/null)
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "204" ]; then
+        return 0
+    fi
+    log_warn "Pi-hole API set dnsmasq_lines failed (HTTP $http_code)"
+    return 1
+}
+
+# Add a DNS host entry via REST API.
+# Usage: pihole_api_add_dns_host "10.42.24.1" "cubeos.cube" <sid>
+pihole_api_add_dns_host() {
+    local ip="$1"
+    local hostname="$2"
+    local sid="$3"
+    local encoded="${ip}%20${hostname}"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PUT "http://127.0.0.1:6001/api/config/dns/hosts/${encoded}" \
+        -H "X-FTL-SID: ${sid}" 2>/dev/null)
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "204" ]; then
+        return 0
+    fi
+    log_warn "Pi-hole API add DNS host $hostname -> $ip failed (HTTP $http_code)"
+    return 1
+}
+
+# Bulk sync DNS host entries via REST API (replaces all existing entries).
+# Usage: pihole_api_sync_dns_hosts <sid> <json_array_string>
+# Example: pihole_api_sync_dns_hosts "$sid" '["10.42.24.1 cubeos.cube","10.42.24.1 api.cubeos.cube"]'
+pihole_api_sync_dns_hosts() {
+    local sid="$1"
+    local json_array="$2"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PATCH "http://127.0.0.1:6001/api/config/dns/hosts" \
+        -H "Content-Type: application/json" \
+        -H "X-FTL-SID: ${sid}" \
+        -d "{\"config\":{\"dns\":{\"hosts\":${json_array}}}}" 2>/dev/null)
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "204" ]; then
+        return 0
+    fi
+    log_warn "Pi-hole API sync DNS hosts failed (HTTP $http_code)"
+    return 1
+}
+
 # ── Pi-hole DNS Seeding ──────────────────────────────────────────────
 seed_pihole_dns() {
-    # B82: Pi-hole v6 FTL regenerates custom.list from dns.hosts in pihole.toml.
-    # Writing custom.list directly is overwritten on FTL restart.
-    # Primary: use pihole-FTL --config dns.hosts (JSON array, persists to pihole.toml).
-    # Fallback: write custom.list for first-boot race (container may not be ready).
+    # Pi-hole v6 stores dns.hosts in pihole.toml (persisted across restarts).
+    # Primary: use Pi-hole v6 REST API to bulk-sync DNS host entries.
+    # Fallback: write custom.list directly (for pre-API scenarios).
+
+    log "Seeding Pi-hole DNS entries (${#CORE_DNS_HOSTS[@]} entries)..."
 
     # Build JSON array: ["10.42.24.1 cubeos.cube","10.42.24.1 api.cubeos.cube",...]
     local json_entries=""
@@ -485,17 +629,28 @@ seed_pihole_dns() {
         [ -n "$json_entries" ] && json_entries="${json_entries},"
         json_entries="${json_entries}\"${GATEWAY_IP} ${host}\""
     done
+    local json_array="[${json_entries}]"
 
-    # Primary: pihole-FTL --config dns.hosts (writes to pihole.toml)
-    local ftl_ok=false
+    # Primary: use Pi-hole v6 REST API
+    local api_ok=false
     if container_running cubeos-pihole; then
-        if docker exec cubeos-pihole pihole-FTL --config dns.hosts "[${json_entries}]" 2>/dev/null; then
-            ftl_ok=true
+        if wait_for_pihole_api 15 2; then
+            local sid
+            sid=$(pihole_api_login)
+            if [ $? -eq 0 ] && [ -n "$sid" ]; then
+                if pihole_api_sync_dns_hosts "$sid" "$json_array"; then
+                    api_ok=true
+                else
+                    log_warn "Pi-hole REST API dns.hosts sync failed -- falling back to custom.list"
+                fi
+            else
+                log_warn "Pi-hole API login failed for DNS seeding -- falling back to custom.list"
+            fi
         else
-            log_warn "pihole-FTL --config dns.hosts failed -- falling back to custom.list"
+            log_warn "Pi-hole FTL API not ready for DNS seeding -- falling back to custom.list"
         fi
     else
-        log_warn "Pi-hole not running -- writing custom.list only (FTL config on next boot)"
+        log_warn "Pi-hole not running -- writing custom.list only (API config on next boot)"
     fi
 
     # Belt-and-suspenders: also write custom.list directly
@@ -506,11 +661,9 @@ seed_pihole_dns() {
         echo "${GATEWAY_IP} ${host}" >> "$PIHOLE_HOSTS"
     done
 
-    if [ "$ftl_ok" = true ]; then
-        log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries via dns.hosts + custom.list)"
+    if [ "$api_ok" = true ]; then
+        log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries via REST API + custom.list)"
     else
-        # Trigger a reload so custom.list takes effect immediately
-        docker exec cubeos-pihole pihole reloaddns 2>/dev/null || true
         log_ok "Pi-hole DNS seeded (${#CORE_DNS_HOSTS[@]} entries via custom.list fallback)"
     fi
 }
@@ -1004,10 +1157,10 @@ NETPLAN_SERVER_WIFI
     netplan generate 2>/dev/null || log_warn "netplan generate failed"
 }
 
-# Configure Pi-hole DHCP scope for the active network mode.
+# Configure Pi-hole DHCP scope for the active network mode via REST API.
 # Called at boot time AFTER Pi-hole container is running but BEFORE the
-# CubeOS API is available. Uses pihole-FTL --config CLI (writes to pihole.toml
-# inside the container) since the REST API may not be ready yet.
+# CubeOS API is available. Uses Pi-hole v6 REST API with retry, verification,
+# and pihole.toml direct-write as a last-resort fallback.
 #
 # DHCP scope per mode (Section 15.3 of Network Modes Execution Plan):
 #   offline_hotspot:  DHCP active on all interfaces (wlan0 + eth0 serve clients)
@@ -1018,6 +1171,9 @@ NETPLAN_SERVER_WIFI
 #   wifi_client:      DHCP disabled (CubeOS is a client, not serving)
 configure_pihole_dhcp() {
     local mode="${1:-offline_hotspot}"
+    local active="false"
+    local wildcard="address=/cubeos.cube/10.42.24.1"
+    local dnsmasq_json=""
 
     # Wait for Pi-hole container to be running
     if ! container_running cubeos-pihole; then
@@ -1025,35 +1181,121 @@ configure_pihole_dhcp() {
         return 1
     fi
 
+    # Determine DHCP state and dnsmasq_lines for the mode
     case "$mode" in
         offline_hotspot)
-            docker exec cubeos-pihole pihole-FTL --config dhcp.active true 2>/dev/null || true
-            docker exec cubeos-pihole pihole-FTL --config misc.dnsmasq_lines '["address=/cubeos.cube/10.42.24.1"]' 2>/dev/null || true
-            log_ok "Pi-hole DHCP: active on all interfaces (offline_hotspot)"
+            active="true"
+            dnsmasq_json="[\"${wildcard}\"]"
             ;;
         wifi_router)
-            docker exec cubeos-pihole pihole-FTL --config dhcp.active true 2>/dev/null || true
-            docker exec cubeos-pihole pihole-FTL --config misc.dnsmasq_lines "[\"address=/cubeos.cube/10.42.24.1\",\"no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0}\"]" 2>/dev/null || true
-            log_ok "Pi-hole DHCP: active, no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0} (wifi_router)"
+            active="true"
+            dnsmasq_json="[\"${wildcard}\",\"no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0}\"]"
             ;;
         wifi_bridge)
-            docker exec cubeos-pihole pihole-FTL --config dhcp.active true 2>/dev/null || true
-            docker exec cubeos-pihole pihole-FTL --config misc.dnsmasq_lines "[\"address=/cubeos.cube/10.42.24.1\",\"no-dhcp-interface=${CUBEOS_WIFI_CLIENT_IFACE:-wlan1}\"]" 2>/dev/null || true
-            log_ok "Pi-hole DHCP: active, no-dhcp-interface=${CUBEOS_WIFI_CLIENT_IFACE:-wlan1} (wifi_bridge)"
+            active="true"
+            dnsmasq_json="[\"${wildcard}\",\"no-dhcp-interface=${CUBEOS_WIFI_CLIENT_IFACE:-wlan1}\"]"
             ;;
         android_tether)
-            # Tether interface (usb0/enx*) is dynamic — exclude eth0 (same as wifi_router)
-            # so DHCP only serves on the AP interface.
-            docker exec cubeos-pihole pihole-FTL --config dhcp.active true 2>/dev/null || true
-            docker exec cubeos-pihole pihole-FTL --config misc.dnsmasq_lines "[\"address=/cubeos.cube/10.42.24.1\",\"no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0}\"]" 2>/dev/null || true
-            log_ok "Pi-hole DHCP: active, no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0} (android_tether)"
+            active="true"
+            dnsmasq_json="[\"${wildcard}\",\"no-dhcp-interface=${CUBEOS_ETH_IFACE:-eth0}\"]"
             ;;
         eth_client|wifi_client)
-            docker exec cubeos-pihole pihole-FTL --config dhcp.active false 2>/dev/null || true
-            docker exec cubeos-pihole pihole-FTL --config misc.dnsmasq_lines '["address=/cubeos.cube/10.42.24.1"]' 2>/dev/null || true
-            log_ok "Pi-hole DHCP: disabled (${mode})"
+            active="false"
+            dnsmasq_json="[\"${wildcard}\"]"
+            ;;
+        *)
+            log_warn "Unknown network mode '$mode', defaulting DHCP to false"
+            active="false"
+            dnsmasq_json="[\"${wildcard}\"]"
             ;;
     esac
+
+    log "Configuring Pi-hole DHCP: active=$active for mode=$mode"
+
+    # Step 1: Wait for Pi-hole FTL API to be ready
+    if ! wait_for_pihole_api 30 3; then
+        log_warn "Pi-hole FTL API never became ready -- falling back to pihole.toml direct write"
+        _pihole_dhcp_fallback_toml "$active"
+        return $?
+    fi
+
+    # Step 2: Login to Pi-hole API
+    local sid
+    sid=$(pihole_api_login)
+    if [ $? -ne 0 ] || [ -z "$sid" ]; then
+        log_warn "Pi-hole API login failed -- falling back to pihole.toml direct write"
+        _pihole_dhcp_fallback_toml "$active"
+        return $?
+    fi
+
+    # Step 3: Set DHCP state with retry (5 attempts, 3s sleep)
+    local dhcp_ok=false
+    for attempt in 1 2 3 4 5; do
+        if pihole_api_set_dhcp "$active" "$sid"; then
+            dhcp_ok=true
+            break
+        fi
+        log_warn "DHCP config attempt $attempt/5 failed, retrying in 3s..."
+        sleep 3
+    done
+
+    if [ "$dhcp_ok" = "false" ]; then
+        log_warn "All 5 DHCP config attempts failed -- falling back to pihole.toml direct write"
+        _pihole_dhcp_fallback_toml "$active"
+        return $?
+    fi
+
+    # Step 4: Verify the setting was actually applied
+    local actual
+    actual=$(pihole_api_get_dhcp "$sid")
+    if [ "$actual" != "$active" ]; then
+        log_warn "Pi-hole DHCP verification FAILED: expected=$active, actual=$actual -- falling back to pihole.toml"
+        _pihole_dhcp_fallback_toml "$active"
+        return $?
+    fi
+
+    # Step 5: Set dnsmasq_lines (wildcard DNS + per-mode interface exclusion)
+    if ! pihole_api_set_dnsmasq_lines "$sid" "$dnsmasq_json"; then
+        log_warn "Pi-hole dnsmasq_lines config failed (non-fatal, wildcard DNS may not work)"
+    fi
+
+    log_ok "Pi-hole DHCP verified: active=$active, mode=$mode"
+}
+
+# Fallback: write DHCP state directly to pihole.toml and restart container.
+# Used only when REST API is completely unavailable.
+_pihole_dhcp_fallback_toml() {
+    local active="$1"
+    local toml_path="/cubeos/coreapps/pihole/appdata/etc-pihole/pihole.toml"
+
+    if [ ! -f "$toml_path" ]; then
+        log_warn "pihole.toml not found at $toml_path -- cannot apply fallback"
+        return 1
+    fi
+
+    log_warn "Applying DHCP fallback: writing dhcp.active=$active directly to pihole.toml"
+
+    # Use sed to update the dhcp.active line in the [dhcp] section
+    if grep -q "active = " "$toml_path" 2>/dev/null; then
+        sed -i "s/^  active = .*/  active = $active/" "$toml_path"
+    else
+        log_warn "Could not find 'active = ' line in pihole.toml -- manual fix required"
+        return 1
+    fi
+
+    # Restart Pi-hole container to pick up the change
+    log "Restarting Pi-hole container to apply toml changes..."
+    docker restart cubeos-pihole 2>/dev/null
+    if [ $? -eq 0 ]; then
+        log_ok "Pi-hole restarted with DHCP active=$active (via toml fallback)"
+        # Wait for it to come back
+        sleep 10
+        wait_for_pihole_api 20 3 || log_warn "Pi-hole may not have recovered fully after restart"
+        return 0
+    else
+        log_warn "Pi-hole container restart failed -- DHCP may be in wrong state"
+        return 1
+    fi
 }
 
 apply_network_mode() {

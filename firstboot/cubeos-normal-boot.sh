@@ -143,7 +143,7 @@ protect_hal_port
 # Pi-hole health via DNS check (more reliable, tests actual functionality)
 wait_for "Pi-hole DNS" "dig cubeos.cube @127.0.0.1 +short +time=2 +tries=1" 30 1 || true
 
-# B82: Re-seed DNS on every boot via pihole-FTL --config dns.hosts.
+# Re-seed DNS on every boot via Pi-hole v6 REST API.
 # Pi-hole v6 stores dns.hosts in pihole.toml which persists across restarts,
 # but re-seeding ensures consistency if the container was recreated.
 seed_pihole_dns
@@ -185,9 +185,8 @@ wait_for "API" "curl -sf http://127.0.0.1:6010/health" 30 || true
 # ── Network mode ──────────────────────────────────────────────────────
 apply_network_mode
 
-# Configure Pi-hole DHCP scope for the active network mode (Batch 2)
+# Configure Pi-hole DHCP scope for the active network mode via REST API.
 # Must run after Pi-hole is healthy (checked above).
-# Uses pihole-FTL --config CLI since the CubeOS API may not be ready yet.
 # NET_MODE is set by apply_network_mode -> read_persisted_network_config.
 configure_pihole_dhcp "$NET_MODE"
 

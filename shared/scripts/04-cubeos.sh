@@ -162,6 +162,13 @@ OLLAMA_HOST=10.42.24.1
 CHROMADB_HOST=10.42.24.1
 
 # ===================
+# Platform Settings
+# ===================
+CUBEOS_ACCESS_PROFILE=standard
+CUBEOS_NETWORK_MODE=
+CUBEOS_TIER=full
+
+# ===================
 # User Apps (6100-6999)
 # ===================
 USER_PORT_START=6100

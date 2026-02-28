@@ -455,7 +455,7 @@ DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose \
     -f "${COREAPPS_DIR}/pihole/appconfig/docker-compose.yml" \
     up -d --pull never 2>&1 || log_warn "Pi-hole deploy failed"
 
-wait_for "Pi-hole" "curl -sf http://127.0.0.1:6001/admin/" 90 1 || log_warn "Pi-hole not responding"
+wait_for_pihole_api 30 3 || log_warn "Pi-hole FTL API not ready"
 
 # Seed custom DNS — uses shared CORE_DNS_HOSTS array
 seed_pihole_dns
@@ -617,7 +617,7 @@ log "  Service Status:"
 log "  -------------------------------------------"
 check_status "Docker Swarm                    " "docker info 2>/dev/null | grep -q 'Swarm: active'"
 check_status "hostapd (WiFi AP)               " "systemctl is-active hostapd"
-check_status "Pi-hole (DNS/DHCP)         :6001" "curl -sf http://127.0.0.1:6001/admin/"
+check_status "Pi-hole (DNS/DHCP)         :6001" "curl -sf http://127.0.0.1:6001/api/info/login"
 check_status "NPM (Reverse Proxy)        :81  " "curl -sf http://127.0.0.1:81/api/"
 check_status "HAL (Hardware)             :6005" "curl -sf http://127.0.0.1:6005/health"
 check_status "API (Backend)              :6010" "curl -sf http://127.0.0.1:6010/health"
