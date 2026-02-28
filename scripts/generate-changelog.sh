@@ -6,16 +6,16 @@
 # across user-facing CubeOS repositories using the GitLab Compare API.
 #
 # Usage:
-#   CUBEOS_VERSION=0.2.0-beta.04 bash scripts/generate-changelog.sh
-#   CUBEOS_VERSION=0.2.0-beta.04 PREV_TAG=v0.2.0-beta.03 bash scripts/generate-changelog.sh
-#   CUBEOS_VERSION=0.2.0-beta.04 bash scripts/generate-changelog.sh --full
+#   CUBEOS_VERSION=0.2.0-beta.05 bash scripts/generate-changelog.sh
+#   CUBEOS_VERSION=0.2.0-beta.05 PREV_TAG=v0.2.0-beta.03 bash scripts/generate-changelog.sh
+#   CUBEOS_VERSION=0.2.0-beta.05 bash scripts/generate-changelog.sh --full
 #
 # Modes:
 #   (default)  — outputs a single version entry to stdout
 #   --full     — outputs complete CHANGELOG.md with all beta versions
 #
 # Required env vars:
-#   CUBEOS_VERSION   — Target version (e.g., 0.2.0-beta.04)
+#   CUBEOS_VERSION   — Target version (e.g., 0.2.0-beta.05)
 #   GITLAB_TOKEN     — GitLab API token with read_repository scope
 #
 # Optional env vars:
