@@ -311,6 +311,7 @@ echo "2/9" > "$PROGRESS"
 
 # Detect interfaces first (sets CUBEOS_AP_IFACE, CUBEOS_ETH_IFACE, etc.)
 detect_interfaces
+enforce_bluetooth_coexistence
 
 # T6c-09: Determine default network mode from detected hardware.
 # Decision tree: WiFi+Eth→wifi_router, WiFi-only→offline_hotspot,

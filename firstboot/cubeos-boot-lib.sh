@@ -877,6 +877,47 @@ IFACES_EOF
     log "Interface roles: AP=${CUBEOS_AP_IFACE} Uplink=${CUBEOS_UPLINK_IFACE} WiFi-Client=${CUBEOS_WIFI_CLIENT_IFACE}"
 }
 
+# =============================================================================
+# Bluetooth Coexistence — manage BT based on WiFi AP role
+# =============================================================================
+# Pi's built-in Bluetooth shares SDIO bus with built-in WiFi.
+# When built-in WiFi is AP: disable BT (unless override active)
+# When built-in WiFi is unused (USB took AP) or client: enable BT
+enforce_bluetooth_coexistence() {
+    # Skip if no built-in WiFi detected
+    if [ -z "${CUBEOS_BUILTIN_WIFI:-}" ]; then
+        log "Bluetooth coexistence: no built-in WiFi — skipping"
+        return 0
+    fi
+
+    # Check if rfkill is available
+    if ! command -v rfkill &>/dev/null; then
+        log "Bluetooth coexistence: rfkill not found — skipping"
+        return 0
+    fi
+
+    local bt_override=""
+    if [ -f "${CUBEOS_DB_PATH:-/cubeos/data/cubeos.db}" ]; then
+        bt_override=$(sqlite3 "${CUBEOS_DB_PATH:-/cubeos/data/cubeos.db}" \
+            "SELECT value FROM system_config WHERE key = 'bluetooth_override';" 2>/dev/null || echo "")
+    fi
+
+    if [ "${CUBEOS_AP_IFACE:-}" = "${CUBEOS_BUILTIN_WIFI:-}" ]; then
+        # Built-in WiFi is AP — should disable Bluetooth
+        if [ "$bt_override" = "true" ]; then
+            rfkill unblock bluetooth 2>/dev/null || true
+            log "Bluetooth coexistence: built-in WiFi is AP but override active — BT ENABLED (warning: may degrade AP perf)"
+        else
+            rfkill block bluetooth 2>/dev/null || true
+            log "Bluetooth coexistence: built-in WiFi is AP — BT DISABLED (SDIO bus protection)"
+        fi
+    else
+        # Built-in WiFi is not AP (USB took AP or no AP) — enable Bluetooth
+        rfkill unblock bluetooth 2>/dev/null || true
+        log "Bluetooth coexistence: built-in WiFi not AP — BT ENABLED"
+    fi
+}
+
 # Determine best default mode based on detected hardware.
 # T6c-09: Uses raw detection values (CUBEOS_BUILTIN_WIFI, CUBEOS_DETECTED_ETH)
 # which are empty when hardware is absent, unlike CUBEOS_AP_IFACE/CUBEOS_ETH_IFACE

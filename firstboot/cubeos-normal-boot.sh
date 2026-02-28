@@ -83,6 +83,7 @@ start_watchdog
 
 # ── Detect interfaces ────────────────────────────────────────────────
 detect_interfaces
+enforce_bluetooth_coexistence
 
 # ── AP interface IP ──────────────────────────────────────────────────
 log "Ensuring ${CUBEOS_AP_IFACE} has ${GATEWAY_IP}..."
