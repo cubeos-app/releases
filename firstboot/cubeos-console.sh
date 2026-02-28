@@ -286,9 +286,9 @@ mode_label() {
 # Get the upstream interface for a given mode (matches boot-lib).
 mode_interface() {
     case "$1" in
-        wifi_router|eth_client) echo "eth0" ;;
-        wifi_bridge)            echo "wlan1" ;;
-        wifi_client)            echo "wlan0" ;;
+        wifi_router|eth_client) echo "${CUBEOS_ETH_IFACE:-eth0}" ;;
+        wifi_bridge)            echo "${CUBEOS_WIFI_CLIENT_IFACE:-wlan1}" ;;
+        wifi_client)            echo "${CUBEOS_WIFI_CLIENT_IFACE:-wlan0}" ;;
         android_tether)         echo "usb0" ;;
         offline_hotspot)        echo "none" ;;
         *)                      echo "unknown" ;;
@@ -770,19 +770,19 @@ menu_access_profile() {
         "4" "Back" \
         3>&1 1>&2 2>&3) || return 0
 
+    local new_profile=""
     case "$choice" in
         1)
+            new_profile="standard"
             if ! db_write_access_profile "standard"; then
                 whiptail --title "$TITLE — Error" --msgbox \
                     "Failed to update access profile.\nCheck: ${CONSOLE_LOG}" 8 $WT_WIDTH
                 return 0
             fi
             console_log "Access profile changed to: standard"
-            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
-                "Profile set to: Standard\n\nApps are accessed via IP:port.\nNo DNS records or reverse proxy created.\n\nChanges apply to new app installs.\nExisting apps are not affected." \
-                12 $WT_WIDTH
             ;;
         2)
+            new_profile="advanced"
             whiptail --title "$TITLE — Advanced Profile" --msgbox \
                 "Advanced profile uses your existing NPM and\nPi-hole for DNS and reverse proxy.\n\nConfigure credentials in the web dashboard:\nSettings > Network > Access Profile\n\nSetting profile to Advanced now." \
                 12 $WT_WIDTH
@@ -792,11 +792,9 @@ menu_access_profile() {
                 return 0
             fi
             console_log "Access profile changed to: advanced"
-            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
-                "Profile set to: Advanced\n\nChanges apply to new app installs.\nExisting apps are not affected." \
-                10 $WT_WIDTH
             ;;
         3)
+            new_profile="all_in_one"
             if ! whiptail --title "$TITLE — All-in-One Profile" --yesno \
                 "All-in-One mode enables CubeOS DHCP on your\nnetwork.\n\nWARNING: This may conflict with your existing\nrouter or DHCP server.\n\nOnly use this if CubeOS is your primary\nnetwork device.\n\nContinue?" \
                 14 $WT_WIDTH; then
@@ -808,12 +806,34 @@ menu_access_profile() {
                 return 0
             fi
             console_log "Access profile changed to: all_in_one"
-            whiptail --title "$TITLE — Access Profile Updated" --msgbox \
-                "Profile set to: All-in-One\n\nCubeOS will manage DNS, DHCP, and reverse\nproxy for all apps.\n\nChanges apply to new app installs.\nExisting apps are not affected." \
-                12 $WT_WIDTH
             ;;
         4) return 0 ;;
     esac
+
+    # If the profile actually changed, offer to apply now (reboot)
+    if [ -n "$new_profile" ] && [ "$new_profile" != "$current_profile" ]; then
+        local new_label
+        new_label=$(profile_label "$new_profile")
+        if whiptail --title "$TITLE — Apply Now?" --yesno \
+            "Profile changed to: ${new_label}\n\nApply now? This will reboot the system so\nboot scripts can configure the new profile.\n\nIf you choose No, changes take effect on\nnext reboot." \
+            12 $WT_WIDTH; then
+            console_log "User chose to apply profile change now — rebooting"
+            whiptail --title "$TITLE — Rebooting" --msgbox \
+                "Profile switch requires a reboot.\nRebooting now..." 8 $WT_WIDTH
+            sudo reboot
+        else
+            console_log "User deferred profile change — will apply on next reboot"
+            whiptail --title "$TITLE — Profile Saved" --msgbox \
+                "Profile set to: ${new_label}\n\nChanges will take effect on next reboot.\nNew app installs will use the new profile\nimmediately." \
+                10 $WT_WIDTH
+        fi
+    elif [ -n "$new_profile" ]; then
+        # Same profile selected — just confirm
+        local same_label
+        same_label=$(profile_label "$new_profile")
+        whiptail --title "$TITLE — No Change" --msgbox \
+            "Profile is already: ${same_label}\n\nNo changes needed." 8 $WT_WIDTH
+    fi
 }
 
 
