@@ -2045,11 +2045,11 @@ upload-to-dmz:
         echo ""
         echo "Uploading to ${DMZ}..."
 
-        # Create version directory
-        ssh $SSH_OPTS kyriakosp@${DMZ} "mkdir -p /srv/cubeos-releases/data/${CUBEOS_VERSION}"
+        # Create version directory (o+rx so nginx in container can traverse)
+        ssh $SSH_OPTS kyriakosp@${DMZ} "mkdir -p -m 755 /srv/cubeos-releases/data/${CUBEOS_VERSION}"
 
         # Upload images + checksums
-        rsync -e "ssh $SSH_OPTS" -av --progress \
+        rsync -e "ssh $SSH_OPTS" -av --chmod=D755,F644 --progress \
           "${FULL_FILENAME}" \
           "${FULL_IMAGE_NAME}.img.xz.sha256" \
           "${LITE_FILENAME}" \
