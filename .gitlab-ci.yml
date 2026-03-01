@@ -1301,7 +1301,7 @@ build-image:
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${IMAGE_NAME}.img.xz \
            --connect-timeout 30 \
-           --max-time 1800 \
+           --max-time 3600 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${IMAGE_NAME}.img.xz"
       echo "  Image uploaded."
 
