@@ -355,6 +355,23 @@ recover_swarm() {
     }
 }
 
+# ── Detect docker_gwbridge gateway ───────────────────────────────────
+# docker_gwbridge subnet is assigned by Docker at Swarm init and depends
+# on the address pool in daemon.json.  Detect the actual gateway IP so
+# compose variable substitution (DOCKER_HOST_GW) resolves correctly.
+detect_docker_gateway() {
+    local detected
+    detected=$(docker network inspect docker_gwbridge \
+        --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null) || true
+    if [ -n "$detected" ]; then
+        export DOCKER_HOST_GW="$detected"
+        log "Docker host gateway (detected): ${DOCKER_HOST_GW}"
+    else
+        export DOCKER_HOST_GW="${DOCKER_HOST_GW:-172.16.1.1}"
+        log_warn "Docker host gateway (fallback): ${DOCKER_HOST_GW}"
+    fi
+}
+
 # ── Overlay Network Create (retry-on-create) ────────────────────────
 ensure_overlay_network() {
     # B16 FIX: Retry on CREATE, not on scope verification.

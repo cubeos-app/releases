@@ -466,6 +466,9 @@ if [ "$SWARM_READY" = true ]; then
     ensure_hal_internal_network
 fi
 
+# ── Detect docker_gwbridge gateway for compose variable substitution ──
+detect_docker_gateway
+
 # ── Source image version pins for registry-first deploys ──────────
 source_image_versions
 

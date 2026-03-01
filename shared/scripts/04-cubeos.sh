@@ -118,6 +118,7 @@ DOMAIN=cubeos.cube
 # Network Configuration
 # ===================
 GATEWAY_IP=10.42.24.1
+DOCKER_HOST_GW=172.16.1.1
 SUBNET=10.42.24.0/24
 DHCP_RANGE_START=10.42.24.10
 DHCP_RANGE_END=10.42.24.250

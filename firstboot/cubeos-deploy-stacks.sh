@@ -65,6 +65,20 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
 fi
 echo "[RECOVER] Swarm active."
 
+# ── Detect docker_gwbridge gateway (runtime) ──────────────────────────
+# docker_gwbridge subnet is assigned by Docker at Swarm init and is NOT
+# predictable — it depends on daemon.json address pools.  Detect the
+# actual gateway so compose variable substitution resolves correctly.
+DETECTED_GW=$(docker network inspect docker_gwbridge \
+    --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null) || true
+if [ -n "$DETECTED_GW" ]; then
+    export DOCKER_HOST_GW="$DETECTED_GW"
+    echo "[RECOVER] Docker host gateway (detected): ${DOCKER_HOST_GW}"
+else
+    export DOCKER_HOST_GW="${DOCKER_HOST_GW:-172.16.1.1}"
+    echo "[RECOVER] Docker host gateway (fallback): ${DOCKER_HOST_GW}"
+fi
+
 # ── Ensure overlay network ───────────────────────────────────────────
 NETWORK_EXISTS=$(docker network ls --format '{{.Name}}' | grep -c "^${NETWORK_NAME}$" || true)
 if [ "$NETWORK_EXISTS" -eq 0 ]; then

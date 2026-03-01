@@ -112,6 +112,9 @@ if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     fi
 fi
 
+# ── Detect docker_gwbridge gateway for compose variable substitution ──
+detect_docker_gateway
+
 # ── Compose services ──────────────────────────────────────────────────
 # Check-only loop — skip docker compose up if container is already running.
 # HAL must be running before Swarm stacks (API depends on it).
