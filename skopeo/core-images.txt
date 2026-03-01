@@ -33,3 +33,6 @@ docker.io/sigoden/dufs|latest|dufs.tar
 
 # AI vector DB
 docker.io/chromadb/chroma|latest|chromadb.tar
+
+# MQTT broker (MeshSat gateway bridge)
+docker.io/library/eclipse-mosquitto|latest|mosquitto.tar

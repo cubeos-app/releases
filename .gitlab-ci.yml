@@ -332,8 +332,14 @@ build-image:
           docker://docker.io/chromadb/chroma:latest \
           docker-archive:docker-images/chromadb.tar:chromadb/chroma:latest
         IMG_COUNT=$((IMG_COUNT + 1))
+
+        echo "[full] Mosquitto MQTT..."
+        skopeo copy --override-arch $DOCKER_ARCH --override-os linux --retry-times 3 \
+          docker://docker.io/library/eclipse-mosquitto:latest \
+          docker-archive:docker-images/mosquitto.tar:library/eclipse-mosquitto:latest
+        IMG_COUNT=$((IMG_COUNT + 1))
       else
-        echo "[lite] Skipping full-only images (docsindex, dozzle, dufs, chromadb)"
+        echo "[lite] Skipping full-only images (docsindex, dozzle, dufs, chromadb, mosquitto)"
       fi
 
       echo ""
