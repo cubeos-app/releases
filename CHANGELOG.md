@@ -3,6 +3,57 @@
 All notable changes to CubeOS are documented here.
 This changelog is generated from conventional commits across all CubeOS repositories.
 
+## v0.2.0-beta.05 — 2026-03-01
+
+### API
+
+- Ethernet gate and AP teardown for Standard profile wizard ([ff5896fa](https://github.com/cubeos-app/api/commit/ff5896fa))
+- add reboot step to profile switch and access_url computation ([94a907b5](https://github.com/cubeos-app/api/commit/94a907b5))
+- add WiFi AP whitelist/blacklist proxy endpoints ([f4be1494](https://github.com/cubeos-app/api/commit/f4be1494))
+- Bluetooth coexistence API with override persistence ([da7fccbb](https://github.com/cubeos-app/api/commit/da7fccbb))
+- add dhcp_active field to network status response ([476ca0a4](https://github.com/cubeos-app/api/commit/476ca0a4))
+- add GET /api/v1/setup/preconfiguration endpoint ([0ccde67d](https://github.com/cubeos-app/api/commit/0ccde67d))
+- DHCP reconciliation, verify steps, and infra error handling ([38340039](https://github.com/cubeos-app/api/commit/38340039))
+- replace inline struct with named BluetoothOverrideRequest for swag ([51640d35](https://github.com/cubeos-app/api/commit/51640d35))
+- self-healing Pi-hole auth when Swarm env var has stale password ([eb840598](https://github.com/cubeos-app/api/commit/eb840598))
+
+### Dashboard
+
+- Standard profile Ethernet gate and AP teardown in wizard ([4a7b6812](https://github.com/cubeos-app/dashboard/commit/4a7b6812))
+- add AP teardown dialog for All-in-One to Standard transition ([765a4dc2](https://github.com/cubeos-app/dashboard/commit/765a4dc2))
+- add WiFi interfaces panel in settings ([5989da09](https://github.com/cubeos-app/dashboard/commit/5989da09))
+- add DHCP status to network overview, remove dead SetupWizard ([ec924a03](https://github.com/cubeos-app/dashboard/commit/ec924a03))
+- add pre-configuration adoption to first-boot wizard ([6f41a492](https://github.com/cubeos-app/dashboard/commit/6f41a492))
+
+### HAL
+
+- USB WiFi AP preference with two-stage test and whitelist/blacklist ([dad2cf78](https://github.com/cubeos-app/hal/commit/dad2cf78))
+- Bluetooth/WiFi coexistence management ([50c64877](https://github.com/cubeos-app/hal/commit/50c64877))
+- use detected uplink interface for DHCP nmap probe ([d2974345](https://github.com/cubeos-app/hal/commit/d2974345))
+- replace hardcoded x86_64 arch and NPM URLs with runtime detection ([17d169e9](https://github.com/cubeos-app/hal/commit/17d169e9))
+
+### Core Apps
+
+- Pi-hole healthcheck uses FTL readiness probe instead of /admin/ ([9421ec8e](https://github.com/cubeos-app/coreapps/commit/9421ec8e))
+
+### Releases
+
+- add Apply now? prompt to console TUI profile change ([2f580496](https://github.com/cubeos-app/releases/commit/2f580496))
+- USB WiFi AP preference in boot scripts ([ff971ab8](https://github.com/cubeos-app/releases/commit/ff971ab8))
+- boot-time Bluetooth coexistence enforcement ([54930dee](https://github.com/cubeos-app/releases/commit/54930dee))
+- automated changelog generation from conventional commits ([b0765206](https://github.com/cubeos-app/releases/commit/b0765206))
+- pre-configuration detection engine for Pi Imager, Armbian, custom.toml, LXC ([1473d045](https://github.com/cubeos-app/releases/commit/1473d045))
+- compute website download URLs from version instead of dotenv ([05264e6b](https://github.com/cubeos-app/releases/commit/05264e6b))
+- set world-readable permissions on DMZ upload directories ([7993503c](https://github.com/cubeos-app/releases/commit/7993503c))
+- GitHub pre-release targets correct repo, uploads lite image ([fba35aae](https://github.com/cubeos-app/releases/commit/fba35aae))
+- make upload-to-dmz validate-image needs optional ([574358c9](https://github.com/cubeos-app/releases/commit/574358c9))
+- migrate Pi-hole config to v6 REST API with retry+verify+fallback ([3b4fdc86](https://github.com/cubeos-app/releases/commit/3b4fdc86))
+- use public GitHub mirror URLs for changelog commit links ([eaad216b](https://github.com/cubeos-app/releases/commit/eaad216b))
+- set /cubeos/ directory ownership to cubeos:cubeos ([04d5f718](https://github.com/cubeos-app/releases/commit/04d5f718))
+- increase package registry upload timeout to 3600s ([648d75cb](https://github.com/cubeos-app/releases/commit/648d75cb))
+
+---
+
 ## v0.2.0-beta.04 — 2026-02-28
 
 ### API
