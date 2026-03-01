@@ -90,11 +90,15 @@ TYPE_ORDER=("feat" "fix" "refactor" "perf" "docs" "test" "ci")
 
 # ─── Functions ──────────────────────────────────────────────────────────────
 
-# Detect the previous tag for a given version
+# Detect the previous tag for a given version.
+# If the current version tag exists, returns the tag before it.
+# If the current version tag does NOT exist yet (e.g., generate-changelog runs
+# before tag-all-repos), returns the most recent tag — the Compare API will
+# then compare prev_tag..HEAD (branch tip) instead of prev_tag..current_tag.
 detect_prev_tag() {
   local version="$1"
 
-  # Fetch all tags sorted by version, find the one before current
+  # Fetch all tags sorted by version
   local tags
   tags=$(curl -sf --header "PRIVATE-TOKEN: ${TOKEN}" \
     "${API_URL}/projects/20/repository/tags?per_page=100" \
@@ -112,6 +116,13 @@ detect_prev_tag() {
     fi
     prev="$tag"
   done <<< "$tags"
+
+  # Current version tag doesn't exist yet — return the latest existing tag
+  if [ -n "$prev" ]; then
+    warn "Tag v${version} not found — using latest tag ${prev} as base (will compare to HEAD)"
+    echo "$prev"
+    return 0
+  fi
 
   return 1
 }
@@ -182,9 +193,20 @@ generate_version_entry() {
   local to_tag="v${version}"
   local release_date
 
-  # Get release date from the tag
-  release_date=$(curl -sf --header "PRIVATE-TOKEN: ${TOKEN}" \
+  # Check if the target tag exists; if not, compare against branch HEAD
+  local tag_exists
+  tag_exists=$(curl -sf --header "PRIVATE-TOKEN: ${TOKEN}" \
     "${API_URL}/projects/20/repository/tags/${to_tag}" 2>/dev/null \
+    | jq -r '.name // empty') || true
+
+  if [ -z "$tag_exists" ]; then
+    info "Tag ${to_tag} not found — comparing ${prev_tag}..main (branch HEAD)"
+    to_tag="main"
+  fi
+
+  # Get release date from the tag, or use today if tag doesn't exist
+  release_date=$(curl -sf --header "PRIVATE-TOKEN: ${TOKEN}" \
+    "${API_URL}/projects/20/repository/tags/v${version}" 2>/dev/null \
     | jq -r '.commit.created_at // empty' | cut -dT -f1) || true
 
   if [ -z "$release_date" ]; then

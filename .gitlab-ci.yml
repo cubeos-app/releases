@@ -2002,7 +2002,7 @@ upload-to-dmz:
   script:
     - |
       set -e
-      SSH_OPTS="-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+      SSH_OPTS="-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
 
       echo "============================================================"
       echo "  Upload CubeOS ${CUBEOS_VERSION} to DMZ release servers"
@@ -2050,14 +2050,19 @@ upload-to-dmz:
         # Create version directory (o+rx so nginx in container can traverse)
         ssh $SSH_OPTS kyriakosp@${DMZ} "mkdir -p -m 755 /srv/cubeos-releases/data/${CUBEOS_VERSION}"
 
-        # Upload images + checksums
-        rsync -e "ssh $SSH_OPTS" -av --chmod=D755,F644 --progress \
-          "${FULL_FILENAME}" \
-          "${FULL_IMAGE_NAME}.img.xz.sha256" \
-          "${LITE_FILENAME}" \
-          "${LITE_IMAGE_NAME}.img.xz.sha256" \
-          checksums.sha256 \
-          kyriakosp@${DMZ}:/srv/cubeos-releases/data/${CUBEOS_VERSION}/
+        # Upload images + checksums (retry up to 3 times on failure)
+        for attempt in 1 2 3; do
+          rsync -e "ssh $SSH_OPTS" -av --chmod=D755,F644 --progress --timeout=600 \
+            "${FULL_FILENAME}" \
+            "${FULL_IMAGE_NAME}.img.xz.sha256" \
+            "${LITE_FILENAME}" \
+            "${LITE_IMAGE_NAME}.img.xz.sha256" \
+            checksums.sha256 \
+            kyriakosp@${DMZ}:/srv/cubeos-releases/data/${CUBEOS_VERSION}/ && break || {
+            echo "WARN: rsync attempt $attempt/3 failed (exit $?)"
+            [ $attempt -lt 3 ] && echo "  Retrying in 30s..." && sleep 30 || { echo "ERROR: rsync failed after 3 attempts"; exit 1; }
+          }
+        done
 
         # Update "latest" symlinks
         ssh $SSH_OPTS kyriakosp@${DMZ} "
@@ -2291,14 +2296,14 @@ generate-changelog:
 
       # Generate single version entry (for GitHub release body)
       chmod +x scripts/generate-changelog.sh
-      bash scripts/generate-changelog.sh > changelog-entry.md 2>/dev/null || {
+      bash scripts/generate-changelog.sh > changelog-entry.md || {
         echo "WARN: Changelog entry generation failed — continuing with empty entry."
         echo "*Changelog generation failed for this version.*" > changelog-entry.md
       }
       echo "  changelog-entry.md: $(wc -l < changelog-entry.md) lines"
 
       # Generate full changelog
-      bash scripts/generate-changelog.sh --full > CHANGELOG.md 2>/dev/null || {
+      bash scripts/generate-changelog.sh --full > CHANGELOG.md || {
         echo "WARN: Full changelog generation failed — using single entry."
         cp changelog-entry.md CHANGELOG.md
       }
