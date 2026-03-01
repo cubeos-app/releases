@@ -906,14 +906,17 @@ enforce_bluetooth_coexistence() {
         # Built-in WiFi is AP — should disable Bluetooth
         if [ "$bt_override" = "true" ]; then
             rfkill unblock bluetooth 2>/dev/null || true
+            systemctl enable --now bluetooth 2>/dev/null || true
             log "Bluetooth coexistence: built-in WiFi is AP but override active — BT ENABLED (warning: may degrade AP perf)"
         else
             rfkill block bluetooth 2>/dev/null || true
+            systemctl disable --now bluetooth 2>/dev/null || true
             log "Bluetooth coexistence: built-in WiFi is AP — BT DISABLED (SDIO bus protection)"
         fi
     else
         # Built-in WiFi is not AP (USB took AP or no AP) — enable Bluetooth
         rfkill unblock bluetooth 2>/dev/null || true
+        systemctl enable --now bluetooth 2>/dev/null || true
         log "Bluetooth coexistence: built-in WiFi not AP — BT ENABLED"
     fi
 }
