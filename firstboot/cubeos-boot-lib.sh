@@ -1237,6 +1237,11 @@ NETPLAN_SERVER_ETH
                     echo "network:"
                     echo "  version: 2"
                     echo "  renderer: networkd"
+                    echo "  ethernets:"
+                    echo "    ${CUBEOS_ETH_IFACE:-eth0}:"
+                    echo "      dhcp4: true"
+                    echo "      dhcp-identifier: mac"
+                    echo "      optional: true"
                     echo "  wifis:"
                     echo "    ${AP_IF}:"
                     echo "      addresses:"
@@ -1257,9 +1262,15 @@ NETPLAN_SERVER_ETH
 network:
   version: 2
   renderer: networkd
+  ethernets:
+    ${CUBEOS_ETH_IFACE:-eth0}:
+      dhcp4: true
+      dhcp-identifier: mac
+      optional: true
   wifis:
     ${AP_IF}:
       dhcp4: true
+      dhcp-identifier: mac
       optional: true
       access-points:
         "${wifi_ssid}":
