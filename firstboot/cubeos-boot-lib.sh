@@ -1149,6 +1149,7 @@ network:
   wifis:
     ${WIFI_CLIENT_IF}:
       dhcp4: true
+      dhcp-identifier: mac
       optional: true
       dhcp4-overrides:
         use-dns: false
