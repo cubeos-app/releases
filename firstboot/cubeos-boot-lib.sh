@@ -1319,7 +1319,19 @@ configure_pihole_dhcp() {
         return 1
     fi
 
-    # Determine DHCP state and dnsmasq_lines for the mode
+    # Phase 12: All-in-One managed interface override.
+    # When AIO_MANAGED_INTERFACE=ethernet, enable DHCP on the Ethernet interface
+    # regardless of network mode. This allows wired-only All-in-One setups.
+    local aio_iface="${AIO_MANAGED_INTERFACE:-}"
+    if [ "$aio_iface" = "ethernet" ]; then
+        log "Phase 12: AIO managed interface = ethernet -- enabling DHCP on Ethernet"
+        active="true"
+        # Serve DHCP on Ethernet, exclude WiFi interfaces
+        dnsmasq_json="[\"${wildcard}\",\"no-dhcp-interface=${CUBEOS_AP_IFACE:-wlan0}\"]"
+    fi
+
+    # Determine DHCP state and dnsmasq_lines for the mode (skip if already set by AIO ethernet override)
+    if [ "$aio_iface" != "ethernet" ]; then
     case "$mode" in
         offline_hotspot)
             active="true"
@@ -1347,6 +1359,7 @@ configure_pihole_dhcp() {
             dnsmasq_json="[\"${wildcard}\"]"
             ;;
     esac
+    fi
 
     log "Configuring Pi-hole DHCP: active=$active for mode=$mode"
 

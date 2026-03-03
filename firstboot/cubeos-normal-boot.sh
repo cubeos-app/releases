@@ -71,6 +71,12 @@ fi
 source "${CONFIG_DIR}/defaults.env" 2>/dev/null || true
 source_image_versions
 
+# Phase 12: Read AIO managed interface setting (set by wizard when all_in_one profile)
+# Used by configure_pihole_dhcp() to enable DHCP on Ethernet for wired-only setups.
+AIO_MANAGED_INTERFACE="${AIO_MANAGED_INTERFACE:-}"
+AIO_TLS_MODE="${AIO_TLS_MODE:-http}"
+export AIO_MANAGED_INTERFACE AIO_TLS_MODE
+
 log "============================================================"
 log "  CubeOS Normal Boot -- v${CUBEOS_VERSION:-unknown}"
 log "  $(date)"
@@ -185,6 +191,16 @@ if docker info 2>/dev/null | grep -q "Swarm: active"; then
 fi
 
 wait_for "API" "curl -sf http://127.0.0.1:6010/health" 30 || true
+
+# Phase 12: Ensure self-signed CA exists if configured
+if [ "${AIO_TLS_MODE:-}" = "self_signed_ca" ]; then
+    if [ ! -f /cubeos/config/tls/ca.crt ]; then
+        log "Phase 12: Generating missing self-signed CA..."
+        curl -sf -X POST http://127.0.0.1:6010/api/v1/system/tls/generate-ca 2>/dev/null && \
+            log_ok "Self-signed CA generated" || \
+            log_warn "CA generation failed (will retry next boot)"
+    fi
+fi
 
 # ── Network mode ──────────────────────────────────────────────────────
 apply_network_mode
