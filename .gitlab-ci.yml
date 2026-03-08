@@ -1462,8 +1462,9 @@ validate-image:
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_COMMIT_MESSAGE =~ /^chore: bump version to /'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
   script:
     - |
       set -e
