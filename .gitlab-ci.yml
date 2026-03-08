@@ -37,9 +37,11 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - curl/install.sh                                            # install.sh change → sync-installer
+    - if: '$CI_COMMIT_BRANCH'                                        # All branch pushes → consistency check
     - when: never                                                    # Everything else → no pipeline
 
 stages:
+  - lint        # Pre-build consistency check
   - build
   - validate    # Post-build filesystem inspection (QEMU mount, no boot)
   - boot-test   # QEMU boot verification (x86_64 only)
@@ -58,6 +60,95 @@ variables:
   BASE_IMAGE_NAME: "cubeos-base-ubuntu24.04.3-arm64"
   # GitHub mirror repo for release asset uploads
   GITHUB_REPO: "cubeos-app/releases"
+
+# =============================================================================
+# CONSISTENCY CHECK — CubeOS critical rules gate
+# =============================================================================
+lint:consistency:
+  stage: lint
+  image: alpine:latest
+  tags: [multiarch]
+  variables:
+    GIT_DEPTH: 50
+  before_script:
+    - apk add --no-cache git bash
+  script:
+    - |
+      bash <<'CONSISTENCY_CHECK'
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        DIFF=$(git diff HEAD~1 HEAD 2>/dev/null || echo "")
+      else
+        git fetch origin main --depth=50 2>/dev/null || true
+        DIFF=$(git diff origin/main...HEAD 2>/dev/null || git diff HEAD~1 HEAD 2>/dev/null || echo "")
+      fi
+
+      # Filter out the consistency check script's own lines to prevent false positives
+      DIFF=$(echo "$DIFF" | grep -v 'VIOLATIONS+=\|WARNINGS+=\|CONSISTENCY_CHECK\|grep.*-[cq]E' || echo "$DIFF")
+
+      if [ -z "$DIFF" ]; then
+        echo "No diff to check. Skipping."
+        exit 0
+      fi
+
+      REPO_NAME="releases"
+      VIOLATIONS=()
+      WARNINGS=()
+
+      # Rule 1: HAL boundary (shell scripts could call systemctl)
+      if echo "$DIFF" | grep -qE '^\+.*\bnsenter\b'; then
+        VIOLATIONS+=("HAL boundary: nsenter found — all host ops must go through HAL")
+      fi
+      if echo "$DIFF" | grep -qE '^\+.*systemctl'; then
+        VIOLATIONS+=("HAL boundary: direct systemctl call — use HAL REST endpoint")
+      fi
+
+      # Rule 3: docker run
+      if echo "$DIFF" | grep -E '^\+\s*docker run ' | grep -qvE '(#|comment)'; then
+        VIOLATIONS+=("Orchestration: docker run found — use docker stack deploy")
+      fi
+
+      # Rule 6: Pi-hole deprecated CLI
+      if echo "$DIFF" | grep -qE '^\+.*(pihole -a|pihole --|pihole reloaddns|docker exec.*pihole.*--config)'; then
+        VIOLATIONS+=("Pi-hole: deprecated CLI — use v6 REST API at port 6001")
+      fi
+
+      # Packer trigger format guard
+      if echo "$CI_COMMIT_MESSAGE" | grep -qiE 'bump version'; then
+        if ! echo "$CI_COMMIT_MESSAGE" | grep -qE '^chore: bump version to v[0-9]+\.[0-9]+\.[0-9]'; then
+          VIOLATIONS+=("Packer: commit looks like a version bump but format is wrong — must be 'chore: bump version to vX.Y.Z'")
+        fi
+      fi
+
+      # Rule 8: YouTrack issue ID
+      if ! echo "$CI_COMMIT_MESSAGE" | grep -qE '\[CUBEOS-[0-9]+\]'; then
+        if ! echo "$CI_COMMIT_MESSAGE" | grep -qE '^chore: bump version'; then
+          WARNINGS+=("Traceability: commit has no [CUBEOS-XX] reference")
+        fi
+      fi
+
+      echo ""
+      echo "=== Consistency Check: $REPO_NAME ==="
+      if [ ${#VIOLATIONS[@]} -gt 0 ]; then
+        echo "VIOLATIONS (pipeline blocked):"
+        for v in "${VIOLATIONS[@]}"; do echo "  [BLOCK] $v"; done
+      fi
+      if [ ${#WARNINGS[@]} -gt 0 ]; then
+        echo "WARNINGS (review recommended):"
+        for w in "${WARNINGS[@]}"; do echo "  [WARN]  $w"; done
+      fi
+      if [ ${#VIOLATIONS[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ]; then
+        echo "  All checks passed."
+      fi
+      echo ""
+      if [ ${#VIOLATIONS[@]} -gt 0 ]; then
+        echo "FAILED: ${#VIOLATIONS[@]} violation(s). Fix before merging."
+        exit 1
+      fi
+      echo "PASSED"
+      CONSISTENCY_CHECK
+  rules:
+    - when: always
+  allow_failure: false
 
 # =============================================================================
 # Build Release Image (Full + Lite variants via parallel matrix)
