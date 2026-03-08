@@ -37,7 +37,7 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - curl/install.sh                                            # install.sh change → sync-installer
-    - if: '$CI_COMMIT_BRANCH'                                        # All branch pushes → consistency check
+    - if: '$CI_COMMIT_BRANCH == "main"'                              # All main pushes → consistency check
     - when: never                                                    # Everything else → no pipeline
 
 stages:
@@ -1450,6 +1450,7 @@ validate-image:
   needs:
     - job: build-image
       artifacts: true
+      optional: true
   parallel:
     matrix:
       - CUBEOS_PLATFORM: "raspberrypi"
@@ -2977,6 +2978,7 @@ tag-all-repos:
   needs:
     - job: upload-to-dmz
       artifacts: false
+      optional: true
   script:
     - apk add --no-cache curl jq
     - |
