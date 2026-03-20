@@ -34,10 +34,10 @@ mkdir -p "$(dirname "$OUTPUT")"
 FULL_IMG="cubeos-${VERSION}-arm64"
 if [ -f "${FULL_IMG}.img" ] && [ -f "${FULL_IMG}.img.xz" ]; then
     FULL_CHECKSUMS=$(bash "${SCRIPT_DIR}/calculate-checksums.sh" "$FULL_IMG")
-    FULL_EXTRACT_SIZE=$(echo "$FULL_CHECKSUMS" | grep extract_size | grep -oP '\d+')
-    FULL_EXTRACT_SHA=$(echo "$FULL_CHECKSUMS" | grep extract_sha256 | grep -oP '[a-f0-9]{64}')
-    FULL_DL_SIZE=$(echo "$FULL_CHECKSUMS" | grep image_download_size | grep -oP '\d+')
-    FULL_DL_SHA=$(echo "$FULL_CHECKSUMS" | grep image_download_sha256 | grep -oP '[a-f0-9]{64}')
+    FULL_EXTRACT_SIZE=$(echo "$FULL_CHECKSUMS" | grep extract_size | sed 's/[^0-9]//g')
+    FULL_EXTRACT_SHA=$(echo "$FULL_CHECKSUMS" | grep extract_sha256 | sed 's/.*[^a-f0-9]\([a-f0-9]\{64\}\).*/\1/')
+    FULL_DL_SIZE=$(echo "$FULL_CHECKSUMS" | grep image_download_size | sed 's/[^0-9]//g')
+    FULL_DL_SHA=$(echo "$FULL_CHECKSUMS" | grep image_download_sha256 | sed 's/.*[^a-f0-9]\([a-f0-9]\{64\}\).*/\1/')
 else
     echo "WARNING: Full image not found, using placeholders" >&2
     FULL_EXTRACT_SIZE=0; FULL_EXTRACT_SHA="PLACEHOLDER"; FULL_DL_SIZE=0; FULL_DL_SHA="PLACEHOLDER"
@@ -47,10 +47,10 @@ fi
 LITE_IMG="cubeos-${VERSION}-lite-arm64"
 if [ -f "${LITE_IMG}.img" ] && [ -f "${LITE_IMG}.img.xz" ]; then
     LITE_CHECKSUMS=$(bash "${SCRIPT_DIR}/calculate-checksums.sh" "$LITE_IMG")
-    LITE_EXTRACT_SIZE=$(echo "$LITE_CHECKSUMS" | grep extract_size | grep -oP '\d+')
-    LITE_EXTRACT_SHA=$(echo "$LITE_CHECKSUMS" | grep extract_sha256 | grep -oP '[a-f0-9]{64}')
-    LITE_DL_SIZE=$(echo "$LITE_CHECKSUMS" | grep image_download_size | grep -oP '\d+')
-    LITE_DL_SHA=$(echo "$LITE_CHECKSUMS" | grep image_download_sha256 | grep -oP '[a-f0-9]{64}')
+    LITE_EXTRACT_SIZE=$(echo "$LITE_CHECKSUMS" | grep extract_size | sed 's/[^0-9]//g')
+    LITE_EXTRACT_SHA=$(echo "$LITE_CHECKSUMS" | grep extract_sha256 | sed 's/.*[^a-f0-9]\([a-f0-9]\{64\}\).*/\1/')
+    LITE_DL_SIZE=$(echo "$LITE_CHECKSUMS" | grep image_download_size | sed 's/[^0-9]//g')
+    LITE_DL_SHA=$(echo "$LITE_CHECKSUMS" | grep image_download_sha256 | sed 's/.*[^a-f0-9]\([a-f0-9]\{64\}\).*/\1/')
 else
     echo "WARNING: Lite image not found, using placeholders" >&2
     LITE_EXTRACT_SIZE=0; LITE_EXTRACT_SHA="PLACEHOLDER"; LITE_DL_SIZE=0; LITE_DL_SHA="PLACEHOLDER"
