@@ -133,6 +133,7 @@ build {
       "shared/scripts/05-docker-preload.sh",
       "shared/scripts/08-pihole-seed.sh",
       "shared/scripts/06-firstboot-service.sh",
+      "platforms/bananapim4zero/scripts/09-console-gui.sh",
       "platforms/bananapim4zero/scripts/09-board-config.sh",
       "shared/scripts/07-cleanup.sh",
     ]
