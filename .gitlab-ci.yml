@@ -2297,7 +2297,9 @@ create-github-prerelease:
       BANANA_LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}"
       CHECKSUMS_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/checksums.sha256"
 
-      # Download lite image from GitLab Package Registry to upload as GitHub asset
+      # Download lite images from GitLab Package Registry to upload as GitHub assets
+      # (lite images are <2GB so they can be GitHub release assets; full images are
+      # >2GB so they are linked to releases.cubeos.app instead)
       echo "Downloading ${LITE_FILENAME} from Package Registry..."
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            -o "${LITE_FILENAME}" \
@@ -2307,14 +2309,30 @@ create-github-prerelease:
       LITE_SIZE=$(stat -c%s "${LITE_FILENAME}")
       echo "  Downloaded ${LITE_FILENAME} ($(( LITE_SIZE / 1048576 )) MiB)"
 
-      # Also download lite checksum
+      echo "Downloading ${BANANA_LITE_FILENAME} from Package Registry..."
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${BANANA_LITE_FILENAME}" \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}"
+      BANANA_LITE_SIZE=$(stat -c%s "${BANANA_LITE_FILENAME}")
+      echo "  Downloaded ${BANANA_LITE_FILENAME} ($(( BANANA_LITE_SIZE / 1048576 )) MiB)"
+
+      # Download lite checksums
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            -o "${LITE_FILENAME}.sha256" \
            --connect-timeout 30 \
            --retry 3 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${LITE_FILENAME}.sha256"
 
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o "${BANANA_LITE_FILENAME}.sha256" \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}.sha256"
+
       LITE_SHA256=$(cut -d' ' -f1 "${LITE_FILENAME}.sha256")
+      BANANA_LITE_SHA256=$(cut -d' ' -f1 "${BANANA_LITE_FILENAME}.sha256")
 
       RELEASE_BODY="## CubeOS v${CUBEOS_VERSION}
 
@@ -2329,14 +2347,15 @@ create-github-prerelease:
 
       ### Download — BananaPi BPI-M4 Zero
 
-      | Variant | Link |
-      |---------|------|
-      | **Full** | [Download from releases.cubeos.app](${BANANA_FULL_URL}) |
-      | **Lite** | [Download from releases.cubeos.app](${BANANA_LITE_URL}) |
+      | Variant | Link | Size |
+      |---------|------|------|
+      | **Full** | [Download from releases.cubeos.app](${BANANA_FULL_URL}) | ~2.0 GB |
+      | **Lite** | Attached below as Release Asset | ~1.6 GB |
 
       **SHA256 Checksums:** [checksums.sha256](${CHECKSUMS_URL})
 
-      Lite SHA256 (Pi): \`${LITE_SHA256}\`
+      Pi Lite SHA256: \`${LITE_SHA256}\`
+      BPI-M4 Zero Lite SHA256: \`${BANANA_LITE_SHA256}\`
 
       ### Install via curl (any Linux machine)
       \`\`\`bash
@@ -2399,27 +2418,37 @@ create-github-prerelease:
         echo "  Pre-release created (ID: ${RELEASE_ID})."
       fi
 
-      # Delete any existing lite asset (from a previous failed/retried run)
+      # Delete any existing lite assets (from a previous failed/retried run)
       EXISTING_ASSETS=$(curl -s \
         -H "Authorization: token ${GHCR_TOKEN}" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${GH_REPO}/releases/${RELEASE_ID}/assets")
-      OLD_ASSET_ID=$(echo "$EXISTING_ASSETS" | jq -r ".[] | select(.name == \"${LITE_FILENAME}\") | .id // empty")
-      if [ -n "$OLD_ASSET_ID" ]; then
-        echo "  Deleting old asset (ID: ${OLD_ASSET_ID})..."
-        curl -s -X DELETE \
-          -H "Authorization: token ${GHCR_TOKEN}" \
-          "https://api.github.com/repos/${GH_REPO}/releases/assets/${OLD_ASSET_ID}" > /dev/null
-      fi
+      for ASSET_NAME in "${LITE_FILENAME}" "${BANANA_LITE_FILENAME}"; do
+        OLD_ASSET_ID=$(echo "$EXISTING_ASSETS" | jq -r ".[] | select(.name == \"${ASSET_NAME}\") | .id // empty")
+        if [ -n "$OLD_ASSET_ID" ]; then
+          echo "  Deleting old asset ${ASSET_NAME} (ID: ${OLD_ASSET_ID})..."
+          curl -s -X DELETE \
+            -H "Authorization: token ${GHCR_TOKEN}" \
+            "https://api.github.com/repos/${GH_REPO}/releases/assets/${OLD_ASSET_ID}" > /dev/null
+        fi
+      done
 
-      # Upload lite image as release asset
+      # Upload lite images as release assets (<2GB each)
       echo "Uploading ${LITE_FILENAME} as release asset..."
       curl --fail -X POST \
         -H "Authorization: token ${GHCR_TOKEN}" \
         -H "Content-Type: application/x-xz" \
         --data-binary "@${LITE_FILENAME}" \
         "https://uploads.github.com/repos/${GH_REPO}/releases/${RELEASE_ID}/assets?name=${LITE_FILENAME}" > /dev/null
-      echo "  Lite image uploaded."
+      echo "  Pi Lite image uploaded."
+
+      echo "Uploading ${BANANA_LITE_FILENAME} as release asset..."
+      curl --fail -X POST \
+        -H "Authorization: token ${GHCR_TOKEN}" \
+        -H "Content-Type: application/x-xz" \
+        --data-binary "@${BANANA_LITE_FILENAME}" \
+        "https://uploads.github.com/repos/${GH_REPO}/releases/${RELEASE_ID}/assets?name=${BANANA_LITE_FILENAME}" > /dev/null
+      echo "  BananaPi Lite image uploaded."
 
       echo "  https://github.com/${GH_REPO}/releases/tag/v${CUBEOS_VERSION}"
   allow_failure: true
@@ -2829,15 +2858,15 @@ create-github-release:
 
       | File | Link | Size |
       |------|------|------|
-      | Full image (all services) | [${FULL_IMAGE_NAME}.img.xz](${FULL_URL}) | ${FULL_SIZE} |
-      | Lite image (minimal) | [${LITE_IMAGE_NAME}.img.xz](${LITE_URL}) | ${LITE_SIZE} |
+      | Full image (all services) | [Download from releases.cubeos.app](${FULL_URL}) | ${FULL_SIZE} |
+      | Lite image (minimal) | Attached below as Release Asset | ${LITE_SIZE} |
 
       ### Download — BananaPi BPI-M4 Zero
 
       | File | Link | Size |
       |------|------|------|
-      | Full image (all services) | [${BANANA_FULL_IMAGE_NAME}.img.xz](${BANANA_FULL_URL}) | ${BANANA_FULL_SIZE} |
-      | Lite image (minimal) | [${BANANA_LITE_IMAGE_NAME}.img.xz](${BANANA_LITE_URL}) | ${BANANA_LITE_SIZE} |
+      | Full image (all services) | [Download from releases.cubeos.app](${BANANA_FULL_URL}) | ${BANANA_FULL_SIZE} |
+      | Lite image (minimal) | Attached below as Release Asset | ${BANANA_LITE_SIZE} |
 
       **SHA256 checksums:** [checksums.sha256](${CHECKSUMS_URL})
 
