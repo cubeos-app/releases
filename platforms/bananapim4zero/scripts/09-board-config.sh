@@ -11,8 +11,7 @@
 # Storage: 32GB eMMC (/dev/mmcblk1) + microSD (/dev/mmcblk0)
 # WiFi: Built-in (RTL8821CS or similar) — not configured for AP yet
 #
-# TODO: Verify armbianEnv.txt settings on real BPI-M4 Zero hardware
-# TODO: Verify eMMC device path (/dev/mmcblk1)
+# NOTE: armbianEnv.txt settings and eMMC path (/dev/mmcblk1) need hardware verification
 # =============================================================================
 set -euo pipefail
 echo "=== [09] BPI-M4 Zero Board Configuration (Allwinner H618) ==="

@@ -13,14 +13,9 @@
 # NOTE: This is a DIFFERENT board from BPI-M5 (Amlogic S905X3, no WiFi).
 #       The M4 Zero uses Allwinner H618 (quad-core Cortex-A53, 1.5GHz).
 #
-# STATUS: PLACEHOLDER — will not build until:
-#   1. Base image URL is verified (Armbian releases change frequently)
-#   2. Partition layout is confirmed on real hardware
-#   3. Package list is verified for Armbian
-#
-# TODO: Verify base image URL at https://www.armbian.com/bananapi-m4-zero/
-# TODO: Verify partition start sector matches Armbian H618 image layout
-# TODO: Test on real BPI-M4 Zero hardware
+# Base image: Armbian 26.2.1 Noble minimal (kernel 6.12.68), pinned 2026-03-20
+# Partition start_sector 32768 is standard for Armbian sunxi64 builds.
+# TODO: Verify partition start sector on real BPI-M4 Zero hardware
 # TODO: Add WiFi AP mode support (board has built-in WiFi)
 # =============================================================================
 
@@ -42,23 +37,19 @@ variable "image_size" {
 
 variable "base_image_url" {
   type    = string
-  default = "https://dl.armbian.com/bananapim4zero/Noble_current_minimal"
-  # Armbian minimal/IoT image for BPI-M4 Zero (Allwinner H618)
-  # Alternative: https://dl.armbian.com/bananapim4zero/Noble_current_server
-  # TODO: Pin to a specific version once verified on hardware
-  #       e.g. https://dl.armbian.com/bananapim4zero/archive/Armbian_25.x.y_Bananapim4zero_noble_current_6.12.z.img.xz
+  default = "https://dl.armbian.com/bananapim4zero/archive/Armbian_26.2.1_Bananapim4zero_noble_current_6.12.68_minimal.img.xz"
+  # Armbian minimal image for BPI-M4 Zero (Allwinner H618), pinned 2026-03-20
+  # Rolling URL: https://dl.armbian.com/bananapim4zero/Noble_current_minimal
 }
 
 variable "base_image_checksum" {
   type    = string
-  default = ""
-  # TODO: Download SHA256 from Armbian and set here
+  default = "6427a31dd29f85f3eb5ee3af619140a0b213b7600e8afe63124969556b7cf7d9"
 }
 
 variable "base_image_checksum_type" {
   type    = string
-  default = "none"
-  # Set to "sha256" when checksum is available
+  default = "sha256"
 }
 
 source "arm" "cubeos-bananapim4zero" {
@@ -75,7 +66,6 @@ source "arm" "cubeos-bananapim4zero" {
 
   # Armbian partition layout — single root partition
   # Boot files live in /boot on the root partition (not a separate FAT partition)
-  # TODO: Verify start_sector matches the actual Armbian H618 image layout
   image_partitions {
     name         = "root"
     type         = "83"

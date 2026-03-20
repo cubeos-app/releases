@@ -20,12 +20,12 @@ Builds CubeOS images for BananaPi BPI-M4 Zero using Armbian as the base OS.
 
 ## Status
 
-**PLACEHOLDER** — this template will not build successfully until:
+**Buildable** — base image pinned to Armbian 26.2.1 (Noble, kernel 6.12.68) with SHA256 checksum.
 
-1. Base image URL is pinned to a specific Armbian version
-2. Partition layout is confirmed on real hardware
-3. eMMC device path (/dev/mmcblk1) is verified
-4. Board-specific armbianEnv.txt settings are validated
+Remaining hardware verification needed:
+- Partition start sector (32768) — confirm on real BPI-M4 Zero
+- eMMC device path (/dev/mmcblk1) — confirm at runtime
+- WiFi AP mode (RTL8821CS) — not yet configured
 
 ## Prerequisites
 
