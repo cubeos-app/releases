@@ -523,15 +523,26 @@ build-image:
       echo "  Phase 0c: Download golden base image"
       echo "============================================================"
 
+      # Platform-specific golden base: Pi uses cubeos-base, M4 Zero uses cubeos-base-armbian
+      if [ "$CUBEOS_PLATFORM" = "bananapim4zero" ]; then
+        DL_PKG="cubeos-base-armbian"
+        DL_VER="1.0.0"
+        DL_NAME="cubeos-base-armbian-noble-arm64"
+      else
+        DL_PKG="cubeos-base"
+        DL_VER="${BASE_VERSION}"
+        DL_NAME="${BASE_IMAGE_NAME}"
+      fi
+
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            -o cubeos-base.img.xz \
            --connect-timeout 30 \
            --max-time 3600 \
            --retry 3 \
            --retry-delay 10 \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos-base/${BASE_VERSION}/${BASE_IMAGE_NAME}.img.xz"
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${DL_PKG}/${DL_VER}/${DL_NAME}.img.xz"
       ls -lh cubeos-base.img.xz
-      echo "Base image: OK"
+      echo "Base image: OK (${DL_PKG}/${DL_VER})"
     - |
       set -e
       # Re-export IMAGE_NAME (each script block is a new shell)

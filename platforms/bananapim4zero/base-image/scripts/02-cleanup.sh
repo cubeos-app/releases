@@ -1,0 +1,187 @@
+#!/bin/bash
+# =============================================================================
+# 02-cleanup.sh — Golden base image cleanup (Armbian BPI-M4 Zero)
+# =============================================================================
+# Clears caches, removes unnecessary files, and optimizes for compression.
+# Same as Pi cleanup but without Pi-specific binary checks.
+# =============================================================================
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+export TERM=dumb
+
+echo "=== [BASE-CLEANUP] Cleaning Armbian base image ==="
+
+# ---------------------------------------------------------------------------
+# Protect critical packages from autoremove
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Protecting critical packages..."
+for pkg in util-linux-extra sqlite3 i2c-tools usbutils \
+           hostapd dnsmasq iw wireless-tools rfkill avahi-daemon avahi-utils \
+           modemmanager libqmi-utils libmbim-utils usb-modeswitch usb-modeswitch-data \
+           gpsd chrony openvpn tor smbclient plocate picocom \
+           smartmontools ethtool wireguard-tools zram-tools \
+           exfatprogs ntfs-3g bc wpasupplicant networkd-dispatcher \
+           libpam-modules libpam-runtime openssh-server fail2ban \
+           python3-pyasyncore isc-dhcp-client \
+           bluez bluez-tools rtl-sdr alsa-utils lm-sensors \
+           apparmor-utils udisks2 \
+           nvme-cli mdadm lvm2 cryptsetup btrfs-progs xfsprogs hdparm fio \
+           samba nfs-kernel-server \
+           drbd-utils ocfs2-tools; do
+    apt-mark manual "$pkg" 2>/dev/null || true
+done
+
+# ---------------------------------------------------------------------------
+# APT cleanup
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Running autoremove..."
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" autoremove -y 2>&1 | tail -5
+
+echo "[BASE-CLEANUP] Cleaning APT cache..."
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+rm -rf /var/cache/apt/archives/*.deb
+
+# ---------------------------------------------------------------------------
+# Post-autoremove verification
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Verifying critical packages survived autoremove..."
+MISSING=0
+
+for cmd_pkg in "hwclock:util-linux-extra" "sqlite3:sqlite3" "i2cdetect:i2c-tools" \
+               "lsusb:usbutils" "mmcli:modemmanager" "hostapd:hostapd" \
+               "chronyd:chrony" "fail2ban-server:fail2ban" \
+               "dhclient:isc-dhcp-client"; do
+    cmd="${cmd_pkg%%:*}"
+    pkg="${cmd_pkg##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "[BASE-CLEANUP]   MISSING: $cmd ($pkg) — attempting reinstall..."
+        apt-get update -q >/dev/null 2>&1 || true
+        apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || true
+        apt-mark manual "$pkg" 2>/dev/null || true
+        MISSING=$((MISSING + 1))
+    fi
+done
+
+for cmd_pkg in "bluetoothctl:bluez" "rtl_test:rtl-sdr" "aplay:alsa-utils" \
+               "sensors:lm-sensors" "aa-status:apparmor-utils" \
+               "udisksctl:udisks2"; do
+    cmd="${cmd_pkg%%:*}"
+    pkg="${cmd_pkg##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "[BASE-CLEANUP]   MISSING: $cmd ($pkg) — attempting reinstall..."
+        apt-get update -q >/dev/null 2>&1 || true
+        apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || true
+        apt-mark manual "$pkg" 2>/dev/null || true
+        MISSING=$((MISSING + 1))
+    fi
+done
+
+for cmd_pkg in "nvme:nvme-cli" "mdadm:mdadm" "pvcreate:lvm2" \
+               "cryptsetup:cryptsetup" "mkfs.btrfs:btrfs-progs" \
+               "mkfs.xfs:xfsprogs" "hdparm:hdparm" "fio:fio" \
+               "smbd:samba" "exportfs:nfs-kernel-server"; do
+    cmd="${cmd_pkg%%:*}"
+    pkg="${cmd_pkg##*:}"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "[BASE-CLEANUP]   MISSING: $cmd ($pkg) — attempting reinstall..."
+        apt-get update -q >/dev/null 2>&1 || true
+        apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || true
+        apt-mark manual "$pkg" 2>/dev/null || true
+        MISSING=$((MISSING + 1))
+    fi
+done
+
+# B65: asynchat/asyncore
+if ! python3 -c "import asynchat; import asyncore" 2>/dev/null; then
+    echo "[BASE-CLEANUP]   MISSING: asynchat/asyncore — attempting reinstall..."
+    apt-get update -q >/dev/null 2>&1 || true
+    if ! apt-get install -y --no-install-recommends python3-pyasyncore python3-pyasynchat 2>/dev/null; then
+        python3 -m ensurepip --upgrade 2>/dev/null || true
+        python3 -m pip install pyasyncore pyasynchat --break-system-packages 2>/dev/null || true
+        python3 -m pip cache purge 2>/dev/null || true
+        rm -rf /root/.cache/pip 2>/dev/null || true
+    fi
+    apt-mark manual python3-pyasyncore python3-pyasynchat 2>/dev/null || true
+    MISSING=$((MISSING + 1))
+fi
+
+if [ "$MISSING" -gt 0 ]; then
+    echo "[BASE-CLEANUP]   Reinstalled $MISSING packages stripped by autoremove"
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+else
+    echo "[BASE-CLEANUP]   All critical packages intact"
+fi
+
+# ---------------------------------------------------------------------------
+# Locale cleanup — keep only English (saves ~100MB)
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Purging non-English locales..."
+find /usr/share/locale -maxdepth 1 -mindepth 1 \
+    ! -name 'en' ! -name 'en_US' ! -name 'en_GB' ! -name 'locale.alias' \
+    -exec rm -rf {} + 2>/dev/null || true
+LOCALE_SIZE=$(du -sh /usr/share/locale 2>/dev/null | cut -f1)
+echo "[BASE-CLEANUP]   Locales remaining: $LOCALE_SIZE"
+
+# ---------------------------------------------------------------------------
+# Documentation cleanup (saves ~50MB)
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Removing documentation..."
+rm -rf /usr/share/doc/*
+rm -rf /usr/share/man/*
+rm -rf /usr/share/info/*
+rm -rf /usr/share/lintian/*
+rm -rf /usr/share/groff/*
+rm -rf /usr/share/linda/*
+
+cat > /etc/dpkg/dpkg.cfg.d/01-nodoc << 'NODOC'
+path-exclude /usr/share/doc/*
+path-exclude /usr/share/man/*
+path-exclude /usr/share/info/*
+path-exclude /usr/share/lintian/*
+path-include /usr/share/doc/*/copyright
+NODOC
+echo "[BASE-CLEANUP]   Docs removed + dpkg exclusion configured"
+
+# ---------------------------------------------------------------------------
+# Log cleanup
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Clearing logs..."
+find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
+find /var/log -type f -name "*.gz" -delete
+find /var/log -type f -name "*.1" -delete
+journalctl --vacuum-time=0 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Temp files & shell history
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Removing temp files..."
+rm -rf /tmp/* /var/tmp/*
+rm -rf /root/.cache /root/.wget-hsts
+rm -f /root/.bash_history
+history -c 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Size report
+# ---------------------------------------------------------------------------
+echo ""
+echo "[BASE-CLEANUP] Disk usage summary:"
+echo "  /usr:         $(du -sh /usr 2>/dev/null | cut -f1)"
+echo "  /var:         $(du -sh /var 2>/dev/null | cut -f1)"
+echo "  /lib:         $(du -sh /lib 2>/dev/null | cut -f1)"
+echo "  Total used:   $(df -h / | awk 'NR==2{print $3}')"
+echo "  Free space:   $(df -h / | awk 'NR==2{print $4}')"
+TOTAL_PKGS=$(dpkg -l 2>/dev/null | grep -c '^ii' || echo 'unknown')
+echo "  Packages:     $TOTAL_PKGS"
+
+# ---------------------------------------------------------------------------
+# Zero free space (improves compression)
+# ---------------------------------------------------------------------------
+echo "[BASE-CLEANUP] Zeroing free space for compression..."
+dd if=/dev/zero of=/zero bs=1M 2>/dev/null || true
+rm -f /zero
+sync
+
+echo "[BASE-CLEANUP] Armbian base image cleanup complete."

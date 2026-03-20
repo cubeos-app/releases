@@ -7,16 +7,18 @@
 #   - Armbian base image instead of Ubuntu for Pi
 #   - Single root partition (boot files in /boot on root, not separate FAT)
 #   - armbianEnv.txt instead of config.txt
-#   - Built-in WiFi (RTL8821CS) — AP mode possible but not yet configured
+#   - Built-in WiFi (RTL8821CS) — hostapd AP mode configured, needs HW testing
 #   - 32GB eMMC onboard (/dev/mmcblk1, SD card is /dev/mmcblk0)
 #
 # NOTE: This is a DIFFERENT board from BPI-M5 (Amlogic S905X3, no WiFi).
 #       The M4 Zero uses Allwinner H618 (quad-core Cortex-A53, 1.5GHz).
 #
-# Base image: Armbian 26.2.1 Noble minimal (kernel 6.12.68), pinned 2026-03-20
+# TWO-TIER BUILD (same as Raspberry Pi):
+#   Tier 1: Golden base (base-image/) — Armbian + all packages (~30 min QEMU)
+#   Tier 2: This template — applies CubeOS config on golden base (~5 min)
+#
 # Partition start_sector 32768 is standard for Armbian sunxi64 builds.
 # TODO: Verify partition start sector on real BPI-M4 Zero hardware
-# TODO: Add WiFi AP mode support (board has built-in WiFi)
 # =============================================================================
 
 variable "version" {
@@ -37,14 +39,19 @@ variable "image_size" {
 
 variable "base_image_url" {
   type    = string
-  default = "https://dl.armbian.com/bananapim4zero/archive/Armbian_26.2.1_Bananapim4zero_noble_current_6.12.68_minimal.img.xz"
-  # Armbian minimal image for BPI-M4 Zero (Allwinner H618), pinned 2026-03-20
-  # Rolling URL: https://dl.armbian.com/bananapim4zero/Noble_current_minimal
+  default = "file:///build/cubeos-base-armbian.img.xz"
+  # Golden base image — built by base-image/cubeos-base-armbian.pkr.hcl
+  # CI downloads from GitLab Package Registry before running Packer.
+  # For local builds: place cubeos-base-armbian.img.xz in the build dir.
+  #
+  # Stock Armbian (for golden base builder, NOT for release builds):
+  #   https://dl.armbian.com/bananapim4zero/archive/Armbian_26.2.1_Bananapim4zero_noble_current_6.12.68_minimal.img.xz
+  #   SHA256: 6427a31dd29f85f3eb5ee3af619140a0b213b7600e8afe63124969556b7cf7d9
 }
 
 variable "base_image_checksum" {
   type    = string
-  default = "6427a31dd29f85f3eb5ee3af619140a0b213b7600e8afe63124969556b7cf7d9"
+  default = "28747a594dc626d4446a3fd1e78be21c0050dea322133a2963387663dfd7f2b3"
 }
 
 variable "base_image_checksum_type" {
@@ -83,7 +90,7 @@ source "arm" "cubeos-bananapim4zero" {
 build {
   sources = ["source.arm.cubeos-bananapim4zero"]
 
-  # Phase 1: Armbian networking (DHCP on Ethernet, no AP yet — WiFi AP possible)
+  # Phase 1: Armbian networking (systemd-networkd, hostapd AP, user setup)
   provisioner "shell" {
     script = "platforms/bananapim4zero/scripts/02-networking.sh"
   }

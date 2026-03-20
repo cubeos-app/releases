@@ -9,7 +9,7 @@
 # SoC:   Allwinner H618 (quad-core Cortex-A53, 1.5GHz)
 # Serial console: ttyS0 (Allwinner UART0)
 # Storage: 32GB eMMC (/dev/mmcblk1) + microSD (/dev/mmcblk0)
-# WiFi: Built-in (RTL8821CS or similar) — not configured for AP yet
+# WiFi: Built-in RTL8821CS (SDIO) — hostapd AP mode configured in 02-networking.sh
 #
 # NOTE: armbianEnv.txt settings and eMMC path (/dev/mmcblk1) need hardware verification
 # =============================================================================

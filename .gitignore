@@ -18,3 +18,7 @@ Thumbs.db
 *HANDOVER*.md
 *SESSION*.md
 ALPHA*_*.md
+
+# Claude Code — local-only, NEVER commit
+CLAUDE.md
+.claude/

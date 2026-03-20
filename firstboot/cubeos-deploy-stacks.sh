@@ -30,13 +30,17 @@ echo ""
 source /cubeos/config/defaults.env 2>/dev/null || true
 source /cubeos/coreapps/image-versions.env 2>/dev/null || true
 
-# ── Ensure wlan0 has our IP ──────────────────────────────────────────
-echo "[RECOVER] Ensuring wlan0 has ${GATEWAY_IP}..."
-ip link set wlan0 up 2>/dev/null || true
-ip addr add "${GATEWAY_IP}/24" dev wlan0 2>/dev/null || true
+# ── Ensure AP interface has our IP ─────────────────────────────────────
+# Source detected interface names if available, fall back to wlan0
+source /cubeos/config/interfaces.env 2>/dev/null || true
+AP_IFACE="${CUBEOS_AP_IFACE:-wlan0}"
 
-if ! ip addr show wlan0 2>/dev/null | grep -q "$GATEWAY_IP"; then
-    echo "[RECOVER] WARNING: wlan0 still doesn't have ${GATEWAY_IP}"
+echo "[RECOVER] Ensuring ${AP_IFACE} has ${GATEWAY_IP}..."
+ip link set "${AP_IFACE}" up 2>/dev/null || true
+ip addr add "${GATEWAY_IP}/24" dev "${AP_IFACE}" 2>/dev/null || true
+
+if ! ip addr show "${AP_IFACE}" 2>/dev/null | grep -q "$GATEWAY_IP"; then
+    echo "[RECOVER] WARNING: ${AP_IFACE} still doesn't have ${GATEWAY_IP}"
 fi
 
 # ── Ensure Docker ────────────────────────────────────────────────────
