@@ -1470,6 +1470,12 @@ validate-image:
       - CUBEOS_PLATFORM: "raspberrypi"
         CUBEOS_VARIANT: "lite"
         CUBEOS_ARCH: "arm64"
+      - CUBEOS_PLATFORM: "bananapim4zero"
+        CUBEOS_VARIANT: "full"
+        CUBEOS_ARCH: "arm64"
+      - CUBEOS_PLATFORM: "bananapim4zero"
+        CUBEOS_VARIANT: "lite"
+        CUBEOS_ARCH: "arm64"
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -2091,6 +2097,8 @@ upload-to-dmz:
   variables:
     FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
     LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
+    BANANA_FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64"
+    BANANA_LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64"
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -2101,6 +2109,12 @@ upload-to-dmz:
       artifacts: false
       optional: true
     - job: "validate-image: [raspberrypi, lite, arm64]"
+      artifacts: false
+      optional: true
+    - job: "validate-image: [bananapim4zero, full, arm64]"
+      artifacts: false
+      optional: true
+    - job: "validate-image: [bananapim4zero, lite, arm64]"
       artifacts: false
       optional: true
   before_script:
@@ -2135,20 +2149,31 @@ upload-to-dmz:
       download_pkg "${FULL_IMAGE_NAME}.img.xz.sha256"
       download_pkg "${LITE_IMAGE_NAME}.img.xz"
       download_pkg "${LITE_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
 
       # Verify checksums before upload
       echo ""
       echo "Verifying checksums..."
       sha256sum -c "${FULL_IMAGE_NAME}.img.xz.sha256"
       sha256sum -c "${LITE_IMAGE_NAME}.img.xz.sha256"
+      sha256sum -c "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+      sha256sum -c "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
       echo "Checksums: OK"
 
       # Generate combined checksums file
-      cat "${FULL_IMAGE_NAME}.img.xz.sha256" "${LITE_IMAGE_NAME}.img.xz.sha256" > checksums.sha256
+      cat "${FULL_IMAGE_NAME}.img.xz.sha256" \
+          "${LITE_IMAGE_NAME}.img.xz.sha256" \
+          "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256" \
+          "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256" > checksums.sha256
       echo "Generated checksums.sha256"
 
       FULL_FILENAME="${FULL_IMAGE_NAME}.img.xz"
       LITE_FILENAME="${LITE_IMAGE_NAME}.img.xz"
+      BANANA_FULL_FILENAME="${BANANA_FULL_IMAGE_NAME}.img.xz"
+      BANANA_LITE_FILENAME="${BANANA_LITE_IMAGE_NAME}.img.xz"
 
       # ── Upload to each DMZ node ────────────────────────────────────
       UPLOAD_COUNT=0
@@ -2167,6 +2192,10 @@ upload-to-dmz:
             "${FULL_IMAGE_NAME}.img.xz.sha256" \
             "${LITE_FILENAME}" \
             "${LITE_IMAGE_NAME}.img.xz.sha256" \
+            "${BANANA_FULL_FILENAME}" \
+            "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256" \
+            "${BANANA_LITE_FILENAME}" \
+            "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256" \
             checksums.sha256 \
             kyriakosp@${DMZ}:/srv/cubeos-releases/data/${CUBEOS_VERSION}/ && break || {
             echo "WARN: rsync attempt $attempt/3 failed (exit $?)"
@@ -2174,12 +2203,16 @@ upload-to-dmz:
           }
         done
 
-        # Update "latest" symlinks
+        # Update "latest" symlinks (Pi remains the default "latest")
         ssh $SSH_OPTS kyriakosp@${DMZ} "
           ln -sf /srv/cubeos-releases/data/${CUBEOS_VERSION}/${FULL_FILENAME} \
                  /srv/cubeos-releases/data/latest-full.img.xz
           ln -sf /srv/cubeos-releases/data/${CUBEOS_VERSION}/${LITE_FILENAME} \
                  /srv/cubeos-releases/data/latest-lite.img.xz
+          ln -sf /srv/cubeos-releases/data/${CUBEOS_VERSION}/${BANANA_FULL_FILENAME} \
+                 /srv/cubeos-releases/data/latest-bananapim4zero-full.img.xz
+          ln -sf /srv/cubeos-releases/data/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME} \
+                 /srv/cubeos-releases/data/latest-bananapim4zero-lite.img.xz
           ln -sf /srv/cubeos-releases/data/${CUBEOS_VERSION}/checksums.sha256 \
                  /srv/cubeos-releases/data/latest-checksums.sha256
         "
@@ -2193,16 +2226,24 @@ upload-to-dmz:
       fi
 
       # Export URLs for downstream jobs
+      BANANA_FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_FULL_FILENAME}"
+      BANANA_LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}"
       echo "FULL_URL=https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}" > upload.env
       echo "LITE_URL=https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}" >> upload.env
       echo "FULL_FILENAME=${FULL_FILENAME}" >> upload.env
       echo "LITE_FILENAME=${LITE_FILENAME}" >> upload.env
+      echo "BANANA_FULL_URL=${BANANA_FULL_URL}" >> upload.env
+      echo "BANANA_LITE_URL=${BANANA_LITE_URL}" >> upload.env
+      echo "BANANA_FULL_FILENAME=${BANANA_FULL_FILENAME}" >> upload.env
+      echo "BANANA_LITE_FILENAME=${BANANA_LITE_FILENAME}" >> upload.env
 
       echo ""
       echo "============================================================"
       echo "  Upload complete — ${UPLOAD_COUNT} DMZ node(s)"
-      echo "  Full: https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}"
-      echo "  Lite: https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}"
+      echo "  Pi Full:     https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}"
+      echo "  Pi Lite:     https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}"
+      echo "  Banana Full: ${BANANA_FULL_URL}"
+      echo "  Banana Lite: ${BANANA_LITE_URL}"
       echo "============================================================"
   artifacts:
     reports:
@@ -2248,8 +2289,12 @@ create-github-prerelease:
       # Compute URLs from CUBEOS_VERSION directly (do not rely on dotenv)
       FULL_FILENAME="cubeos-${CUBEOS_VERSION}-arm64.img.xz"
       LITE_FILENAME="cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz"
+      BANANA_FULL_FILENAME="cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64.img.xz"
+      BANANA_LITE_FILENAME="cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64.img.xz"
       FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}"
       LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}"
+      BANANA_FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_FULL_FILENAME}"
+      BANANA_LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}"
       CHECKSUMS_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/checksums.sha256"
 
       # Download lite image from GitLab Package Registry to upload as GitHub asset
@@ -2273,28 +2318,35 @@ create-github-prerelease:
 
       RELEASE_BODY="## CubeOS v${CUBEOS_VERSION}
 
-      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+      Flashable ARM64 images for Raspberry Pi 4/5 and BananaPi BPI-M4 Zero (Ubuntu 24.04.3 based).
 
-      ### Download
+      ### Download — Raspberry Pi
 
       | Variant | Link | Size |
       |---------|------|------|
       | **Full** (recommended) | [Download from releases.cubeos.app](${FULL_URL}) | ~2.3 GB |
       | **Lite** | Attached below as Release Asset | ~1.8 GB |
 
+      ### Download — BananaPi BPI-M4 Zero
+
+      | Variant | Link |
+      |---------|------|
+      | **Full** | [Download from releases.cubeos.app](${BANANA_FULL_URL}) |
+      | **Lite** | [Download from releases.cubeos.app](${BANANA_LITE_URL}) |
+
       **SHA256 Checksums:** [checksums.sha256](${CHECKSUMS_URL})
 
-      Lite SHA256: \`${LITE_SHA256}\`
+      Lite SHA256 (Pi): \`${LITE_SHA256}\`
 
       ### Install via curl (any Linux machine)
       \`\`\`bash
       curl -fsSL https://get.cubeos.app | sudo bash
       \`\`\`
 
-      ### Flash to Raspberry Pi
-      1. Download the image (Full or Lite)
-      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) → Use custom
-      3. Boot the Pi — connect to the CubeOS WiFi AP
+      ### Flash to SD card
+      1. Download the image for your board (Full or Lite)
+      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or \`dd\`
+      3. Boot the board — connect to the CubeOS WiFi AP
       4. Open http://cubeos.cube and complete setup wizard"
 
       # Append changelog if available from generate-changelog job
@@ -2503,11 +2555,17 @@ update-website-links:
       # depend on upload-to-dmz's dotenv artifact for correctness.
       FULL_FILENAME="cubeos-${CUBEOS_VERSION}-arm64.img.xz"
       LITE_FILENAME="cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz"
+      BANANA_FULL_FILENAME="cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64.img.xz"
+      BANANA_LITE_FILENAME="cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64.img.xz"
       FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_FILENAME}"
       LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_FILENAME}"
+      BANANA_FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_FULL_FILENAME}"
+      BANANA_LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_LITE_FILENAME}"
 
-      echo "  Full: ${FULL_URL}"
-      echo "  Lite: ${LITE_URL}"
+      echo "  Pi Full:     ${FULL_URL}"
+      echo "  Pi Lite:     ${LITE_URL}"
+      echo "  Banana Full: ${BANANA_FULL_URL}"
+      echo "  Banana Lite: ${BANANA_LITE_URL}"
 
       git clone --depth 1 https://oauth2:${TOKEN}@gitlab.nuclearlighters.net/products/cubeos/website.git /tmp/website
       cd /tmp/website
@@ -2517,6 +2575,20 @@ update-website-links:
       cat > static/latest-release.json << EOF
       {
         "version": "${CUBEOS_VERSION}",
+        "platforms": {
+          "raspberrypi": {
+            "full_url": "${FULL_URL}",
+            "lite_url": "${LITE_URL}",
+            "full_filename": "${FULL_FILENAME}",
+            "lite_filename": "${LITE_FILENAME}"
+          },
+          "bananapim4zero": {
+            "full_url": "${BANANA_FULL_URL}",
+            "lite_url": "${BANANA_LITE_URL}",
+            "full_filename": "${BANANA_FULL_FILENAME}",
+            "lite_filename": "${BANANA_LITE_FILENAME}"
+          }
+        },
         "full_url": "${FULL_URL}",
         "lite_url": "${LITE_URL}",
         "full_filename": "${FULL_FILENAME}",
@@ -2544,6 +2616,8 @@ create-gitlab-release:
   variables:
     FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
     LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
+    BANANA_FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64"
+    BANANA_LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64"
   script:
     - |
       echo "Creating GitLab release for ${CI_COMMIT_TAG}..."
@@ -2564,15 +2638,34 @@ create-gitlab-release:
            --retry 3 \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${LITE_IMAGE_NAME}.img.xz.sha256"
 
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o ${BANANA_FULL_IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           -o ${BANANA_LITE_IMAGE_NAME}.img.xz.sha256 \
+           --connect-timeout 30 \
+           --retry 3 \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
+
       FULL_CHECKSUM=$(cut -d' ' -f1 ${FULL_IMAGE_NAME}.img.xz.sha256)
       LITE_CHECKSUM=$(cut -d' ' -f1 ${LITE_IMAGE_NAME}.img.xz.sha256)
-      echo "Full SHA256: ${FULL_CHECKSUM}"
-      echo "Lite SHA256: ${LITE_CHECKSUM}"
+      BANANA_FULL_CHECKSUM=$(cut -d' ' -f1 ${BANANA_FULL_IMAGE_NAME}.img.xz.sha256)
+      BANANA_LITE_CHECKSUM=$(cut -d' ' -f1 ${BANANA_LITE_IMAGE_NAME}.img.xz.sha256)
+      echo "Pi Full SHA256:     ${FULL_CHECKSUM}"
+      echo "Pi Lite SHA256:     ${LITE_CHECKSUM}"
+      echo "Banana Full SHA256: ${BANANA_FULL_CHECKSUM}"
+      echo "Banana Lite SHA256: ${BANANA_LITE_CHECKSUM}"
 
       if [ -z "$FULL_CHECKSUM" ] || [ -z "$LITE_CHECKSUM" ]; then
-        echo "ERROR: Image(s) not found in Package Registry."
+        echo "ERROR: Pi image(s) not found in Package Registry."
         echo "Did you push to main first? build-image must succeed before tagging."
         exit 1
+      fi
+      if [ -z "$BANANA_FULL_CHECKSUM" ] || [ -z "$BANANA_LITE_CHECKSUM" ]; then
+        echo "WARN: BananaPi image(s) not found in Package Registry — release will include Pi only."
       fi
   release:
     tag_name: "${CI_COMMIT_TAG}"
@@ -2580,15 +2673,19 @@ create-gitlab-release:
     description: |
       ## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 images for Raspberry Pi 4/5 (Ubuntu 24.04.3 based).
+      Flashable ARM64 images for Raspberry Pi 4/5 and BananaPi BPI-M4 Zero (Ubuntu 24.04.3 based).
 
       ### Variants
       - **Full**: All services + offline content (4GB+ RAM recommended)
       - **Lite**: Core platform only, install apps from App Store (2GB+ RAM)
 
+      ### Supported Boards
+      - Raspberry Pi 4 Model B / Pi 5
+      - BananaPi BPI-M4 Zero (Allwinner H618)
+
       ### Quick Start
-      1. Flash the .img.xz to SD card using Raspberry Pi Imager
-      2. Boot the Pi
+      1. Flash the .img.xz to SD card using Raspberry Pi Imager or dd
+      2. Boot the board
       3. Connect to WiFi AP (check console output for SSID and password)
       4. Open http://cubeos.cube in your browser
       5. Complete the setup wizard
@@ -2598,14 +2695,22 @@ create-gitlab-release:
       - SSH: cubeos / cubeos (or key-based if configured in Imager)
     assets:
       links:
-        - name: "cubeos-${CUBEOS_VERSION}-arm64.img.xz (Full)"
+        - name: "cubeos-${CUBEOS_VERSION}-arm64.img.xz (Pi Full)"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-arm64.img.xz"
-        - name: "cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz (Lite)"
+        - name: "cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz (Pi Lite)"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz"
-        - name: "Full SHA256 Checksum"
+        - name: "cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64.img.xz (BPI-M4 Zero Full)"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64.img.xz"
+        - name: "cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64.img.xz (BPI-M4 Zero Lite)"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64.img.xz"
+        - name: "Pi Full SHA256 Checksum"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-arm64.img.xz.sha256"
-        - name: "Lite SHA256 Checksum"
+        - name: "Pi Lite SHA256 Checksum"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-arm64.img.xz.sha256"
+        - name: "BPI-M4 Zero Full SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64.img.xz.sha256"
+        - name: "BPI-M4 Zero Lite SHA256 Checksum"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/cubeos/${CUBEOS_VERSION}/cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64.img.xz.sha256"
 
 # =============================================================================
 # Create GitHub Release (mirror — tag push only, with binary upload)
@@ -2618,6 +2723,8 @@ create-github-release:
   variables:
     FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
     LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
+    BANANA_FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64"
+    BANANA_LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   script:
@@ -2651,28 +2758,40 @@ create-github-release:
       # Download checksums
       download_pkg "${FULL_IMAGE_NAME}.img.xz.sha256"
       download_pkg "${LITE_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
 
       FULL_CHECKSUM=$(cut -d' ' -f1 "${FULL_IMAGE_NAME}.img.xz.sha256")
       LITE_CHECKSUM=$(cut -d' ' -f1 "${LITE_IMAGE_NAME}.img.xz.sha256")
-      echo "Full SHA256: ${FULL_CHECKSUM}"
-      echo "Lite SHA256: ${LITE_CHECKSUM}"
+      BANANA_FULL_CHECKSUM=$(cut -d' ' -f1 "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256")
+      BANANA_LITE_CHECKSUM=$(cut -d' ' -f1 "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256")
+      echo "Pi Full SHA256:     ${FULL_CHECKSUM}"
+      echo "Pi Lite SHA256:     ${LITE_CHECKSUM}"
+      echo "Banana Full SHA256: ${BANANA_FULL_CHECKSUM}"
+      echo "Banana Lite SHA256: ${BANANA_LITE_CHECKSUM}"
 
       if [ -z "$FULL_CHECKSUM" ] || [ -z "$LITE_CHECKSUM" ]; then
-        echo "ERROR: Image(s) not found in Package Registry."
+        echo "ERROR: Pi image(s) not found in Package Registry."
         exit 1
       fi
 
       # Download images
       download_pkg "${FULL_IMAGE_NAME}.img.xz"
       download_pkg "${LITE_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz"
 
-      echo "Full: $(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1)"
-      echo "Lite: $(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "Pi Full:     $(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "Pi Lite:     $(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "Banana Full: $(du -h ${BANANA_FULL_IMAGE_NAME}.img.xz | cut -f1)"
+      echo "Banana Lite: $(du -h ${BANANA_LITE_IMAGE_NAME}.img.xz | cut -f1)"
 
       # Verify checksums
       echo "Verifying checksums..."
       echo "${FULL_CHECKSUM}  ${FULL_IMAGE_NAME}.img.xz" | sha256sum -c -
       echo "${LITE_CHECKSUM}  ${LITE_IMAGE_NAME}.img.xz" | sha256sum -c -
+      echo "${BANANA_FULL_CHECKSUM}  ${BANANA_FULL_IMAGE_NAME}.img.xz" | sha256sum -c -
+      echo "${BANANA_LITE_CHECKSUM}  ${BANANA_LITE_IMAGE_NAME}.img.xz" | sha256sum -c -
 
       # --- Step 1b: Generate Pi Imager manifest ---
       echo "============================================================"
@@ -2694,27 +2813,39 @@ create-github-release:
 
       FULL_SIZE=$(du -h ${FULL_IMAGE_NAME}.img.xz | cut -f1)
       LITE_SIZE=$(du -h ${LITE_IMAGE_NAME}.img.xz | cut -f1)
+      BANANA_FULL_SIZE=$(du -h ${BANANA_FULL_IMAGE_NAME}.img.xz | cut -f1)
+      BANANA_LITE_SIZE=$(du -h ${BANANA_LITE_IMAGE_NAME}.img.xz | cut -f1)
       FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${FULL_IMAGE_NAME}.img.xz"
       LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${LITE_IMAGE_NAME}.img.xz"
+      BANANA_FULL_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_FULL_IMAGE_NAME}.img.xz"
+      BANANA_LITE_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/${BANANA_LITE_IMAGE_NAME}.img.xz"
       CHECKSUMS_URL="https://releases.cubeos.app/${CUBEOS_VERSION}/checksums.sha256"
 
       RELEASE_BODY="## CubeOS ${CI_COMMIT_TAG}
 
-      Flashable ARM64 image for Raspberry Pi 4/5 (Ubuntu 24.04 based).
+      Flashable ARM64 images for Raspberry Pi 4/5 and BananaPi BPI-M4 Zero (Ubuntu 24.04 based).
 
-      ### Download
+      ### Download — Raspberry Pi
 
       | File | Link | Size |
       |------|------|------|
       | Full image (all services) | [${FULL_IMAGE_NAME}.img.xz](${FULL_URL}) | ${FULL_SIZE} |
       | Lite image (minimal) | [${LITE_IMAGE_NAME}.img.xz](${LITE_URL}) | ${LITE_SIZE} |
-      | SHA256 checksums | [checksums.sha256](${CHECKSUMS_URL}) | |
+
+      ### Download — BananaPi BPI-M4 Zero
+
+      | File | Link | Size |
+      |------|------|------|
+      | Full image (all services) | [${BANANA_FULL_IMAGE_NAME}.img.xz](${BANANA_FULL_URL}) | ${BANANA_FULL_SIZE} |
+      | Lite image (minimal) | [${BANANA_LITE_IMAGE_NAME}.img.xz](${BANANA_LITE_URL}) | ${BANANA_LITE_SIZE} |
+
+      **SHA256 checksums:** [checksums.sha256](${CHECKSUMS_URL})
 
       ### Quick Start
 
-      1. Download the Full image above
-      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — Use custom image
-      3. Boot the Pi — connect to the **CubeOS** WiFi AP (password: cubeos123)
+      1. Download the Full image for your board
+      2. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or \`dd\`
+      3. Boot the board — connect to the **CubeOS** WiFi AP (password: cubeos123)
       4. Open **http://cubeos.cube** and complete the setup wizard
 
       ### Install on x86/ARM64 Linux
@@ -2840,13 +2971,21 @@ create-github-release:
         fi
       }
 
-      # Full image + checksum
+      # Pi Full image + checksum
       upload_asset "${FULL_IMAGE_NAME}.img.xz" "application/x-xz"
       upload_asset "${FULL_IMAGE_NAME}.img.xz.sha256" "text/plain"
 
-      # Lite image + checksum
+      # Pi Lite image + checksum
       upload_asset "${LITE_IMAGE_NAME}.img.xz" "application/x-xz"
       upload_asset "${LITE_IMAGE_NAME}.img.xz.sha256" "text/plain"
+
+      # BananaPi Full image + checksum
+      upload_asset "${BANANA_FULL_IMAGE_NAME}.img.xz" "application/x-xz"
+      upload_asset "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256" "text/plain"
+
+      # BananaPi Lite image + checksum
+      upload_asset "${BANANA_LITE_IMAGE_NAME}.img.xz" "application/x-xz"
+      upload_asset "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256" "text/plain"
 
       # Pi Imager manifest
       upload_asset "imager/rpi-imager.json" "application/json"
@@ -2878,6 +3017,8 @@ upload-releases:
   variables:
     FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-arm64"
     LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-arm64"
+    BANANA_FULL_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-bananapim4zero-arm64"
+    BANANA_LITE_IMAGE_NAME: "cubeos-${CUBEOS_VERSION}-lite-bananapim4zero-arm64"
   before_script:
     - apk add --no-cache openssh-client curl jq bash xz
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -2912,13 +3053,19 @@ upload-releases:
       download_pkg "${FULL_IMAGE_NAME}.img.xz.sha256"
       download_pkg "${LITE_IMAGE_NAME}.img.xz"
       download_pkg "${LITE_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz"
+      download_pkg "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
 
       # Verify checksums before upload
       echo "Verifying checksums..."
       sha256sum -c "${FULL_IMAGE_NAME}.img.xz.sha256"
       sha256sum -c "${LITE_IMAGE_NAME}.img.xz.sha256"
+      sha256sum -c "${BANANA_FULL_IMAGE_NAME}.img.xz.sha256"
+      sha256sum -c "${BANANA_LITE_IMAGE_NAME}.img.xz.sha256"
 
-      # Generate Pi Imager manifest (needs decompressed images)
+      # Generate Pi Imager manifest (needs decompressed images — Pi only)
       xz -dk "${FULL_IMAGE_NAME}.img.xz"
       xz -dk "${LITE_IMAGE_NAME}.img.xz"
       chmod +x scripts/calculate-checksums.sh scripts/update-manifest.sh

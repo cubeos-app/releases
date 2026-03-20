@@ -14,13 +14,17 @@
 #   RELEASES_DEPLOY_HOST  — DMZ hostname (SSH key auth must be configured)
 #
 # Expected local files (in current directory):
-#   cubeos-{VERSION}-arm64.img.xz          (Full image)
-#   cubeos-{VERSION}-arm64.img.xz.sha256   (Full checksum)
-#   cubeos-{VERSION}-lite-arm64.img.xz     (Lite image)
-#   cubeos-{VERSION}-lite-arm64.img.xz.sha256 (Lite checksum)
-#   imager/rpi-imager.json                  (Pi Imager manifest)
-#   curl/docker-compose.yml.template        (Compose template)
-#   curl/cubeos-cli.sh                      (CLI script)
+#   cubeos-{VERSION}-arm64.img.xz                        (Pi Full image)
+#   cubeos-{VERSION}-arm64.img.xz.sha256                 (Pi Full checksum)
+#   cubeos-{VERSION}-lite-arm64.img.xz                   (Pi Lite image)
+#   cubeos-{VERSION}-lite-arm64.img.xz.sha256            (Pi Lite checksum)
+#   cubeos-{VERSION}-bananapim4zero-arm64.img.xz         (BPI-M4 Zero Full image)
+#   cubeos-{VERSION}-bananapim4zero-arm64.img.xz.sha256  (BPI-M4 Zero Full checksum)
+#   cubeos-{VERSION}-lite-bananapim4zero-arm64.img.xz    (BPI-M4 Zero Lite image)
+#   cubeos-{VERSION}-lite-bananapim4zero-arm64.img.xz.sha256 (BPI-M4 Zero Lite checksum)
+#   imager/rpi-imager.json                               (Pi Imager manifest)
+#   curl/docker-compose.yml.template                     (Compose template)
+#   curl/cubeos-cli.sh                                   (CLI script)
 #
 # Result on DMZ:
 #   /srv/cubeos-releases/data/releases/{VERSION}/
@@ -28,6 +32,10 @@
 #     ├── cubeos-full-arm64.img.xz.sha256
 #     ├── cubeos-lite-arm64.img.xz
 #     ├── cubeos-lite-arm64.img.xz.sha256
+#     ├── cubeos-bananapim4zero-full-arm64.img.xz
+#     ├── cubeos-bananapim4zero-full-arm64.img.xz.sha256
+#     ├── cubeos-bananapim4zero-lite-arm64.img.xz
+#     ├── cubeos-bananapim4zero-lite-arm64.img.xz.sha256
 #     ├── docker-compose.yml
 #     ├── cubeos-cli.sh
 #     └── rpi-imager.json
@@ -74,9 +82,14 @@ FULL_IMG="cubeos-${VERSION}-arm64.img.xz"
 FULL_SHA="${FULL_IMG}.sha256"
 LITE_IMG="cubeos-${VERSION}-lite-arm64.img.xz"
 LITE_SHA="${LITE_IMG}.sha256"
+BANANA_FULL_IMG="cubeos-${VERSION}-bananapim4zero-arm64.img.xz"
+BANANA_FULL_SHA="${BANANA_FULL_IMG}.sha256"
+BANANA_LITE_IMG="cubeos-${VERSION}-lite-bananapim4zero-arm64.img.xz"
+BANANA_LITE_SHA="${BANANA_LITE_IMG}.sha256"
 
 MISSING=0
-for f in "$FULL_IMG" "$FULL_SHA" "$LITE_IMG" "$LITE_SHA"; do
+for f in "$FULL_IMG" "$FULL_SHA" "$LITE_IMG" "$LITE_SHA" \
+         "$BANANA_FULL_IMG" "$BANANA_FULL_SHA" "$BANANA_LITE_IMG" "$BANANA_LITE_SHA"; do
     if [ ! -f "$f" ]; then
         warn "Missing: $f"
         MISSING=$((MISSING + 1))
@@ -116,6 +129,24 @@ if [ -f "$LITE_SHA" ]; then
     UPLOADED=$((UPLOADED + 1))
 fi
 
+# BananaPi BPI-M4 Zero image files
+if [ -f "$BANANA_FULL_IMG" ]; then
+    upload_file "$BANANA_FULL_IMG" "${REMOTE_DIR}/cubeos-bananapim4zero-full-arm64.img.xz"
+    UPLOADED=$((UPLOADED + 1))
+fi
+if [ -f "$BANANA_FULL_SHA" ]; then
+    upload_file "$BANANA_FULL_SHA" "${REMOTE_DIR}/cubeos-bananapim4zero-full-arm64.img.xz.sha256"
+    UPLOADED=$((UPLOADED + 1))
+fi
+if [ -f "$BANANA_LITE_IMG" ]; then
+    upload_file "$BANANA_LITE_IMG" "${REMOTE_DIR}/cubeos-bananapim4zero-lite-arm64.img.xz"
+    UPLOADED=$((UPLOADED + 1))
+fi
+if [ -f "$BANANA_LITE_SHA" ]; then
+    upload_file "$BANANA_LITE_SHA" "${REMOTE_DIR}/cubeos-bananapim4zero-lite-arm64.img.xz.sha256"
+    UPLOADED=$((UPLOADED + 1))
+fi
+
 # Pi Imager manifest
 if [ -f "imager/rpi-imager.json" ]; then
     upload_file "imager/rpi-imager.json" "${REMOTE_DIR}/rpi-imager.json"
@@ -144,7 +175,7 @@ ok "Symlink updated"
 
 # ─── Update global SHA256SUMS ────────────────────────────────────────────────
 
-if [ -f "$FULL_SHA" ] || [ -f "$LITE_SHA" ]; then
+if [ -f "$FULL_SHA" ] || [ -f "$LITE_SHA" ] || [ -f "$BANANA_FULL_SHA" ] || [ -f "$BANANA_LITE_SHA" ]; then
     info "Updating global SHA256SUMS"
     SUMS=""
     if [ -f "$FULL_SHA" ]; then
@@ -152,6 +183,12 @@ if [ -f "$FULL_SHA" ] || [ -f "$LITE_SHA" ]; then
     fi
     if [ -f "$LITE_SHA" ]; then
         SUMS="${SUMS}$(cat "$LITE_SHA" | sed "s|$|  releases/${VERSION}/cubeos-lite-arm64.img.xz|" | awk '{print $1 "  " $NF}')\n"
+    fi
+    if [ -f "$BANANA_FULL_SHA" ]; then
+        SUMS="${SUMS}$(cat "$BANANA_FULL_SHA" | sed "s|$|  releases/${VERSION}/cubeos-bananapim4zero-full-arm64.img.xz|" | awk '{print $1 "  " $NF}')\n"
+    fi
+    if [ -f "$BANANA_LITE_SHA" ]; then
+        SUMS="${SUMS}$(cat "$BANANA_LITE_SHA" | sed "s|$|  releases/${VERSION}/cubeos-bananapim4zero-lite-arm64.img.xz|" | awk '{print $1 "  " $NF}')\n"
     fi
     echo -e "$SUMS" | ssh ${SSH_OPTS} "${HOST}" "cat >> ${REMOTE_BASE}/SHA256SUMS"
     ok "SHA256SUMS updated"
@@ -183,6 +220,26 @@ if [ -f "$LITE_SHA" ] && [ -f "$LITE_IMG" ]; then
         ok "Lite image checksum verified"
     else
         error "Lite image checksum mismatch! Expected: $EXPECTED Got: $REMOTE_SUM"
+    fi
+fi
+
+if [ -f "$BANANA_FULL_SHA" ] && [ -f "$BANANA_FULL_IMG" ]; then
+    EXPECTED=$(cut -d' ' -f1 "$BANANA_FULL_SHA")
+    REMOTE_SUM=$(ssh ${SSH_OPTS} "${HOST}" "sha256sum ${REMOTE_DIR}/cubeos-bananapim4zero-full-arm64.img.xz | cut -d' ' -f1")
+    if [ "$EXPECTED" = "$REMOTE_SUM" ]; then
+        ok "BananaPi Full image checksum verified"
+    else
+        error "BananaPi Full image checksum mismatch! Expected: $EXPECTED Got: $REMOTE_SUM"
+    fi
+fi
+
+if [ -f "$BANANA_LITE_SHA" ] && [ -f "$BANANA_LITE_IMG" ]; then
+    EXPECTED=$(cut -d' ' -f1 "$BANANA_LITE_SHA")
+    REMOTE_SUM=$(ssh ${SSH_OPTS} "${HOST}" "sha256sum ${REMOTE_DIR}/cubeos-bananapim4zero-lite-arm64.img.xz | cut -d' ' -f1")
+    if [ "$EXPECTED" = "$REMOTE_SUM" ]; then
+        ok "BananaPi Lite image checksum verified"
+    else
+        error "BananaPi Lite image checksum mismatch! Expected: $EXPECTED Got: $REMOTE_SUM"
     fi
 fi
 

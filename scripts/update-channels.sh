@@ -98,6 +98,35 @@ else
     warn "Lite image not found on releases server"
 fi
 
+# BananaPi BPI-M4 Zero checksums
+BANANA_FULL_SHA=""
+BANANA_LITE_SHA=""
+BANANA_FULL_SIZE=""
+BANANA_LITE_SIZE=""
+
+BANANA_FULL_SHA_CONTENT=$(ssh ${SSH_OPTS} "${RELEASES_HOST}" \
+    "cat ${RELEASE_DIR}/cubeos-bananapim4zero-full-arm64.img.xz.sha256 2>/dev/null || echo ''")
+BANANA_LITE_SHA_CONTENT=$(ssh ${SSH_OPTS} "${RELEASES_HOST}" \
+    "cat ${RELEASE_DIR}/cubeos-bananapim4zero-lite-arm64.img.xz.sha256 2>/dev/null || echo ''")
+
+if [ -n "$BANANA_FULL_SHA_CONTENT" ]; then
+    BANANA_FULL_SHA=$(echo "$BANANA_FULL_SHA_CONTENT" | cut -d' ' -f1)
+    BANANA_FULL_SIZE=$(ssh ${SSH_OPTS} "${RELEASES_HOST}" \
+        "stat -c%s ${RELEASE_DIR}/cubeos-bananapim4zero-full-arm64.img.xz 2>/dev/null || echo 0")
+    ok "BananaPi Full: sha256=${BANANA_FULL_SHA:0:16}... size=${BANANA_FULL_SIZE}"
+else
+    warn "BananaPi Full image not found on releases server"
+fi
+
+if [ -n "$BANANA_LITE_SHA_CONTENT" ]; then
+    BANANA_LITE_SHA=$(echo "$BANANA_LITE_SHA_CONTENT" | cut -d' ' -f1)
+    BANANA_LITE_SIZE=$(ssh ${SSH_OPTS} "${RELEASES_HOST}" \
+        "stat -c%s ${RELEASE_DIR}/cubeos-bananapim4zero-lite-arm64.img.xz 2>/dev/null || echo 0")
+    ok "BananaPi Lite: sha256=${BANANA_LITE_SHA:0:16}... size=${BANANA_LITE_SIZE}"
+else
+    warn "BananaPi Lite image not found on releases server"
+fi
+
 # ─── Generate channel JSON ────────────────────────────────────────────────────
 
 CHANNEL_JSON=$(cat <<CHANNEL_EOF
@@ -106,6 +135,36 @@ CHANNEL_JSON=$(cat <<CHANNEL_EOF
   "version": "${VERSION}",
   "release_date": "${RELEASE_DATE}",
   "base_url": "https://releases.cubeos.app/releases/${VERSION}",
+  "platforms": {
+    "raspberrypi": {
+      "full": {
+        "filename": "cubeos-full-arm64.img.xz",
+        "url": "https://releases.cubeos.app/releases/${VERSION}/cubeos-full-arm64.img.xz",
+        "sha256": "${FULL_SHA:-}",
+        "size": ${FULL_SIZE:-0}
+      },
+      "lite": {
+        "filename": "cubeos-lite-arm64.img.xz",
+        "url": "https://releases.cubeos.app/releases/${VERSION}/cubeos-lite-arm64.img.xz",
+        "sha256": "${LITE_SHA:-}",
+        "size": ${LITE_SIZE:-0}
+      }
+    },
+    "bananapim4zero": {
+      "full": {
+        "filename": "cubeos-bananapim4zero-full-arm64.img.xz",
+        "url": "https://releases.cubeos.app/releases/${VERSION}/cubeos-bananapim4zero-full-arm64.img.xz",
+        "sha256": "${BANANA_FULL_SHA:-}",
+        "size": ${BANANA_FULL_SIZE:-0}
+      },
+      "lite": {
+        "filename": "cubeos-bananapim4zero-lite-arm64.img.xz",
+        "url": "https://releases.cubeos.app/releases/${VERSION}/cubeos-bananapim4zero-lite-arm64.img.xz",
+        "sha256": "${BANANA_LITE_SHA:-}",
+        "size": ${BANANA_LITE_SIZE:-0}
+      }
+    }
+  },
   "images": {
     "full": {
       "filename": "cubeos-full-arm64.img.xz",
